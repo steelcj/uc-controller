@@ -1,0 +1,61 @@
+diff --git a/README.md b/README.md
+index 93f00ff..49c12bb 100644
+--- a/README.md
++++ b/README.md
+@@ -22,6 +22,21 @@ This example is taken from [`molecule/default/converge.yml`](https://github.com/
+       umask: "0027"
+ ```
+ 
++To also set a system-wide umask, in `/etc/login.defs` and `/etc/profile.d`, turn on `umask_system`. This is what governs the permissions `useradd` gives new home directories and what `pam_umask` applies to login sessions, so run the role before any users are created.
++
++```yaml
++---
++- name: Converge
++  hosts: all
++  become: true
++  gather_facts: true
++
++  roles:
++    - role: robertdebock.umask
++      umask: "0027"
++      umask_system: true
++```
++
+ The machine needs to be prepared. In CI this is done using [`molecule/default/prepare.yml`](https://github.com/robertdebock/ansible-role-umask/blob/master/molecule/default/prepare.yml):
+ 
+ ```yaml
+@@ -49,8 +64,34 @@ umask: "0022"
+ 
+ umask_users:
+   - root
++
++# Configure a system-wide umask, not just per-user shell rc files.
++# Off by default so the role's original behaviour is unchanged.
++umask_system: false
++
++# Mode for new home directories, written as HOME_MODE in login.defs and
++# applied by useradd. Leave empty ("") to let useradd derive it from UMASK.
++umask_home_mode: "0750"
++
++# Also write /etc/profile.d/umask.sh so login shells pick up the umask
++# regardless of the distribution's own profile defaults.
++umask_profile_d: true
+ ```
+ 
++By default the role only appends a `umask` line to each `umask_users` account's `~/.bashrc`. That reaches interactive shells for those users and nothing else.
++
++### System-wide umask
++
++Set `umask_system: true` to configure the umask at the system level instead of, or in addition to, the per-user shell files. When enabled the role:
++
++- sets `UMASK` in `login.defs` to `umask`, keeping a backup, which `pam_umask` and `useradd` read,
++- sets `HOME_MODE` in `login.defs` to `umask_home_mode`, which `useradd` uses for the mode of a new home directory, and
++- writes `/etc/profile.d/umask.sh` so login shells pick up the umask regardless of the distribution's profile defaults, controllable with `umask_profile_d`.
++
++Editing `login.defs` does not change the umask of the running Ansible connection, so the effect is on `useradd` and future logins. Run the role before creating users so their home directories are created with the intended permissions. Set `umask_users: []` to skip the per-user `~/.bashrc` step and rely on the system-wide configuration alone.
++
++The role does not modify PAM configuration. Current Debian and RedHat family systems already include `pam_umask` in the session stack, honouring `login.defs`.
++
+ ## [Requirements](#requirements)
+ 
+ - pip packages listed in [requirements.txt](https://github.com/robertdebock/ansible-role-umask/blob/master/requirements.txt).

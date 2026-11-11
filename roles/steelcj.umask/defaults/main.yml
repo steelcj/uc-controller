@@ -1,0 +1,19 @@
+---
+# defaults file for umask
+
+umask: "0022"
+
+umask_users:
+  - root
+
+# Configure a system-wide umask, not just per-user shell rc files.
+# Off by default so the role's original behaviour is unchanged.
+umask_system: false
+
+# Mode for new home directories, written as HOME_MODE in login.defs and
+# applied by useradd. Leave empty ("") to let useradd derive it from UMASK.
+umask_home_mode: "0750"
+
+# Also write /etc/profile.d/umask.sh so login shells pick up the umask
+# regardless of the distribution's own profile defaults.
+umask_profile_d: true

@@ -1,0 +1,51 @@
+---
+# inventories/onboard/dev/group_vars/all.yml
+# Variables for the onboard baseline roles, dev environment.
+#
+# Only values we deliberately choose are set here. Every other role variable
+# keeps its upstream default, which is the point of using these roles.
+
+# --- umask (steelcj.umask) -------------------------------------------------
+# System-wide tight umask, applied before the initial user is created so its
+# home directory is created 0750. umask_users: [] skips the per-user .bashrc
+# step in favour of the system-wide login.defs / profile.d config.
+umask: "0027"
+umask_system: true
+umask_home_mode: "0750"
+umask_users: []
+
+# --- openssh (robertdebock.openssh) ----------------------------------------
+# Harden sshd to key-only, no root login. Safe during onboarding because this
+# stage runs over the incus connection, not ssh, so a restart cannot lock us
+# out, and the initial user is created with a key before we switch to ssh.
+openssh_permit_root_login: "no"
+openssh_password_authentication: "no"
+openssh_challenge_response_authentication: "no"
+openssh_x11_forwarding: "no"
+
+# --- locale (robertdebock.locale) ------------------------------------------
+locale_lang: en_US.UTF-8          # en_CA.UTF-8 if you prefer, must be available
+locale_timezone: America/Toronto  # Etc/UTC if you keep servers on UTC
+
+# --- ntp (robertdebock.ntp) ------------------------------------------------
+ntp_timezone: America/Toronto     # keep in step with locale_timezone
+# ntp_pool defaults to pool.ntp.org; set ntp_server for an internal source.
+
+# --- firewall (robertdebock.firewall) --------------------------------------
+# IMPORTANT: this role consumes firewall_services (a service name or a port
+# number, with optional protocol/state). It does NOT read firewall_rules or
+# the firewall_rules_onboard schema from the design doc, and it has no
+# per-source restriction. See the note I sent with this file.
+firewall_services:
+  - name: ssh
+
+# --- users (robertdebock.users) --------------------------------------------
+# Creates the initial management user with your key and passwordless sudo.
+# Replace the placeholder with your controller's real public key.
+users:
+  - name: initial
+    comment: Ansible management user
+    sudo_options: "ALL=(ALL) NOPASSWD: ALL"
+    authorized_keys:
+      - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIB23smky5gSvrdOOYqyt+sck93NqAMqrz322BX18h1d9 initial@laptop"
+# above is gradus-raw-initial pub key

@@ -1,0 +1,128 @@
+#!/usr/bin/env ansible-playbook
+---
+# Make raw nodes manageable.
+#
+# A raw node is reached however discovery left it: an Incus instance over the
+# incus connection as root, or a bare-metal/VPS node over SSH as root. Neither
+# has the "initial" user or sshd-as-initial yet; creating them is this stage's
+# job. So the onboard plays run over that root connection, and only at the end
+# is the connection switched to SSH as "initial" for the stages that follow.
+#
+# The connection and user for each raw node come from its inventory
+# (inventories/raw/group_vars/incus.yml sets ansible_connection and
+# ansible_user for the Incus group). This playbook carries those through
+# promotion rather than assuming SSH.
+
+- name: Confirm raw nodes are reachable and promote them
+  hosts: raw
+  gather_facts: no
+  become: no
+
+  tasks:
+    # raw runs over whatever connection the node uses and needs no Python, so
+    # it is a readiness probe that works for both Incus (already up) and an
+    # SSH root node (retried until sshd answers). This replaces the old
+    # wait_for port 22, which a raw Incus node without sshd can never pass.
+    - name: wait for the node to accept a connection
+      ansible.builtin.raw: 'true'
+      register: probe
+      retries: 10
+      delay: 6
+      until: probe is succeeded
+      changed_when: false
+
+    # add_host runs once per play, so loop over ansible_play_hosts to promote
+    # every node still active in the play. The connection vars are carried
+    # across with default(omit) so an Incus node keeps its incus connection and
+    # an SSH node keeps the ansible_host from its inventory.
+    - name: promote reachable nodes to onboarded
+      ansible.builtin.add_host:
+        name: "{{ item }}"
+        groups:
+          - onboarded
+          - "{{ target_group | default('ungrouped') }}"
+        ansible_connection: "{{ hostvars[item].ansible_connection | default(omit) }}"
+        ansible_user: "{{ hostvars[item].ansible_user | default(omit) }}"
+        ansible_host: "{{ hostvars[item].ansible_host | default(omit) }}"
+      loop: "{{ ansible_play_hosts }}"
+
+- name: Bootstrap Python onto onboarded nodes
+  hosts: onboarded
+  gather_facts: no          # Python is not present yet; bootstrap installs it.
+  become: no                # Already root over the incus/ssh-root connection.
+
+  vars:
+    # sudo may not be installed on a minimal image, and it is not needed while
+    # the connection is already root. The later ssh-as-initial stages turn
+    # become back on.
+    bootstrap_become: false
+
+  roles:
+    - role: robertdebock.bootstrap
+
+- name: Converge the onboard baseline
+  hosts: onboarded
+  gather_facts: yes         # Safe now: bootstrap installed Python above.
+  become: no                # Still root over the root connection.
+
+  vars:
+    firewall_rules: >-
+      {{
+        (firewall_rules_onboard | default([]))
+      }}
+
+  roles:
+    - role: robertdebock.epel
+    - role: robertdebock.update
+    - role: robertdebock.locale
+    - role: robertdebock.auto_update
+    - role: robertdebock.cron
+    - role: robertdebock.ntp
+    - role: robertdebock.openssh      # installs and hardens sshd
+    - role: robertdebock.fail2ban
+    - role: robertdebock.firewall     # opens port 22 from firewall_rules
+    - role: robertdebock.users        # creates the initial user + sudo + key
+
+- name: Switch onboarded nodes to SSH as the initial user
+  hosts: onboarded
+  gather_facts: no
+  become: no
+
+  tasks:
+    # After this play the node is reached over SSH as initial, which is what
+    # 20_normalize.yml and later stages expect. The management address is the
+    # fact gathered in the previous play; fall back to any inventory
+    # ansible_host, then the inventory name.
+    - name: re-target the node over SSH as initial
+      ansible.builtin.add_host:
+        name: "{{ item }}"
+        groups:
+          - onboarded
+        ansible_connection: ssh
+        ansible_user: initial
+        ansible_host: >-
+          {{
+            hostvars[item].ansible_default_ipv4.address
+            | default(hostvars[item].ansible_host)
+            | default(item)
+          }}
+      loop: "{{ ansible_play_hosts }}"
+
+- name: Confirm SSH as the initial user works
+  hosts: onboarded
+  gather_facts: no
+  become: yes               # initial has passwordless sudo
+
+  tasks:
+    - name: wait for SSH to answer as initial
+      ansible.builtin.wait_for_connection:
+        timeout: 60
+
+    - name: confirm sudo works for initial
+      ansible.builtin.command: id
+      changed_when: false
+      register: initial_id
+
+    - name: show who we are now
+      ansible.builtin.debug:
+        msg: "{{ inventory_hostname }}: {{ initial_id.stdout }}"

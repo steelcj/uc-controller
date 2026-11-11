@@ -1,0 +1,130 @@
+{{ ansible_managed | comment }}
+# /etc/rsyslog.conf configuration file for rsyslog
+#
+# For more information install rsyslog-doc and see
+# /usr/share/doc/rsyslog-doc/html/configuration/index.html
+
+
+#################
+#### MODULES ####
+#################
+
+# Provides support for local system logging (e.g. via logger command)
+# And turns off message reception via local log socket;
+# Local messages are retrieved through imjournal now.
+{{ '' if 'imuxsock' in rsyslog_mods else '#' }}module(load="imuxsock"{{ ' SysSock.Use="off"' if not rsyslog_imuxsock_syssock else '' }})
+
+# Provides access to the systemd journal
+# And provides file to store the position in the journal
+{{ '' if 'imjournal' in rsyslog_mods else '#' }}module(load="imjournal" StateFile="imjournal.state"{{ ' WorkAroundJournalBug="on"' if rsyslog_workaroundjournalbug else '' }})
+
+# provides kernel logging support
+{{ '' if 'imklog' in rsyslog_mods else '#' }}module(load="imklog")
+
+# provides --MARK-- message capability
+{{ '' if 'immark' in rsyslog_mods else '#' }}module(load="immark")
+
+# provides access to specific log file
+{{ '' if 'imfile' in rsyslog_mods else '#' }}module(load="imfile")
+
+# provides UDP syslog reception
+{{ '' if rsyslog_receiver else '#' }}module(load="imudp") # needs to be done just once
+{{ '' if rsyslog_receiver else '#' }}input(type="imudp" port="514")
+
+# provides TCP syslog reception
+{{ '' if rsyslog_receiver else '#' }}module(load="imtcp") # needs to be done just once
+{{ '' if rsyslog_receiver else '#' }}input(type="imtcp" port="514")
+
+# supports sending syslog messages over the reliable RELP protocol
+{{ '' if 'omrelp' in rsyslog_mods else '#' }}module(load="omrelp")
+
+###########################
+#### GLOBAL DIRECTIVES ####
+###########################
+
+#
+# Use traditional timestamp format.
+# To enable high precision timestamps, comment out the following line.
+#
+{% if rsyslog_traditional_file_format %}
+module(load="builtin:omfile" Template="RSYSLOG_TraditionalFileFormat")
+{% endif %}
+
+#
+# Set the default permissions for all log files.
+#
+{% if rsyslog_fileowner is defined %}
+$FileOwner {{ rsyslog_fileowner }}
+{% endif %}
+{% if rsyslog_filegroup is defined %}
+$FileGroup {{ rsyslog_filegroup }}
+{% endif %}
+$FileCreateMode {{ rsyslog_filecreatemode }}
+$DirCreateMode {{ rsyslog_dircreatemode }}
+{% if rsyslog_umask is defined %}
+$Umask {{ rsyslog_umask }}
+{% endif %}
+
+#
+# Where to place spool and state files
+#
+global(workDirectory="{{ rsyslog_work_directory }}")
+
+{% if rsyslog_preservefqdn %}
+#
+# Use FQDN (usefull when sending logs to another system)
+#
+$PreserveFQDN on
+{% endif %}
+
+#
+# Include all config files in /etc/rsyslog.d/
+#
+$IncludeConfig /etc/rsyslog.d/*.conf
+
+###############
+#### RULES ####
+###############
+
+{% if rsyslog_default_rules is defined %}
+{% for item in rsyslog_default_rules %}
+{{ item.rule }} {{ item.logpath }}
+{% endfor %}
+{% endif %}
+
+##########################
+#### FORWARDING RULES ####
+##########################
+
+# The statement between the begin and end comments define a SINGLE forwarding
+# rule. They belong together, do NOT split them. If you create multiple
+# forwarding rules, duplicate the whole block!
+
+# An on-disk queue is created for these actions. If the remote host is
+# down, messages are spooled to disk and sent when it is up again.
+
+# Example
+# *.* action(type="omfwd" Target="logging.server.net" Port="514" Protocol="tcp")
+
+{% for remote in rsyslog_remotes %}
+### begin forwarding rule ###
+# Uncomment the lines below if you wish to configure further.
+#queue.filename="fwdRule1"       # unique name prefix for spool files
+#queue.maxdiskspace="1g"         # 1gb space limit (use as much as possible)
+#queue.saveonshutdown="on"       # save messages to disk on shutdown
+#queue.type="LinkedList"         # run asynchronously
+#action.resumeRetryCount="-1"    # infinite retries if host is down
+{{ remote.selector }} action(type="omfwd" Target="{{ remote.hostname }}"
+{% if remote.port %}
+Port="{{ remote.port }}"
+{% endif %}
+Protocol="{{ 'tcp' if remote.tcp else 'udp' }}"
+{% set _template = remote.template | default(rsyslog_remote_template) %}
+{% if _template %}
+Template="{{ _template }}"
+{% endif %}
+{% set _extra_params = remote.extra_params | default(rsyslog_remote_extra_params) %}
+{{ _extra_params if _extra_params else 'KeepAlive="on"' }})
+### end forwarding rule ###
+
+{% endfor %}

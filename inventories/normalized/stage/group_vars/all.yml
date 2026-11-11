@@ -1,0 +1,6 @@
+---
+firewall_rules_normalize:
+  - name: allow-monitoring
+    port: 9100
+    protocol: tcp
+    source: 10.0.0.0/24

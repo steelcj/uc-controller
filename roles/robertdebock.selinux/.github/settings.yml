@@ -1,0 +1,8 @@
+---
+#
+# Ansible managed
+#
+repository:
+  description: Install and configure selinux and its required libraries on your system.
+  homepage: https://robertdebock.nl/
+  topics: selinux, security, system, ansible, molecule, tox, playbook

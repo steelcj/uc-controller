@@ -1,0 +1,73 @@
+#!/usr/bin/env ansible-playbook
+---
+- name: discover raw nodes
+  hosts: localhost
+  gather_facts: no
+
+  tasks:
+    - name: scan subnet for SSH-capable hosts
+      command: "nmap -sn -oG - {{ discover_subnet | default('192.168.1.0/24') }}"
+      register: scan_results
+      changed_when: false
+      when: (discover_source | default('subnet')) == 'subnet'
+
+    - name: parse discovered hosts
+      set_fact:
+        discovered_hosts: >-
+          {{
+            scan_results.stdout_lines
+            | select('match', '^Host:')
+            | map('regex_replace', '^Host: (\S+).*', '\1')
+            | list
+          }}
+      when: (discover_source | default('subnet')) == 'subnet'
+
+    - name: derive unique hostnames from IPs
+      set_fact:
+        discovered_named: >-
+          {{
+            discovered_hosts
+            | map('regex_replace', '[^a-zA-Z0-9._]', '-')
+            | zip(discovered_hosts)
+            | list
+          }}
+      when: (discover_source | default('subnet')) == 'subnet'
+
+    - name: build raw inventory from subnet scan
+      copy:
+        dest: "{{ playbook_dir }}/../inventories/raw/hosts.yml"
+        content: |
+          raw:
+            hosts:
+          {% for pair in discovered_named %}
+              {{ pair[0] }}:
+                ansible_host: {{ pair[1] }}
+                ansible_user: root
+          {% endfor %}
+      when: (discover_source | default('subnet')) == 'subnet'
+
+    - name: query cloud API for instances
+      uri:
+        url: "{{ cloud_api_url }}/instances"
+        method: GET
+        return_content: yes
+        headers:
+          Authorization: "Bearer {{ cloud_api_token }}"
+      register: cloud_instances
+      when: (discover_source | default('subnet')) == 'cloud'
+
+    - name: build raw inventory from cloud results
+      copy:
+        dest: "{{ playbook_dir }}/../inventories/raw/hosts.yml"
+        content: |
+          raw:
+            hosts:
+          {% for instance in cloud_instances.json %}
+              {{ instance.name }}:
+                ansible_host: {{ instance.private_ip }}
+                ansible_user: root
+          {% endfor %}
+      when: (discover_source | default('subnet')) == 'cloud'
+
+    - name: reload inventory so later plays see the discovered hosts
+      meta: refresh_inventory

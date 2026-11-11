@@ -1,0 +1,11 @@
+# inventories/raw/incus.yml
+---
+#
+# 
+#
+#
+plugin: community.general.incus
+filters:
+  - status=running
+groups:
+  raw: true

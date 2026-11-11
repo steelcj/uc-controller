@@ -1,0 +1,77 @@
+---
+
+- name: assert | Test ntp_state
+  ansible.builtin.assert:
+    that:
+      - ntp_state is defined
+      - ntp_state in [ "started", "stopped" ]
+    quiet: true
+
+- name: assert | Test ntp_enabled
+  ansible.builtin.assert:
+    that:
+      - ntp_enabled is defined
+      - ntp_enabled is boolean
+    quiet: true
+
+- name: assert | Test ntp_interfaces
+  ansible.builtin.assert:
+    that:
+      - ntp_interfaces is defined
+      - ntp_interfaces is iterable
+    quiet: true
+
+- name: assert | Test item in ntp_interfaces
+  ansible.builtin.assert:
+    that:
+      - item.address is defined
+      - item.address is string
+      - item.address is not none
+    quiet: true
+  loop: "{{ ntp_interfaces }}"
+  loop_control:
+    label: "{{ item.address }}"
+
+- name: assert | Test ntp_pool
+  ansible.builtin.assert:
+    that:
+      - ntp_pool is defined
+      - ntp_pool is iterable
+    quiet: true
+
+- name: assert | Test item in ntp_pool
+  ansible.builtin.assert:
+    that:
+      - item.name is defined
+      - item.name is string
+      - item.name is not none
+    quiet: true
+  loop: "{{ ntp_pool }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: assert | Test ntp_server
+  ansible.builtin.assert:
+    that:
+      - ntp_server is iterable
+    quiet: true
+  when:
+    - ntp_server is defined
+
+- name: assert | Test item in ntp_server
+  ansible.builtin.assert:
+    that:
+      - item.name is defined
+      - item.name is string
+      - item.name is not none
+    quiet: true
+  when:
+    - ntp_server is defined
+
+- name: assert | Test ntp_timezone
+  ansible.builtin.assert:
+    that:
+      - ntp_timezone is defined
+      - ntp_timezone is string
+      - ntp_timezone is not none
+    quiet: true

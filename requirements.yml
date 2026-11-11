@@ -1,0 +1,34 @@
+---
+collections: []
+
+roles:
+  - name: robertdebock.bootstrap
+
+  # Our fork of robertdebock.umask, adding the umask_system option for a
+  # system-wide umask (login.defs + profile.d). Sourced from git, not Galaxy,
+  # because the option does not exist upstream. Must run before
+  # robertdebock.users so new home directories get the intended permissions.
+  - name: steelcj.umask
+    src: git@github.com:steelcj/ansible-role-umask.git
+    scm: git
+    version: master
+  - name: robertdebock.epel
+  - name: robertdebock.update
+  - name: robertdebock.locale
+  - name: robertdebock.auto_update
+  - name: robertdebock.cron
+  - name: robertdebock.ntp
+  - name: robertdebock.openssh
+  - name: robertdebock.fail2ban
+  - name: robertdebock.firewall
+  - name: robertdebock.users
+  - name: robertdebock.selinux
+  - name: robertdebock.auditd
+#  - name: robertdebock.pam      # robert does not have a role called pam
+#  - name: robertdebock.limits   # robert does not have a role called limits
+  - name: robertdebock.sysctl
+  - name: robertdebock.hostname
+#  - name: robertdebock.timezone # robert does not have a role called timezone (see local and ntp)
+#  - name: robertdebock.motd     # robert does not have a role called mod
+#  - name: robertdebock.chrony   # robert does not have a role with this name
+  - name: robertdebock.rsyslog

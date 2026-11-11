@@ -1,0 +1,47 @@
+#!/usr/bin/env ansible-playbook
+---
+- name: validate and promote onboarded nodes
+  hosts: onboarded
+  gather_facts: no
+
+  tasks:
+    - name: confirm reachability
+      wait_for:
+        host: "{{ ansible_host | default(inventory_hostname) }}"
+        port: 22
+        timeout: 10
+      delegate_to: localhost
+
+    - name: promote to normalized group
+      add_host:
+        name: "{{ item }}"
+        ansible_host: "{{ hostvars[item].ansible_host | default(item) }}"
+        groups:
+          - normalized
+          - "{{ target_group | default('ungrouped') }}"
+      loop: "{{ ansible_play_hosts }}"
+
+- name: converge normalized baseline
+  hosts: normalized
+  become: yes
+  gather_facts: yes
+
+  vars:
+    firewall_rules: >-
+      {{
+        (firewall_rules_onboard | default([]))
+        + (firewall_rules_normalize | default([]))
+      }}
+
+  roles:
+    - role: robertdebock.selinux
+    - role: robertdebock.auditd
+    - role: robertdebock.pam
+    - role: robertdebock.limits
+    - role: robertdebock.sysctl
+    - role: robertdebock.hostname
+    - role: robertdebock.timezone
+    - role: robertdebock.motd
+    - role: robertdebock.chrony
+    - role: robertdebock.rsyslog
+    - role: robertdebock.firewall

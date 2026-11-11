@@ -1,0 +1,6 @@
+#!/usr/bin/env ansible-playbook
+---
+- import_playbook: lifecycle/00_discover.yml
+- import_playbook: lifecycle/10_onboard.yml
+- import_playbook: lifecycle/20_normalize.yml
+- import_playbook: lifecycle/30_specialize.yml

@@ -1,0 +1,37 @@
+---
+
+- name: assert | Test umask
+  ansible.builtin.assert:
+    that:
+      - umask is defined
+      - umask is string
+      - umask is not none
+    quiet: true
+
+- name: assert | Test umask_users
+  ansible.builtin.assert:
+    that:
+      - umask_users is defined
+      - umask_users is iterable
+    quiet: true
+
+- name: assert | Test umask_system
+  ansible.builtin.assert:
+    that:
+      - umask_system is defined
+      - umask_system | bool in [true, false]
+    quiet: true
+
+- name: assert | Test umask_home_mode
+  ansible.builtin.assert:
+    that:
+      - umask_home_mode is defined
+      - umask_home_mode is string
+    quiet: true
+
+- name: assert | Test umask_profile_d
+  ansible.builtin.assert:
+    that:
+      - umask_profile_d is defined
+      - umask_profile_d | bool in [true, false]
+    quiet: true

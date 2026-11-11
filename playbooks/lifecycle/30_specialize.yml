@@ -1,0 +1,18 @@
+#!/usr/bin/env ansible-playbook
+---
+- name: specialize normalized nodes
+  hosts: normalized
+  become: yes
+  gather_facts: yes
+
+  vars:
+    firewall_rules: >-
+      {{
+        (firewall_rules_onboard | default([]))
+        + (firewall_rules_normalize | default([]))
+        + (firewall_rules_specialize | default([]))
+      }}
+
+  roles:
+    - role: "{{ specialize_role }}"
+    - role: robertdebock.firewall
