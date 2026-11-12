@@ -1,2 +1,9 @@
 ---
-# Raw stage variables. Raw nodes contribute no firewall rules.
+# Raw stage variables, shared by every source. Raw nodes contribute no
+# firewall rules.
+
+# Whether 10_onboard.yml runs robertdebock.bootstrap on the node. Bootstrap
+# installs Python and sudo, and the users role needs sudo, so the default is
+# true. A source opts out in its own group_vars/<source>.yml only when its
+# images are known to ship both Python and sudo.
+needs_python_bootstrap: true
