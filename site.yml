@@ -1,0 +1,6 @@
+#!/usr/bin/env ansible-playbook
+---
+- import_playbook: ingress/playbooks/00_discover.yml
+- import_playbook: ingress/playbooks/10_onboard.yml
+- import_playbook: converge/playbooks/20_normalize.yml
+- import_playbook: converge/playbooks/30_specialize.yml

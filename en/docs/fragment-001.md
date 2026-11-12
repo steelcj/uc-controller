@@ -39,17 +39,17 @@ ansible-inventory -i inventories/raw/incus.yml -i inventories/onboard/dev --grap
 
 # 3. syntax check (now that roles are installed)
 ansible-playbook -i inventories/raw/incus.yml -i inventories/onboard/dev \
-  playbooks/lifecycle/10_onboard.yml --syntax-check
+  ingress/playbooks/10_onboard.yml --syntax-check
 
 # output
-playbook: playbooks/lifecycle/10_onboard.yml
+playbook: ingress/playbooks/10_onboard.yml
 
 # 4. Initial test
 ANSIBLE_HOST_KEY_CHECKING=False \
 ANSIBLE_STDOUT_CALLBACK=default \
 ANSIBLE_CALLBACK_RESULT_FORMAT=yaml \
 ansible-playbook -i inventories/raw/incus.yml -i inventories/onboard/dev \
-  playbooks/lifecycle/10_onboard.yml -l 'ex2-test*' -vv
+  ingress/playbooks/10_onboard.yml -l 'ex2-test*' -e onboard_inventory=inventories/onboard/dev -vv
 
 # 5. Add vars to ansible.cfg
 
@@ -75,7 +75,7 @@ become_ask_pass = False
 ```
 
 then:
-ansible-playbook -i inventories/raw/incus.yml -i inventories/onboard/dev   playbooks/lifecycle/10_onboard.yml -l 'ex2-test*' -vv
+ansible-playbook -i inventories/raw/incus.yml -i inventories/onboard/dev   ingress/playbooks/10_onboard.yml -l 'ex2-test*' -e onboard_inventory=inventories/onboard/dev -vv
 
 error:
 
@@ -111,19 +111,19 @@ ex2-test.default.local     : ok=70   changed=13   unreachable=0    failed=1    s
 # 4. first first
 ANSIBLE_HOST_KEY_CHECKING=False \
 ansible-playbook -i inventories/raw/incus.yml -i inventories/onboard/dev \
-  playbooks/lifecycle/10_onboard.yml -l 'ex2-test*' -vv
+  ingress/playbooks/10_onboard.yml -l 'ex2-test*' -e onboard_inventory=inventories/onboard/dev -vv
 
 
   
 # 4. first clean test
 ANSIBLE_HOST_KEY_CHECKING=False \
 ansible-playbook -i inventories/raw/incus.yml -i inventories/onboard/dev \
-  playbooks/lifecycle/10_onboard.yml -l ex2-test -vv
+  ingress/playbooks/10_onboard.yml -l ex2-test -e onboard_inventory=inventories/onboard/dev -vv
 
 # 4. the run, one host, verbose
 ANSIBLE_HOST_KEY_CHECKING=False \
 ansible-playbook -i inventories/raw/incus.yml -i inventories/onboard/dev \
-  playbooks/lifecycle/10_onboard.yml -l ex2-test -e target_group=webservers -vv
+  ingress/playbooks/10_onboard.yml -l ex2-test -e target_group=webservers -e onboard_inventory=inventories/onboard/dev -vv
 
 
 

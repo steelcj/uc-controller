@@ -537,3 +537,155 @@ incus exec ex2-test -- sh -c 'journalctl -u ssh --no-pager | grep -v AuthorizedK
 ```
 
 Result: sshd logged `Connection closed by authenticating user initial 10.119.134.1 [preauth]`. The client could not decrypt the key, so it offered nothing, and fail2ban's default sshd filter does not count that line. OpenSSH's own `PerSourcePenalties` (`authfail:5`, `min:15`, `max:600`) then dropped the remaining retries for a short time. The port answered again within seconds of the run ending.
+
+## Phase 2: Option A Layout
+
+Work on a new branch.
+
+```sh
+git checkout -b option-a
+```
+
+Confirm the stray root `10_onboard.yml` is older than the copy under `playbooks/lifecycle/` before deleting it.
+
+```sh
+diff <(git show v0.1.3-layout:10_onboard.yml) <(git show v0.1.3-layout:playbooks/lifecycle/10_onboard.yml)
+```
+
+Result: the `playbooks/lifecycle/` copy adds the `steelcj.umask` role and the container time-sync skip, and has nothing removed. It is the newer one.
+
+Move the files with history.
+
+```sh
+mkdir -p ingress/playbooks converge/playbooks tools ingress/roles converge/roles
+git mv playbooks/lifecycle/00_discover.yml playbooks/lifecycle/10_onboard.yml ingress/playbooks/
+git mv playbooks/lifecycle/20_normalize.yml playbooks/lifecycle/30_specialize.yml converge/playbooks/
+git mv playbooks/lifecycle/artifacts ingress/playbooks/artifacts
+git mv playbooks/site.yml site.yml
+git mv playbooks/lifecycle/scaffold.yml tools/scaffold.yml
+git rm 10_onboard.yml
+touch ingress/roles/.gitkeep converge/roles/.gitkeep
+```
+
+Stop tracking the bytecode cache.
+
+```sh
+printf '__pycache__/\n' > .gitignore
+git rm -r --cached scripts/__pycache__
+```
+
+Syntax-check the playbooks at their new paths.
+
+```sh
+ansible-playbook -i inventories/raw -i inventories/onboard/dev ingress/playbooks/00_discover.yml --syntax-check
+```
+
+```sh
+ansible-playbook -i inventories/raw -i inventories/onboard/dev ingress/playbooks/10_onboard.yml --syntax-check
+```
+
+```sh
+ansible-playbook tools/scaffold.yml --syntax-check
+```
+
+Result: all three pass.
+
+```sh
+ansible-playbook -i inventories/raw -i inventories/onboard/dev site.yml --syntax-check
+```
+
+```sh
+ansible-playbook -i inventories/raw -i inventories/onboard/dev converge/playbooks/20_normalize.yml --syntax-check
+```
+
+Result: both fail with `The role 'robertdebock.pam' was not found`. This is the known role list problem in `20_normalize.yml`, which is out of scope. The search path in the error shows `./roles`, `./ingress/roles` and `./converge/roles` in use.
+
+```sh
+ansible-playbook -i inventories/raw -i inventories/onboard/dev converge/playbooks/30_specialize.yml --syntax-check -e specialize_role=robertdebock.users
+```
+
+Result: passes. Without `-e specialize_role=...` it fails with `'specialize_role' is undefined`, as designed.
+
+Check that the vendored roles are still found.
+
+```sh
+ansible-galaxy role list
+```
+
+Result: all 17 roles are listed under `./roles`, and `ingress/roles` and `converge/roles` are listed and empty.
+
+Run the converge boundary check.
+
+```sh
+python3 scripts/check_converge_boundary.py
+```
+
+Result: `converge boundary check passed`, exit 0.
+
+Add a temporary `when: ansible_connection == 'ssh'` to the first task in `converge/playbooks/20_normalize.yml` and run the check again.
+
+```sh
+python3 scripts/check_converge_boundary.py; echo "exit=$?"
+```
+
+Result:
+
+```text
+converge/playbooks/20_normalize.yml:9: ansible_connection: when: ansible_connection == 'ssh'
+converge boundary check failed: 1 finding(s)
+exit=1
+```
+
+Remove the temporary line and confirm the check passes again.
+
+```sh
+git diff --quiet converge/ && python3 scripts/check_converge_boundary.py
+```
+
+Search for paths left over from the old layout.
+
+```sh
+grep -rln --exclude-dir=roles --exclude-dir=.git 'playbooks/lifecycle' . | grep -v 'uc-controller-v0.1.3.md'
+```
+
+Result: only documents that describe the migration or record earlier commands: the Option A proposal, both versions of the advantages and disadvantages analysis, the kickoff prompt, and the earlier sections of this file.
+
+Repeat the from-scratch cycle using the new playbook path.
+
+```sh
+incus snapshot restore ex2-test fresh
+incus exec ex2-test -- sh -c 'id initial; command -v python3 || echo no-python'
+python3 scripts/reset_inventories.py
+```
+
+```sh
+ansible-playbook -i inventories/raw -i inventories/onboard/dev ingress/playbooks/10_onboard.yml -l ex2-test.default.local -e target_group=webservers -e onboard_inventory=inventories/onboard/dev
+```
+
+Result: `ok=174 changed=33 failed=0 rescued=1`.
+
+```sh
+cat inventories/onboard/dev/hosts.yml
+```
+
+Result: `ex2-test.default.local` under `onboarded` and `webservers`, with `uc_origin: plugin` and the five contract variables.
+
+```sh
+ansible-inventory -i inventories/raw -i inventories/onboard/dev --host ex2-test.default.local
+```
+
+```sh
+ansible-inventory -i inventories/onboard/dev -i inventories/raw --host ex2-test.default.local
+```
+
+Result, the same for both orders: `ansible_connection: ssh`, `ansible_user: initial`, `ansible_host: 10.119.134.207`, `ansible_ssh_private_key_file: ~/.ssh/gradus-raw-initial-id_ed25519`, `ansible_ssh_common_args: -o IdentitiesOnly=yes`.
+
+```sh
+ansible -i inventories/onboard/dev onboarded -m ansible.builtin.ping
+```
+
+```sh
+ansible -i inventories/onboard/dev onboarded -b -m ansible.builtin.command -a id
+```
+
+Result: `ping: pong`, then `uid=0(root)`. fail2ban shows `Total failed: 0`.

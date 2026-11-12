@@ -16,7 +16,7 @@
     # Locate the role
     - name: find role defaults in local roles/
       stat:
-        path: "{{ playbook_dir }}/../../roles/{{ scaffold_role }}/defaults/main.yml"
+        path: "{{ playbook_dir }}/../roles/{{ scaffold_role }}/defaults/main.yml"
       register: role_defaults_stat
 
     - name: find role in galaxy paths
@@ -59,7 +59,7 @@
     - name: set output directory
       set_fact:
         scaffold_output_dir: >-
-          {{ playbook_dir }}/../../inventories/{{ scaffold_stage }}/{{ scaffold_env }}/group_vars
+          {{ playbook_dir }}/../inventories/{{ scaffold_stage }}/{{ scaffold_env }}/group_vars
 
     - name: set output file
       set_fact:
@@ -97,7 +97,7 @@
           # Stage: {{ scaffold_stage }} | Env: {{ scaffold_env }} | Group: {{ scaffold_group }}
           #
           # Edit freely. To regenerate (losing edits):
-          # ansible-playbook playbooks/lifecycle/scaffold.yml \
+          # ansible-playbook tools/scaffold.yml \
           #   -e scaffold_role={{ scaffold_role }} \
           #   -e scaffold_stage={{ scaffold_stage }} \
           #   -e scaffold_env={{ scaffold_env }} \
