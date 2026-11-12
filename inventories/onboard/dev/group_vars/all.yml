@@ -5,6 +5,12 @@
 # Only values we deliberately choose are set here. Every other role variable
 # keeps its upstream default, which is the point of using these roles.
 
+# --- connection contract -------------------------------------------------
+# Controller-side private key for the initial user. 10_onboard.yml uses it
+# when it switches a node to SSH, and writes it onto each promoted host in
+# hosts.yml as ansible_ssh_private_key_file. Referenced, never hardcoded.
+onboard_ssh_private_key_file: ~/.ssh/gradus-raw-initial-id_ed25519
+
 # --- umask (steelcj.umask) -------------------------------------------------
 # System-wide tight umask, applied before the initial user is created so its
 # home directory is created 0750. umask_users: [] skips the per-user .bashrc

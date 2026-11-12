@@ -35,7 +35,7 @@
 
     - name: build raw inventory from subnet scan
       copy:
-        dest: "{{ playbook_dir }}/../inventories/raw/hosts.yml"
+        dest: "{{ playbook_dir }}/../../inventories/raw/hosts.yml"
         content: |
           raw:
             hosts:
@@ -58,7 +58,7 @@
 
     - name: build raw inventory from cloud results
       copy:
-        dest: "{{ playbook_dir }}/../inventories/raw/hosts.yml"
+        dest: "{{ playbook_dir }}/../../inventories/raw/hosts.yml"
         content: |
           raw:
             hosts:

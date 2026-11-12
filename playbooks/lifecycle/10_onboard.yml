@@ -19,6 +19,21 @@
   become: no
 
   tasks:
+    # The last play writes each promoted host into the onboard inventory, so
+    # the destination has to be named up front. It is passed in, not derived
+    # from playbook_dir, so it does not depend on where this file lives.
+    - name: require the onboard inventory and key file
+      ansible.builtin.assert:
+        that:
+          - onboard_inventory is defined
+          - onboard_inventory | length > 0
+          - onboard_ssh_private_key_file is defined
+        fail_msg: >-
+          Set onboard_inventory to the onboard inventory for this environment,
+          for example -e onboard_inventory=inventories/onboard/dev, and load
+          that inventory with -i so onboard_ssh_private_key_file is defined.
+        quiet: true
+
     # raw runs over whatever connection the node uses and needs no Python, so
     # it is a readiness probe that works for both Incus (already up) and an
     # SSH root node (retried until sshd answers). This replaces the old
@@ -113,6 +128,7 @@
           - onboarded
         ansible_connection: ssh
         ansible_user: initial
+        ansible_ssh_private_key_file: "{{ onboard_ssh_private_key_file }}"
         ansible_host: >-
           {{
             hostvars[item].ansible_default_ipv4.address
@@ -139,3 +155,45 @@
     - name: show who we are now
       ansible.builtin.debug:
         msg: "{{ inventory_hostname }}: {{ initial_id.stdout }}"
+
+- name: Persist the promotion to the onboard inventory
+  hosts: onboarded
+  gather_facts: no
+  become: no
+
+  vars:
+    # Paths are resolved on the controller against the directory
+    # ansible-playbook was started from, which is the repository root.
+    promote_script: "{{ playbook_dir }}/../../scripts/promote_node.py"
+    promote_from: "{{ raw_inventory | default('inventories/raw') | ansible.builtin.realpath }}"
+    promote_to: "{{ onboard_inventory | ansible.builtin.realpath }}"
+
+  tasks:
+    # promote_node.py is the only code that writes hosts.yml entries. One
+    # run_once task looping over the play's hosts serializes the writes, so
+    # several nodes finishing together cannot race on the same file. become
+    # is off because ansible.cfg enables it globally and this writes to the
+    # operator's own working tree. The commit is left to the operator.
+    # The key path comes from the inventory variable, not from
+    # ansible_ssh_private_key_file, which Ansible expands to an absolute path
+    # once connected; the unexpanded ~/ form stays valid on other controllers.
+    # expand_argument_vars is off because the command module otherwise expands
+    # ~ in arguments before the script sees them.
+    - name: write each promoted host and its connection contract
+      ansible.builtin.command:
+        expand_argument_vars: false
+        argv: >-
+          {{
+            [ansible_playbook_python, promote_script,
+             '--from', promote_from,
+             '--to', promote_to,
+             '--host', item,
+             '--address', hostvars[item].ansible_host,
+             '--key-file', hostvars[item].onboard_ssh_private_key_file,
+             '--no-commit']
+            + (['--group', target_group] if target_group is defined else [])
+          }}
+      loop: "{{ ansible_play_hosts }}"
+      run_once: true
+      delegate_to: localhost
+      become: no
