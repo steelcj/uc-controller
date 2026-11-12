@@ -432,3 +432,108 @@ ansible-playbook /tmp/tilde.yml
 ```
 
 Result: `default=/home/initial/.ssh/x expand_false=~/.ssh/x`. The `command` module expands `~` in arguments by default. The persist task now sets `expand_argument_vars: false`, and run 4 wrote the `~/` form.
+
+## Before Phase 2: Key Loaded and Key Unavailable
+
+These runs follow the addition of `ansible_ssh_common_args: "-o IdentitiesOnly=yes"` to the host-level contract. The workstation runs GNOME Keyring as its SSH agent (`SSH_AUTH_SOCK=/run/user/1000/keyring/ssh`). Keyring offers keys from `~/.ssh` that have a matching `.pub` file, even after `ssh-add -d`, and prompts for the passphrase when it first needs one.
+
+### Key Available Through the Agent
+
+An attempt to remove the key from the agent did not take effect, because Keyring still listed it afterwards.
+
+```sh
+ssh-add -d ~/.ssh/gradus-raw-initial-id_ed25519.pub
+ssh-add -l | grep -c h27xQHOLSZdjpBAd
+```
+
+Result: `Identity removed`, but the count is still `1`.
+
+Restore, reset, and onboard. Keyring prompted for the passphrase during the run, and the correct passphrase was entered.
+
+```sh
+incus snapshot restore ex2-test fresh
+python3 scripts/reset_inventories.py
+ansible-playbook -i inventories/raw -i inventories/onboard/dev playbooks/lifecycle/10_onboard.yml -l ex2-test.default.local -e target_group=webservers -e onboard_inventory=inventories/onboard/dev
+```
+
+Result: `ok=174 changed=33 failed=0 rescued=1`.
+
+```sh
+cat inventories/onboard/dev/hosts.yml
+```
+
+Result:
+
+```yaml
+onboarded:
+  hosts:
+    ex2-test.default.local:
+      uc_origin: plugin
+      ansible_connection: ssh
+      ansible_user: initial
+      ansible_ssh_common_args: -o IdentitiesOnly=yes
+      ansible_host: 10.119.134.207
+      ansible_ssh_private_key_file: ~/.ssh/gradus-raw-initial-id_ed25519
+webservers:
+  hosts:
+    ex2-test.default.local: null
+```
+
+```sh
+ansible-inventory -i inventories/raw -i inventories/onboard/dev --host ex2-test.default.local
+```
+
+```sh
+ansible-inventory -i inventories/onboard/dev -i inventories/raw --host ex2-test.default.local
+```
+
+Result: the same in both orders, with `ansible_connection: ssh`, `ansible_user: initial`, `ansible_host: 10.119.134.207`, the `~/` key path, `-o IdentitiesOnly=yes`, and `uc_origin: plugin`.
+
+```sh
+ansible -i inventories/onboard/dev onboarded -m ansible.builtin.ping
+```
+
+```sh
+ansible -i inventories/onboard/dev onboarded -b -m ansible.builtin.command -a id
+```
+
+Result: `ping: pong`, then `uid=0(root)`.
+
+```sh
+incus exec ex2-test -- fail2ban-client status sshd
+```
+
+Result: `Total failed: 0`, `Total banned: 0`.
+
+### Key Unavailable
+
+Run with no agent socket and no askpass or display, so neither Keyring nor any other agent can supply the key, and no passphrase prompt can appear.
+
+```sh
+incus snapshot restore ex2-test fresh
+python3 scripts/reset_inventories.py
+```
+
+```sh
+env -u SSH_AUTH_SOCK -u SSH_ASKPASS -u DISPLAY -u WAYLAND_DISPLAY SSH_ASKPASS_REQUIRE=never ansible-playbook -i inventories/raw -i inventories/onboard/dev playbooks/lifecycle/10_onboard.yml -l ex2-test.default.local -e target_group=webservers -e onboard_inventory=inventories/onboard/dev </dev/null
+```
+
+Result: `ok=170 changed=32 failed=1`. The failure is `wait for SSH to answer as initial`, and the persist play did not run.
+
+```sh
+cat inventories/onboard/dev/hosts.yml
+```
+
+Result: `onboarded` is empty.
+
+```sh
+incus exec ex2-test -- fail2ban-client status sshd
+```
+
+Result: `Total failed: 0`, `Total banned: 0`. The failure was clean, with no ban.
+
+```sh
+incus exec ex2-test -- sh -c 'journalctl -u ssh --no-pager | grep -v AuthorizedKeysCommand | tail -20; sshd -T | grep -i persourcepenalties'
+```
+
+Result: sshd logged `Connection closed by authenticating user initial 10.119.134.1 [preauth]`. The client could not decrypt the key, so it offered nothing, and fail2ban's default sshd filter does not count that line. OpenSSH's own `PerSourcePenalties` (`authfail:5`, `min:15`, `max:600`) then dropped the remaining retries for a short time. The port answered again within seconds of the run ending.
