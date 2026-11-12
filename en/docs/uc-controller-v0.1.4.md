@@ -464,10 +464,10 @@ Full converge, chains all lifecycle stages for a given environment. Each stage i
 ```yaml
 #!/usr/bin/env ansible-playbook
 ---
-- import_playbook: lifecycle/00_discover.yml
-- import_playbook: lifecycle/10_onboard.yml
-- import_playbook: lifecycle/20_normalize.yml
-- import_playbook: lifecycle/30_specialize.yml
+- import_playbook: ingress/playbooks/00_discover.yml
+- import_playbook: ingress/playbooks/10_onboard.yml
+- import_playbook: converge/playbooks/20_normalize.yml
+- import_playbook: converge/playbooks/30_specialize.yml
 ```
 
 ### scaffold.yml (Experimental)
