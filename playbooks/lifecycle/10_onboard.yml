@@ -129,6 +129,9 @@
         ansible_connection: ssh
         ansible_user: initial
         ansible_ssh_private_key_file: "{{ onboard_ssh_private_key_file }}"
+        # Offer only the key above. Otherwise agent keys are tried first, can
+        # exhaust sshd's MaxAuthTries, and get the controller banned by fail2ban.
+        ansible_ssh_common_args: "-o IdentitiesOnly=yes"
         ansible_host: >-
           {{
             hostvars[item].ansible_default_ipv4.address

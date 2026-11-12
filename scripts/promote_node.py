@@ -7,12 +7,14 @@ both files to git.
 
 Plugin-discovered hosts (Incus and similar) are never written to a static
 hosts.yml. Promote one by passing --address; the destination entry is then
-created rather than moved.
+created rather than moved, and marked with uc_origin: plugin.
 
 A host promoted into the onboard stage carries the connection contract at
 host level, so it wins over the raw inventory's group variables whichever
-order the inventories are loaded in. A host demoted out of the onboard stage
-has the contract removed. Runs on Linux, macOS, and Windows. Requires PyYAML,
+order the inventories are loaded in. On demotion to raw, a host marked
+uc_origin: plugin is only removed, since its plugin still supplies it; any
+other host moves back to raw/hosts.yml with ansible_host kept and the rest of
+the contract removed. Runs on Linux, macOS, and Windows. Requires PyYAML,
 which is already present wherever Ansible is installed.
 """
 from __future__ import annotations
@@ -29,11 +31,22 @@ import yaml
 STAGES = ["raw", "onboard", "normalized"]
 STAGE_GROUP = {"raw": "raw", "onboard": "onboarded", "normalized": "normalized"}
 
-# How an onboarded node is reached: SSH as the initial user. ansible_host and
+# How an onboarded node is reached: SSH as the initial user, offering only
+# the named key so agent keys cannot exhaust MaxAuthTries. ansible_host and
 # ansible_ssh_private_key_file are filled in per host.
-CONTRACT = {"ansible_connection": "ssh", "ansible_user": "initial"}
-CONTRACT_KEYS = ("ansible_host", "ansible_connection", "ansible_user",
-                 "ansible_ssh_private_key_file")
+CONTRACT = {
+    "ansible_connection": "ssh",
+    "ansible_user": "initial",
+    "ansible_ssh_common_args": "-o IdentitiesOnly=yes",
+}
+# Removed on demotion to raw. ansible_host is kept: for a static host it is
+# still the raw address.
+CONTRACT_STRIP = ("ansible_connection", "ansible_user",
+                  "ansible_ssh_private_key_file", "ansible_ssh_common_args")
+
+# Marks an entry created from --address for a host its inventory plugin
+# supplies, so demotion knows not to write it to raw/hosts.yml.
+ORIGIN_KEY, ORIGIN_PLUGIN = "uc_origin", "plugin"
 
 
 def stage_of(inventory: Path) -> str:
@@ -110,7 +123,7 @@ def without_contract(host_vars):
     """Return host_vars with the onboard connection contract removed."""
     if not isinstance(host_vars, dict):
         return host_vars
-    remaining = {k: v for k, v in host_vars.items() if k not in CONTRACT_KEYS}
+    remaining = {k: v for k, v in host_vars.items() if k not in CONTRACT_STRIP}
     return remaining or None
 
 
@@ -163,10 +176,24 @@ def main(direction: str = "promote") -> int:
     if not found and not args.address:
         raise SystemExit(f"error: host {args.host} not found in {source_file}")
 
+    if not found:
+        host_vars = {ORIGIN_KEY: ORIGIN_PLUGIN}
+
+    if to_stage == "raw" and isinstance(host_vars, dict) \
+            and host_vars.get(ORIGIN_KEY) == ORIGIN_PLUGIN:
+        # The plugin supplies this host in raw; a static entry would only
+        # duplicate it. Remove it from the source and write nothing to raw.
+        dump(source_file, source_data)
+        print(f"{direction.capitalize()}d {args.host}: removed from {args.source}; "
+              f"{ORIGIN_KEY}: {ORIGIN_PLUGIN}, so not written to {dest_file}")
+        if not args.no_commit:
+            git_commit([source_file], f"{direction} {args.host}: {from_stage} -> {to_stage}")
+        return 0
+
     if to_stage == "onboard":
         host_vars = with_contract(host_vars, args.address, args.key_file, args.host)
-    elif STAGES.index(to_stage) < STAGES.index("onboard"):
-        # Back before onboard: reached through the raw inventory again.
+    elif to_stage == "raw":
+        # Back to raw: reached through the raw inventory again.
         host_vars = without_contract(host_vars)
 
     # pop_host clears every existing entry for the host, so a repeat

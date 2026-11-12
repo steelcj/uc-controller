@@ -109,7 +109,7 @@ Result: the absolute path of `inventories/raw` in this repository.
 
 ## Phase 1: Promote and Demote Against a Copy
 
-These run against a throwaway copy of the inventories, so nothing in the repository changes. `PYTHONDONTWRITEBYTECODE` keeps the tracked `scripts/__pycache__/` files untouched.
+These run against a throwaway copy of the inventories, so nothing in the repository changes. `PYTHONDONTWRITEBYTECODE` keeps the tracked `scripts/__pycache__/` files untouched. This is the second version of these checks, run after the contract gained `ansible_ssh_common_args` and plugin entries gained the `uc_origin: plugin` marker.
 
 ```sh
 export PYTHONDONTWRITEBYTECODE=1
@@ -121,13 +121,14 @@ cp -r inventories "$T/"
 cd "$T"
 ```
 
-Seed one static host in the raw inventory.
+Seed one static host in the raw inventory and start with an empty onboard inventory.
 
 ```sh
-printf 'raw:\n  hosts:\n    static-1:\n      ansible_host: 192.168.1.50\n      ansible_user: root\n' > inventories/raw/hosts.yml
+printf 'raw:\n  hosts:\n    static-1:\n      ansible_host: 192.168.1.50\n      ansible_user: root\n      custom_var: keep-me\n' > inventories/raw/hosts.yml
+printf 'onboarded:\n  hosts: {}\n' > inventories/onboard/dev/hosts.yml
 ```
 
-Promote a static host. The contract replaces `ansible_user: root` and other variables are kept.
+Promote a static host. The contract replaces `ansible_user: root`, and other variables are kept.
 
 ```sh
 python3 "$P/promote_node.py" --from inventories/raw --to inventories/onboard/dev --host static-1 --key-file "$K" --no-commit
@@ -151,30 +152,78 @@ python3 "$P/promote_node.py" --from inventories/raw --to inventories/onboard/dev
 cat inventories/onboard/dev/hosts.yml
 ```
 
-Result: one entry for each host under `onboarded`, each with `ansible_host`, `ansible_connection: ssh`, `ansible_user: initial` and `ansible_ssh_private_key_file`, and `ex2-test.default.local` under `webservers`.
+Result:
 
-Promote from onboard to normalized. The contract is kept.
+```yaml
+onboarded:
+  hosts:
+    static-1:
+      ansible_host: 192.168.1.50
+      ansible_user: initial
+      custom_var: keep-me
+      ansible_connection: ssh
+      ansible_ssh_common_args: -o IdentitiesOnly=yes
+      ansible_ssh_private_key_file: ~/.ssh/gradus-raw-initial-id_ed25519
+    ex2-test.default.local:
+      uc_origin: plugin
+      ansible_connection: ssh
+      ansible_user: initial
+      ansible_ssh_common_args: -o IdentitiesOnly=yes
+      ansible_host: 10.119.134.208
+      ansible_ssh_private_key_file: ~/.ssh/gradus-raw-initial-id_ed25519
+webservers:
+  hosts:
+    ex2-test.default.local: null
+```
+
+Demote the static host to raw. It moves back and keeps `ansible_host`, and the rest of the contract is removed.
 
 ```sh
+python3 "$P/demote_node.py" --from inventories/onboard/dev --to inventories/raw --host static-1 --no-commit
+```
+
+Demote the plugin host to raw. It is removed from the onboard inventory and is not written to raw.
+
+```sh
+python3 "$P/demote_node.py" --from inventories/onboard/dev --to inventories/raw --host ex2-test.default.local --no-commit
+```
+
+Result: `Demoted ex2-test.default.local: removed from inventories/onboard/dev; uc_origin: plugin, so not written to inventories/raw/hosts.yml`.
+
+```sh
+cat inventories/raw/hosts.yml inventories/onboard/dev/hosts.yml
+```
+
+Result:
+
+```yaml
+raw:
+  hosts:
+    static-1:
+      ansible_host: 192.168.1.50
+      custom_var: keep-me
+onboarded:
+  hosts: {}
+webservers:
+  hosts: {}
+```
+
+The static host's original `ansible_user: root` is not restored, because promotion replaced it with `initial` and demotion removes `ansible_user`.
+
+Carry the plugin host through normalized and demote it straight to raw. The marker and contract are kept on promotion, and the demotion writes nothing to raw.
+
+```sh
+python3 "$P/promote_node.py" --from inventories/raw --to inventories/onboard/dev --host ex2-test.default.local --address 10.119.134.207 --key-file "$K" --no-commit
 python3 "$P/promote_node.py" --from inventories/onboard/dev --to inventories/normalized/dev --host ex2-test.default.local --no-commit
 cat inventories/normalized/dev/hosts.yml
 ```
 
-Demote from normalized to onboard. The contract is kept.
-
 ```sh
-python3 "$P/demote_node.py" --from inventories/normalized/dev --to inventories/onboard/dev --host ex2-test.default.local --no-commit
-cat inventories/onboard/dev/hosts.yml
+python3 "$P/demote_node.py" --from inventories/normalized/dev --to inventories/raw --host ex2-test.default.local --no-commit
+cat inventories/raw/hosts.yml inventories/normalized/dev/hosts.yml
 ```
 
-Demote from onboard to raw. The contract is removed.
-
-```sh
-python3 "$P/demote_node.py" --from inventories/onboard/dev --to inventories/raw --host ex2-test.default.local --no-commit
-cat inventories/raw/hosts.yml inventories/onboard/dev/hosts.yml
-```
-
-Result: `ex2-test.default.local: null` in `raw/hosts.yml`, and `onboarded` is empty.
+Result: `raw/hosts.yml` still holds only `static-1`, and `normalized` is empty.
 
 Error cases.
 

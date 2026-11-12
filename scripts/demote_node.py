@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Roll a host back to an earlier inventory stage.
 
-Inverse of promote_node.py: same interface, opposite direction. A host
-leaving the onboard stage has its connection contract (ansible_host,
-ansible_connection, ansible_user, ansible_ssh_private_key_file) removed, so
-it is reached through the raw inventory again. Demote a node before
-onboarding it a second time, for example after a snapshot reset.
+Inverse of promote_node.py: same interface, opposite direction. On demotion
+to raw, a host marked uc_origin: plugin is removed and not written to
+raw/hosts.yml, because its inventory plugin still supplies it. Any other host
+moves back to raw/hosts.yml keeping ansible_host, with ansible_connection,
+ansible_user, ansible_ssh_private_key_file and ansible_ssh_common_args
+removed. Demote a node before onboarding it a second time, for example after
+a snapshot reset.
 """
 import sys
 
