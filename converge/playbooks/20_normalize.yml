@@ -28,6 +28,10 @@
   hosts: normalized
   become: yes
   gather_facts: yes
+  # Each node converges independently, so a slow node does not hold the
+  # others at every task. The config default stays linear; the validation
+  # play above keeps it for its add_host loop.
+  strategy: free
 
   vars:
     # Where each stage's list is expected to live (loaded only when that
