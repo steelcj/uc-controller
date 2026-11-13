@@ -170,8 +170,10 @@
 
   vars:
     # Paths are resolved on the controller against the directory
-    # ansible-playbook was started from, which is the repository root.
-    promote_script: "{{ playbook_dir }}/../../scripts/promote_node.py"
+    # ansible-playbook was started from, which is the repository root, the
+    # same way 00_discover.yml resolves raw_inventory. They do not depend on
+    # where this playbook lives.
+    promote_script: "{{ uc_scripts_dir | default('scripts') | ansible.builtin.realpath }}/promote_node.py"
     promote_from: "{{ raw_inventory | default('inventories/raw') | ansible.builtin.realpath }}"
     promote_to: "{{ onboard_inventory | ansible.builtin.realpath }}"
 

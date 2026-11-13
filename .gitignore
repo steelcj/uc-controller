@@ -1,1 +1,5 @@
 __pycache__/
+
+# Generated raw inventories, rewritten by ingress/playbooks/00_discover.yml.
+inventories/raw/discovered.yml
+inventories/raw/cloud.yml

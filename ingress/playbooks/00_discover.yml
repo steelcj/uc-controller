@@ -60,8 +60,9 @@
         content: |
           # inventories/raw/discovered.yml
           #
-          # Generated inventory, written by ingress/playbooks/00_discover.yml
-          # and overwritten on every subnet scan. Do not edit by hand.
+          # Generated inventory, written by ingress/playbooks/00_discover.yml and
+          # overwritten on every subnet scan. promote_node.py removes a host from it
+          # when promoting that host. Not committed. Do not edit by hand.
           # Names are provisional (disc-<ip>) until onboarding.
           discovered:
           {% if discovered_named | length == 0 %}
@@ -96,7 +97,7 @@
           # inventories/raw/cloud.yml
           #
           # Generated inventory, written by the cloud placeholder in
-          # ingress/playbooks/00_discover.yml. Not wired into raw.
+          # ingress/playbooks/00_discover.yml. Not committed. Not wired into raw.
           cloud:
             hosts:
           {% for instance in cloud_instances.json %}
