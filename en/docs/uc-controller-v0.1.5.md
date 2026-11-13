@@ -14,6 +14,7 @@ An Ansible controller configuration that moves nodes through a four stage lifecy
 | Scaffold removed | `tools/scaffold.yml`, the experimental role-defaults scaffold, was deleted: it wrote a mapping where the firewall plays expect a list, and nothing depended on it |
 | Vault guidance | The onboarding guide no longer tells readers to create vault files; the secrets pattern is not decided |
 | Normalize persists its promotion | `20_normalize.yml` ends with a play that moves each host that completed it from `onboard_inventory` to `normalized_inventory` through `promote_node.py`; both variables are required |
+| Stopped snapshots | Stage snapshots are taken with the instance stopped (stop, snapshot, start, each with a time limit, then wait for SSH) after snapshots of running containers hung |
 | Group memberships kept | Moves between onboard and normalized, in either direction, keep every group other than the stage group and leave the connection settings unchanged |
 
 ### v0.1.3 → v0.1.4
@@ -968,9 +969,16 @@ Incus snapshot names follow the playbook numbers (see *Incus: Instance Naming*).
 | `20-normalized` | After `20_normalize.yml` succeeds and `promote_node.py` has run | `normalized/<env>/hosts.yml` |
 | `30-<role>` | After `30_specialize.yml` succeeds with that role | `normalized/<env>/hosts.yml` |
 
+Take every stage snapshot with the instance stopped, each step under a time limit, and wait for SSH before continuing:
+
 ```bash
-incus snapshot create deb13 10-onboarded
+timeout 120 incus stop deb13
+timeout 120 incus snapshot create deb13 10-onboarded
+timeout 120 incus start deb13
+ansible -i inventories/onboard/dev deb13 -m ansible.builtin.wait_for_connection
 ```
+
+A snapshot of a running container hung twice on the workstation. The investigation found no kernel or storage error at either hang and nothing heavy running inside the container; the host root filesystem, which holds the Incus pool's loop image, had filled up once in between. With the instance stopped there is nothing to freeze. The host disk is worth watching, because a full root filesystem stops the pool from growing.
 
 ### Restore and Resume
 

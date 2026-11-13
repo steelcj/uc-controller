@@ -76,14 +76,20 @@ incus list -c ns4t
 ```
 
 ```sh
-incus snapshot list ex2-test
+incus snapshot list deb13
 ```
 
-Result: `ex2-test` is running, with the snapshots `fresh`, `before-ansible2-20261110`, `ansible2-converged` and `pre-onboard`.
+Result: `deb13` is running, with the snapshots `pristine`, `raw`.
 
 ## Phase 1: Static Checks
 
 Syntax-check the edited playbooks.
+
+```bash
+-i inventories/raw/hosts.yml ingress/playbooks/10_onboard.yml
+```
+
+
 
 ```sh
 ansible-playbook -i inventories/raw -i inventories/onboard/dev playbooks/lifecycle/10_onboard.yml --syntax-check
