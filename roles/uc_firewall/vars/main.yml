@@ -1,0 +1,13 @@
+---
+# Backend per OS family: the same one robertdebock.firewall installed.
+uc_firewall_backends:
+  Debian: ufw
+  RedHat: firewalld
+
+uc_firewall_packages:
+  ufw:
+    required: [ufw]
+    conflicting: [firewalld]
+  firewalld:
+    required: [firewalld, python3-firewall]
+    conflicting: []

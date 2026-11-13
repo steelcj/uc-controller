@@ -1,0 +1,7 @@
+---
+# The combined list built by the play from firewall_rules_<stage>.
+firewall_rules: []
+
+# The SSH port the controller uses. The role refuses to enable the firewall
+# unless firewall_rules has a TCP rule for it.
+uc_firewall_ssh_port: "{{ ansible_port | default(22) }}"
