@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Clear node entries so the lifecycle can be rerun from scratch.
 
-A development helper. Rewrites every stage's hosts.yml (raw, onboard/<env>,
-normalized/<env>) back to an empty group, and empties the Ansible fact cache
-so a recreated node is not reached at a stale cached address. group_vars,
+A development helper. Rewrites each onboard/<env> and normalized/<env>
+hosts.yml back to an empty group, empties the generated raw inventory
+(inventories/raw/discovered.yml) if it exists, and empties the Ansible fact
+cache so a recreated node is not reached at a stale cached address.
+inventories/raw/hosts.yml is hand-maintained and never touched. group_vars,
 host_vars and plugin configs such as inventories/raw/incus.yml are left alone.
 
 Nothing on the nodes themselves is touched; reset or delete those separately
@@ -27,15 +29,22 @@ INVENTORIES = REPO / "inventories"
 
 # Stage directory -> (group its playbook targets, has per-environment dirs)
 STAGES = {
-    "raw": ("raw", False),
     "onboard": ("onboarded", True),
     "normalized": ("normalized", True),
 }
+
+# Generated raw inventories, reset only if present: (file, group it holds).
+# inventories/raw/hosts.yml is static and hand-maintained, so it is not here.
+RAW_GENERATED = [("discovered.yml", "discovered")]
 
 
 def hosts_files(envs: list[str] | None) -> list[tuple[Path, str, str]]:
     """Return (hosts.yml path, group, label) for every inventory to reset."""
     found = []
+    for name, group in RAW_GENERATED:
+        path = INVENTORIES / "raw" / name
+        if path.exists():
+            found.append((path, group, "raw"))
     for stage, (group, per_env) in STAGES.items():
         stage_dir = INVENTORIES / stage
         if not stage_dir.is_dir():
@@ -93,7 +102,7 @@ def main() -> int:
     parser.add_argument("--env", action="append", metavar="ENV",
                         help="only reset this environment (repeatable); default is all")
     parser.add_argument("--keep-raw", action="store_true",
-                        help="leave inventories/raw/hosts.yml as it is")
+                        help="leave the generated raw inventories as they are")
     parser.add_argument("--keep-facts", action="store_true",
                         help="leave the fact cache as it is")
     parser.add_argument("-n", "--dry-run", action="store_true",
@@ -113,7 +122,8 @@ def main() -> int:
                     f"{group}:\n  hosts: {{}}\n"
                 )
         detail = ", ".join(names) if names else "already empty"
-        print(f"{verb} {label}: {detail}")
+        shown = f"{label}/{hosts_file.name}" if label == "raw" else label
+        print(f"{verb} {shown}: {detail}")
 
     if not args.keep_facts:
         cache = fact_cache_dir()

@@ -1,5 +1,8 @@
 ---
 # inventories/raw/group_vars/incus.yml
 #
+# Incus instances are reached through the Incus API as root, with no SSH.
+# needs_python_bootstrap stays at the raw default (true): the Debian image
+# ships sudo but not Python.
 ansible_connection: community.general.incus
 ansible_user: root

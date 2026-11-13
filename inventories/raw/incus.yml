@@ -1,11 +1,20 @@
 # inventories/raw/incus.yml
+#
+# Dynamic inventory plugin config, not a host list. The community.general.incus
+# plugin reads it and generates one host per running Incus instance at run
+# time. Nothing writes to this file; it is edited by hand. The filename must
+# end in incus.yml or incus.yaml for the plugin to accept it.
+#
+# Group membership:
+# - The plugin's default groups put every instance in incus, incus_<remote>
+#   and incus_<remote>_<project>, so raw/group_vars/incus.yml applies.
+# - raw membership comes only from raw/hosts.yml, which declares incus as a
+#   child of raw. This file deliberately has no groups: raw: true.
+#
+# host_fqdn: false keeps the inventory name equal to the instance name (deb13,
+# not deb13.default.local), so -l limits match the naming convention.
 ---
-#
-# 
-#
-#
 plugin: community.general.incus
+host_fqdn: false
 filters:
   - status=running
-groups:
-  raw: true
