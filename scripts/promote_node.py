@@ -3,24 +3,28 @@
 
 Removes the host from whichever static inventory file in the source
 inventory directory holds it (hosts.yml, discovered.yml, and so on; dynamic
-plugin configs are skipped), adds it to the destination stage's file under
-that stage's group, then commits the changed files to git.
+plugin configs are skipped), adds it to the destination stage's hosts.yml
+under that stage's group, then commits the changed files to git.
 
-Destinations: onboard and normalized use <env>/hosts.yml. Raw uses the
-generated raw/discovered.yml under the discovered group, because
-raw/hosts.yml is hand-maintained and no script writes to it.
-
-Plugin-discovered hosts (Incus and similar) are in no static file. Promote
-one by passing --address; the destination entry is then created rather than
-moved, and marked uc_origin: plugin. A host listed by hand in raw/hosts.yml
-is copied, not moved, and marked uc_origin: static.
+Raw is what the sources report, and no script adds a host to any file under
+inventories/raw/:
+- Plugin-discovered hosts (Incus and similar) are in no static file. Promote
+  one by passing --address; the destination entry is created and marked
+  uc_origin: plugin.
+- A host listed by hand in raw/hosts.yml is copied, not moved, and marked
+  uc_origin: static. Scripts never write raw/hosts.yml.
+- A scanned host is removed from raw/discovered.yml when promoted, so it is
+  not listed in two stages until the next scan. This is the only case where
+  a script changes a raw file.
+- Demotion to raw removes the host's entry from the source stage and writes
+  nothing. The node reappears in raw through its source: the plugin lists a
+  running instance, a hand-entered host never left hosts.yml, and a scanned
+  host is found by the next scan. Demotion is inventory bookkeeping that
+  lets the inventory follow a node after a snapshot restore.
 
 A host promoted into the onboard stage carries the connection contract at
 host level, so it wins over the raw inventory's group variables whichever
-order the inventories are loaded in. On demotion to raw, a host marked
-uc_origin: plugin or static is only removed, since raw still supplies it;
-any other host moves to raw/discovered.yml with ansible_host kept and the
-rest of the contract removed. Runs on Linux, macOS, and Windows. Requires PyYAML,
+order the inventories are loaded in. Runs on Linux, macOS, and Windows. Requires PyYAML,
 which is already present wherever Ansible is installed.
 """
 from __future__ import annotations
@@ -36,21 +40,17 @@ import yaml
 # Lifecycle order.
 STAGES = ["raw", "onboard", "normalized"]
 
-# Where a host entry is written in each stage: (file, group). raw/hosts.yml
-# is hand-maintained, so a host demoted to raw goes to the generated
-# discovered.yml, the only raw source that holds static hosts.
-DEST = {
-    "raw": ("discovered.yml", "discovered"),
-    "onboard": ("hosts.yml", "onboarded"),
-    "normalized": ("hosts.yml", "normalized"),
-}
+# The group a host entry is written under in each stage's hosts.yml. Raw is
+# absent: no script adds a host to raw.
+STAGE_GROUP = {"onboard": "onboarded", "normalized": "normalized"}
 
-# Header comments rewritten whenever the script writes these files.
+# Header comments rewritten whenever the script rewrites these files.
 HEADERS = {
     ("raw", "discovered.yml"):
         "# inventories/raw/discovered.yml\n#\n"
-        "# Generated inventory, written by ingress/playbooks/00_discover.yml\n"
-        "# (overwritten on every subnet scan) and by demote_node.py.\n"
+        "# Generated inventory, written by ingress/playbooks/00_discover.yml and\n"
+        "# overwritten on every subnet scan. promote_node.py removes a host from it\n"
+        "# when promoting that host. Not committed. Do not edit by hand.\n"
         "# Names are provisional (disc-<ip>) until onboarding.\n",
 }
 
@@ -62,17 +62,11 @@ CONTRACT = {
     "ansible_user": "initial",
     "ansible_ssh_common_args": "-o IdentitiesOnly=yes",
 }
-# Removed on demotion to raw. ansible_host is kept: for a static host it is
-# still the raw address.
-CONTRACT_STRIP = ("ansible_connection", "ansible_user",
-                  "ansible_ssh_private_key_file", "ansible_ssh_common_args")
-
-# Marks a host that raw keeps supplying after promotion, so demotion to raw
-# removes it without writing it back:
+# Records where a promoted host came from, for the operator:
 #   plugin: created from --address; a dynamic inventory plugin supplies it
 #   static: listed by hand in raw/hosts.yml, which scripts never write
+# A scanned host carries no marker; it came from raw/discovered.yml.
 ORIGIN_KEY, ORIGIN_PLUGIN, ORIGIN_STATIC = "uc_origin", "plugin", "static"
-RAW_SUPPLIED = (ORIGIN_PLUGIN, ORIGIN_STATIC)
 
 # Hand-maintained files that scripts read but never write.
 READ_ONLY = {("raw", "hosts.yml")}
@@ -186,12 +180,6 @@ def with_contract(host_vars, address: str | None, key_file: str | None,
     return host_vars
 
 
-def without_contract(host_vars):
-    """Return host_vars with the onboard connection contract removed."""
-    if not isinstance(host_vars, dict):
-        return host_vars
-    remaining = {k: v for k, v in host_vars.items() if k not in CONTRACT_STRIP}
-    return remaining or None
 
 
 def git_commit(files: list[Path], message: str) -> None:
@@ -235,12 +223,9 @@ def main(direction: str = "promote") -> int:
     if (direction == "promote" and step <= 0) or (direction == "demote" and step >= 0):
         raise SystemExit(f"error: cannot {direction} from {from_stage} to {to_stage}")
 
-    dest_name, dest_group = DEST[to_stage]
-    dest_file = args.dest / dest_name
-
     source_file, source_data, host_vars = find_host(args.source, args.host)
     found = source_file is not None
-    if not found and not args.address:
+    if not found and (to_stage == "raw" or not args.address):
         raise SystemExit(
             f"error: host {args.host} not found in any static inventory file in {args.source}"
         )
@@ -253,29 +238,25 @@ def main(direction: str = "promote") -> int:
         host_vars[ORIGIN_KEY] = ORIGIN_STATIC
         print(f"note: {source_file} is hand-maintained; its entry for {args.host} is left in place")
 
-    if to_stage == "raw" and isinstance(host_vars, dict) \
-            and host_vars.get(ORIGIN_KEY) in RAW_SUPPLIED:
-        # Raw still supplies this host, through its plugin or hosts.yml; a
-        # second entry would only duplicate it. Remove it from the source and
-        # write nothing to raw.
+    if to_stage == "raw":
+        # Raw is what the sources report. Remove the entry and write nothing;
+        # the node reappears in raw through its source.
         dump(source_file, source_data, HEADERS.get((from_stage, source_file.name)))
-        print(f"{direction.capitalize()}d {args.host}: removed from {args.source}; "
-              f"{ORIGIN_KEY}: {host_vars[ORIGIN_KEY]}, so not written to {args.dest}")
+        print(f"{direction.capitalize()}d {args.host}: removed from {source_file}; "
+              f"nothing written to {args.dest}")
         if not args.no_commit:
             git_commit([source_file], f"{direction} {args.host}: {from_stage} -> {to_stage}")
         return 0
 
+    dest_file = args.dest / "hosts.yml"
     if to_stage == "onboard":
         host_vars = with_contract(host_vars, args.address, args.key_file, args.host)
-    elif to_stage == "raw":
-        # Back to raw: reached through the raw inventory again.
-        host_vars = without_contract(host_vars)
 
     # pop_host clears every existing entry for the host, so a repeat
     # promotion replaces the entry instead of adding a second one.
     dest_data = load(dest_file)
     pop_host(dest_data, args.host)
-    add_host(dest_data, dest_group, args.host, host_vars)
+    add_host(dest_data, STAGE_GROUP[to_stage], args.host, host_vars)
     if args.group:
         add_host(dest_data, args.group, args.host, None)
 
@@ -286,7 +267,7 @@ def main(direction: str = "promote") -> int:
     elif not found:
         print(f"note: {args.host} was not in any static file in {args.source}; "
               "created from --address")
-    dump(dest_file, dest_data, HEADERS.get((to_stage, dest_name)))
+    dump(dest_file, dest_data)
     print(f"{direction.capitalize()}d {args.host}: {args.source} -> {args.dest}")
 
     if (args.source / "host_vars" / f"{args.host}.yml").exists():
