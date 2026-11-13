@@ -38,7 +38,7 @@
     # inventory is passed with -i):
     #   firewall_rules_onboard    inventories/onboard/<env>/group_vars/all.yml
     #   firewall_rules_normalize  inventories/normalized/<env>/group_vars/all.yml
-    # roles/uc_firewall applies the combined list (see Firewall Layering in
+    # converge/roles/uc_firewall applies the combined list (see Firewall Layering in
     # en/docs/uc-controller-v0.1.4.md).
     firewall_rules: >-
       {{
