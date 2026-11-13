@@ -25,6 +25,7 @@ An Ansible controller configuration that moves nodes through a four stage lifecy
 | Bootstrap gate | The bootstrap play runs only when `needs_python_bootstrap` is true |
 | Firewall traceability | Converge playbooks name the file each `firewall_rules_<stage>` list lives in |
 | Runnable normalize stage | `20_normalize.yml` drops `pam`, `limits`, `motd`, `timezone` and `chrony` (none exists), gates `auditd` off in containers, and runs its controller-side check without become; a time sync proposal is recorded |
+| Speed settings | `profile_tasks` on, pipelining, per-user fact cache, fresh facts in the onboard converge play, `forks = 20`, `strategy: free` on the converge plays; measured in the speed overview |
 | Firewall rules role | `robertdebock.firewall` read only `firewall_services` and could not restrict sources, so no `firewall_rules` list reached the firewall; it is replaced by the project role `roles/uc_firewall`, which applies `firewall_rules` with ufw or firewalld |
 | Persistence and snapshots | New Persistence and Snapshot Alignment sections: what `add_host` does, when `promote_node.py` runs, the snapshot to take after each playbook, and restore-and-resume |
 | Listings | Playbook and script listings refreshed from the repository |
@@ -543,8 +544,17 @@ Promotion uses `add_host`, which adds hosts and groups to the in-memory inventor
 
 - name: Converge the onboard baseline
   hosts: onboarding
-  gather_facts: yes         # Safe now: bootstrap installed Python above.
+  gather_facts: no          # Gathered fresh by the setup pre_task below.
   become: no                # Still root over the root connection.
+
+  # Always gather fresh facts here, never from the cache. Instance names are
+  # reused across rebuilds, and the SSH switch below takes the node's address
+  # from these facts; under gathering = smart a cached fact from an earlier
+  # instance of the same name could point at a stale address. Python is
+  # present now, installed by bootstrap above.
+  pre_tasks:
+    - name: gather fresh facts
+      ansible.builtin.setup:
 
   vars:
     firewall_rules: >-
@@ -678,10 +688,10 @@ Make it compliant. Lives in `converge/playbooks/`. Validates onboarded nodes, pr
 
 | Role | Status |
 |------|--------|
-| `robertdebock.selinux` | Runs. Does nothing on Debian and Ubuntu, which do not use SELinux |
+| `robertdebock.selinux` | Runs. On Debian it installs `selinux-policy-default`, `policycoreutils`, the Python SELinux bindings and `auditd`, which takes about four minutes per run and most of the stage's time; it does not enable SELinux |
 | `robertdebock.auditd` | Skipped in containers, where `auditd.service` is masked; runs on VMs and bare metal. Untested so far, because both test nodes are containers |
 | `robertdebock.sysctl` | Runs. No settings are defined yet |
-| `robertdebock.hostname` | Runs |
+| `robertdebock.hostname` | Runs. Its `Reboot` handler (`hostname_reboot: true` by default) reboots the node during the run |
 | `robertdebock.rsyslog` | Runs |
 | `uc_firewall` | Runs. Adds `firewall_rules_normalize` |
 | `pam`, `limits`, `motd` | Removed. There is no role of that name and no stated requirement, and no configuration is invented |
@@ -730,6 +740,10 @@ Not implemented. Today `robertdebock.ntp` runs in `10_onboard.yml` and is skippe
   hosts: normalized
   become: yes
   gather_facts: yes
+  # Each node converges independently, so a slow node does not hold the
+  # others at every task. The config default stays linear; the validation
+  # play above keeps it for its add_host loop.
+  strategy: free
 
   vars:
     # Where each stage's list is expected to live (loaded only when that
@@ -776,6 +790,8 @@ Make it useful. Applies the role-specific composition and the complete firewall 
   hosts: normalized
   become: yes
   gather_facts: yes
+  # Each node converges independently; the config default stays linear.
+  strategy: free
 
   vars:
     # Where each stage's list is expected to live (loaded only when that
@@ -1035,7 +1051,7 @@ To resume onboarding from `raw`:
 ```bash
 incus snapshot restore deb13 raw
 python3 scripts/demote_node.py --from inventories/onboard/dev --to inventories/raw --host deb13 --no-commit
-CACHE="$(ansible-config dump | awk -F' = ' '/^CACHE_PLUGIN_CONNECTION/{print $2}')"
+CACHE="$(ansible-config dump | awk -F' = ' '/^CACHE_PLUGIN_CONNECTION/{print $2}')"; CACHE="${CACHE/#\~/$HOME}"
 find "$CACHE" -maxdepth 1 \( -name deb13 -o -name '*_deb13' \) -delete
 ```
 
@@ -1044,7 +1060,7 @@ To resume normalizing from `10-onboarded`:
 ```bash
 incus snapshot restore deb13 10-onboarded
 python3 scripts/demote_node.py --from inventories/normalized/dev --to inventories/onboard/dev --host deb13 --no-commit
-CACHE="$(ansible-config dump | awk -F' = ' '/^CACHE_PLUGIN_CONNECTION/{print $2}')"
+CACHE="$(ansible-config dump | awk -F' = ' '/^CACHE_PLUGIN_CONNECTION/{print $2}')"; CACHE="${CACHE/#\~/$HOME}"
 find "$CACHE" -maxdepth 1 \( -name deb13 -o -name '*_deb13' \) -delete
 ```
 
@@ -1512,23 +1528,37 @@ python scripts/demote_node.py \
 ```ini
 # ansible.cfg
 [defaults]
-roles_path = ./roles:~/.ansible/roles:/usr/share/ansible/roles
+roles_path = ./roles:./ingress/roles:./converge/roles:~/.ansible/roles:/usr/share/ansible/roles
 inventory = ./inventories/raw
+# Hosts handled in parallel. Test nodes share this machine with the controller.
+forks = 20
+# Test nodes are rebuilt often and their host keys change. Revisit this before
+# any non-test node is managed: enable it and manage known_hosts instead.
 host_key_checking = False
 gathering = smart
 fact_caching = jsonfile
-fact_caching_connection = /tmp/ansible_facts
+# Per-user cache, kept out of /tmp. reset_inventories.py reads this path.
+fact_caching_connection = ~/.ansible/fact_cache/uc-controller
 fact_caching_timeout = 3600
-stdout_callback = yaml
-callbacks_enabled = profile_tasks
+stdout_callback = default
+callback_result_format = yaml
+# Per-task timings at the end of every run.
+callbacks_enabled = ansible.posix.profile_tasks
 
 [privilege_escalation]
 become = True
 become_method = sudo
 become_user = root
 become_ask_pass = False
+
+[connection]
+# Send modules through the open SSH session instead of copying a file first.
+# Needs sudo without requiretty, which Debian and Ubuntu do not set.
+pipelining = True
 ```
 
+
+The settings are measured and explained in the speed overview (`en/docs/dev/`). In short: pipelining sends modules through the open SSH session and needs sudo without `requiretty`, which Debian and Ubuntu do not set; the fact cache is per user, outside `/tmp`; `forks = 20` stays modest because the test nodes share the controller's machine; the default strategy stays `linear`, and only the converge plays set `strategy: free`; `host_key_checking = False` is for rebuilt test nodes only and must be revisited before any other node is managed.
 ## Requirements
 
 Roles are installed from Ansible Galaxy with `ansible-galaxy install -r requirements.yml`. The file must keep its `.yml` or `.yaml` extension, and roles land in the first writable directory on the configured `roles_path` <a id="cite-ansible-galaxy"></a>([Ansible project contributors, n.d.-d](#ref-ansible-galaxy)).
