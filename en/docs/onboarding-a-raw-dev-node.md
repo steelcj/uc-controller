@@ -32,29 +32,30 @@ ssh-keygen -t ed25519 -f ~/.ssh/gradus-raw-initial-id_ed25519 -C "initial@contro
 
 Put the public half into `inventories/onboard/dev/group_vars/all.yml` under the `initial` user's `authorized_keys`. The private half never leaves the controller. If your keys carry a passphrase, which is good practice, see the key-loading step below, since the passphrase workflow is the most common source of confusion during a run.
 
-## Create a fresh or pristine snapshot
+## Create the raw snapshot
 
-After creating a new container you should create a snapshot of it called something like "fresh" or "pristine"
+Right after launching a new container, before Ansible touches it, snapshot it as `raw`. The name follows *Incus: Instance Naming*: `raw` is the origin you return to, and it is never overwritten.
 
 ```sh
-incus snapshot create ex2-test fresh
+incus launch images:debian/13 deb13
+incus snapshot create deb13 raw
 incus snapshot list deb13
-incus snapshot create deb13-uct raw
 ```
 
-This will allow you to test on a fresh node and allow you to restore a pristine state between testing and development runs.
+This lets you restore an untouched node between testing and development runs.
 
-## Restore a fresh or pristine snapshot
+## Restore the raw snapshot
 
-If  you are developing or testing you will want a fresh container that has not been configured before to confirm your infra as code. In this case you want to generate a new container from a pristine snapshot
+When developing or testing, start from a container that has never been configured, to prove the infrastructure code works from scratch.
 
 ### Restore your snapshot
 
-If you want to test from start to finish run something like this to generate a new container for a fresh snapshot
-
 ```bash
-incus snapshot restore ex2-test fresh
+incus snapshot restore deb13 raw
+python3 scripts/reset_inventories.py
 ```
+
+The restore reverts the container only. `reset_inventories.py` clears the stage inventories and the fact cache on the controller, which still describe the node as it was before the restore. It clears every node; to clear one node only, see Restore and Resume in the design document.
 
 ### Start the instance
 
@@ -62,10 +63,10 @@ The inventory only lists running instances, so start the node you intend to onbo
 
 ```sh
 incus list
-incus start ex2-test
+incus start deb13
 ```
 
-For a virtual machine rather than a container, wait for the guest agent before Ansible can reach it. `incus exec ex2-test -- true` returning without error is the signal it is ready. For the dev workflow here, containers are simpler and faster.
+For a virtual machine rather than a container, wait for the guest agent before Ansible can reach it. `incus exec deb13 -- true` returning without error is the signal it is ready. For the dev workflow here, containers are simpler and faster.
 
 ### Confirm it is running and has an address
 
@@ -84,7 +85,7 @@ The secrets pattern is not decided yet, and nothing in the lifecycle reads a vau
 ## Confirm the inventory sees the node
 
 ```sh
-ansible-inventory -i inventories/raw/incus.yml -i inventories/onboard/dev --graph
+ansible-inventory -i inventories/raw -i inventories/onboard/dev --graph
 ```
 
 Output example:
@@ -92,16 +93,16 @@ Output example:
 ```bash
 @all:
   |--@ungrouped:
-  |--@incus:
-  |  |--@incus_local:
-  |  |  |--@incus_local_default:
-  |  |  |  |--ex2-test.default.local
   |--@raw:
-  |  |--ex2-test.default.local
+  |  |--@incus:
+  |  |  |--@incus_local:
+  |  |  |  |--@incus_local_default:
+  |  |  |  |  |--deb13
+  |  |--@discovered:
   |--@onboarded:
 ```
 
-You should see the node under `@raw`. By default the Incus inventory names hosts in `instance.project.remote` form, for example `ex2-test.default.local`, and that full name is what the `--limit` flag has to match. The FQDN form works for both the inventory and the Incus connection, so there is no need to change it.
+You should see the node under `@raw`. `inventories/raw/incus.yml` sets `host_fqdn: false`, so the inventory name is the instance name, `deb13`, and `-l deb13` matches it. Without that setting the plugin would name it `deb13.default.local`.
 
 ## Load the SSH key into the agent
 
@@ -125,18 +126,19 @@ In this command we specify items that may or may not be set with different value
 
 ```sh
 ANSIBLE_HOST_KEY_CHECKING=False ANSIBLE_STDOUT_CALLBACK=default ANSIBLE_CALLBACK_RESULT_FORMAT=yaml \
-ansible-playbook -i inventories/raw/incus.yml -i inventories/onboard/dev \
-  ingress/playbooks/10_onboard.yml -l 'ex2-test*' -e onboard_inventory=inventories/onboard/dev -vv
+ansible-playbook -i inventories/raw -i inventories/onboard/dev \
+  ingress/playbooks/10_onboard.yml -l deb13 -e target_group=webservers \
+  -e onboard_inventory=inventories/onboard/dev
 ```
 
-The glob limit `'ex2-test*'` matches the FQDN host name. The run moves through five plays: it confirms the raw node is reachable and promotes it, bootstraps Python over the Incus connection, converges the baseline roles, switches the connection to SSH as `initial`, and confirms SSH and sudo work. A clean result is `failed=0` with both of the final plays passing.
+`target_group=webservers` also puts the node in the `webservers` group, which the specialize stage uses. The run moves through six plays: it confirms the raw node is reachable and promotes it, bootstraps Python over the Incus connection, converges the baseline roles, switches the connection to SSH as `initial`, confirms SSH and sudo work, and writes the node into `inventories/onboard/dev/hosts.yml`. A clean result is `failed=0`.
 
 Output on 2026-11-11
 
 ```bash
 
 PLAY RECAP ***********************************************************************************************************************************************************
-ex2-test.default.local     : ok=172  changed=32   unreachable=0    failed=0    skipped=76   rescued=1    ignored=0
+deb13                      : ok=172  changed=32   unreachable=0    failed=0    skipped=76   rescued=1    ignored=0
 ```
 
 ### Adding options to ansible.cfg
@@ -181,8 +183,9 @@ become_ask_pass = False
 Once in `ansible.cfg`you can simply run:
 
 ```bash
-ansible-playbook -i inventories/raw/incus.yml -i inventories/onboard/dev \
-  ingress/playbooks/10_onboard.yml -l 'ex2-test*' -e onboard_inventory=inventories/onboard/dev -vv
+ansible-playbook -i inventories/raw -i inventories/onboard/dev \
+  ingress/playbooks/10_onboard.yml -l deb13 -e target_group=webservers \
+  -e onboard_inventory=inventories/onboard/dev
 ```
 
 ## Verify
@@ -192,7 +195,7 @@ From the controller, confirm login, sudo, and the umask settings.
 ### Set container ip address to var IP
 
 ```bash
-IP=$(incus list ex2-test -c4 --format csv | cut -d' ' -f1)
+IP=$(incus list deb13 -c4 --format csv | cut -d' ' -f1)
 echo "$IP"
 ```
 
@@ -223,7 +226,7 @@ uid=0(root) gid=0(root) groups=0(root)
 ### Confirm `UMASK 0027` and `HOME_MODE 0750`
 
 ```bash
-incus exec ex2-test -- grep -E '^(UMASK|HOME_MODE)' /etc/login.defs
+incus exec deb13 -- grep -E '^(UMASK|HOME_MODE)' /etc/login.defs
 ```
 
 Output example:
@@ -236,7 +239,7 @@ UMASK		0027
 ### Confirm permissions `750` on the home directory.
 
 ```sh
-incus exec ex2-test -- stat -c '%a %n' /home/initial
+incus exec deb13 -- stat -c '%a %n' /home/initial
 ```
 
 Output example:
@@ -247,13 +250,28 @@ Output example:
 
 ## Rerun onboard.yml
 
-A clean `failed=0` starting from the restored snapshot is the strongest proof that a brand-new node onboards in a single pass.
+A clean `failed=0` starting from the restored snapshot is the strongest proof that a brand-new node onboards in a single pass. Running onboard again on a node that is already onboarded changes nothing: the first play finds the `initial` user and skips the host.
+
+## Next stages
+
+Normalize and specialize follow, each as its own command. [Onboarding a New Incus Node: deb13](onboarding/onboarding-a-new-incus-node-deb13.md) walks through the whole chain from launch to a specialized web server, with a stopped snapshot after each stage.
+
+```bash
+ansible-playbook -i inventories/raw -i inventories/onboard/dev -i inventories/normalized/dev \
+  converge/playbooks/20_normalize.yml -l deb13 \
+  -e onboard_inventory=inventories/onboard/dev \
+  -e normalized_inventory=inventories/normalized/dev
+
+ansible-playbook -i inventories/raw -i inventories/onboard/dev -i inventories/normalized/dev \
+  converge/playbooks/30_specialize.yml -l deb13 \
+  -e specialize_role=webserver
+```
 
 ## Troubleshooting
 
 ### Could not match supplied host pattern
 
-The `--limit` value did not match any inventory host. Either the node is stopped, in which case the `status=running` filter leaves it out of the inventory, or you used the bare name while the inventory produced the FQDN form. Start the node, check `ansible-inventory --graph` for the exact name, and limit with `'ex2-test*'` or the full `ex2-test.default.local`.
+The `--limit` value did not match any inventory host. Usually the node is stopped, and the `status=running` filter leaves it out of the inventory. Start the node and check `ansible-inventory --graph` for the exact name.
 
 ### The callback plugin has been removed
 
@@ -274,11 +292,11 @@ Debian trixie dropped the `ntp` package, and containers take their clock from th
 Connection refused means nothing is listening, or an explicit reject rule is in the way, as opposed to a timeout which means packets are being dropped. Check in order, over the Incus connection so you do not depend on SSH.
 
 ```sh
-incus exec ex2-test -- ss -tlnp 'sport = :22'
-incus exec ex2-test -- systemctl status ssh --no-pager
-incus exec ex2-test -- systemctl status ssh ssh.socket --no-pager | tail -30
-incus exec ex2-test -- nft list ruleset
-incus exec ex2-test -- fail2ban-client status sshd
+incus exec deb13 -- ss -tlnp 'sport = :22'
+incus exec deb13 -- systemctl status ssh --no-pager
+incus exec deb13 -- systemctl status ssh ssh.socket --no-pager | tail -30
+incus exec deb13 -- nft list ruleset
+incus exec deb13 -- fail2ban-client status sshd
 ```
 
 If nothing is listening, the openssh role has not run yet, the most common reason is an earlier task failing before it. If sshd is listening but the fail2ban jail shows your controller banned, note that the jail rejects with `icmp port-unreachable`, which presents as connection refused rather than a timeout. Clear it with `fail2ban-client set sshd unbanip <controller-ip>` or restart fail2ban.
@@ -319,7 +337,7 @@ Let ssh manage key loading so you stop doing it by hand. In `~/.ssh/config`:
 AddKeysToAgent yes
 IdentitiesOnly yes
 
-Host ex2-test 10.119.134.*
+Host deb13 10.119.134.*
     User initial
     IdentityFile ~/.ssh/gradus-raw-initial-id_ed25519
 ```
