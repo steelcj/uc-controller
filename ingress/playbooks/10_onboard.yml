@@ -73,7 +73,11 @@
     bootstrap_become: false
 
   roles:
+    # needs_python_bootstrap defaults to true in raw/group_vars/all.yml. A
+    # source opts out in its own group_vars only when its images ship both
+    # Python and sudo; the users role later in this playbook needs sudo.
     - role: robertdebock.bootstrap
+      when: needs_python_bootstrap | default(true) | bool
 
 - name: Converge the onboard baseline
   hosts: onboarded
