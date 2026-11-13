@@ -569,6 +569,22 @@ nginx starts on its own at boot, a few seconds after SSH answers, so a `curl` st
 
 `deb13` is now a specialized web server, managed over SSH as `initial`, with a snapshot for every stage.
 
+## An Ubuntu container: ubu2404
+
+An Ubuntu 24.04 container follows steps 1 to 9 unchanged, with `ubu2404` in place of `deb13` and this launch command:
+
+```bash
+incus launch images:ubuntu/24.04 ubu2404
+```
+
+What differs is small:
+
+- The image ships Python and sudo, so the onboard run has no rescued task.
+- The image has an `ubuntu` user with UID 1000, so `initial` gets UID 1001: `uid=1001(initial) gid=1001(initial) groups=1001(initial)`.
+- Recaps differ slightly: onboard `ok=175 changed=33`, normalize `ok=51 changed=4`, specialize `ok=19 changed=3`, all with `failed=0`.
+
+The firewall is ufw with the same three rules, the document root is `/var/www/html`, and both reruns report `changed=0`.
+
 ## A Red Hat family virtual machine: rky9
 
 The same steps take a Rocky Linux 9 virtual machine, `rky9`, from launch to a web server. It is a virtual machine, not a container, so that SELinux and auditd get their own kernel. Follow steps 1 to 9 with `rky9` in place of `deb13`, and with the differences below.

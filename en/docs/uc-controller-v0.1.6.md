@@ -8,6 +8,7 @@ An Ansible controller configuration that moves nodes through a four stage lifecy
 
 | Change | Description |
 |--------|-------------|
+| Ubuntu 24.04 verified | `ubu2404`, an Ubuntu 24.04 container, ran the whole chain from `raw` with `failed=0` and both reruns with `changed=0`; no change to the repository was needed |
 | Red Hat family verified on a VM | `rky9`, a Rocky Linux 9 virtual machine, ran the chain from `raw`: onboard, normalize and specialize with `webserver`, each with `failed=0`, and both reruns with `changed=0`. SELinux enforcing, auditd, the firewalld path of `uc_firewall`, the `webserver` role and chrony through `robertdebock.ntp` are verified there (see Verification Status) |
 | SELinux policy installed before the role | `20_normalize.yml` installs `selinux-policy-targeted` in a `pre_tasks` step on the Red Hat family. The Incus Rocky 9 image has no policy package and no `/etc/selinux/config`, and `robertdebock.selinux` installs only the Python bindings, so its first run failed |
 | Which `Reboot` handler runs | Verified: `robertdebock.selinux` notifies `Reboot`, and the handler that runs is the one `robertdebock.hostname` defines (see Reboots and Role Order) |
@@ -86,7 +87,12 @@ Nothing is described as working here unless it was run. Each node started from i
 | Node | OS | Type | Onboard | Normalize | Specialize (`webserver`) | Reruns |
 |------|----|------|---------|-----------|--------------------------|--------|
 | `deb13` | Debian 13 | Incus container | `failed=0` | `failed=0`, no reboot | `failed=0`, page served | normalize and specialize `changed=0` |
+| `ubu2404` | Ubuntu 24.04.5 | Incus container | `failed=0` | `failed=0`, no reboot | `failed=0`, page served | normalize and specialize `changed=0` |
 | `rky9` | Rocky Linux 9.8 | Incus virtual machine, 2 vCPU, 2 GiB, 20 GiB disk | `failed=0` | `failed=0`, one reboot | `failed=0`, page served with SELinux enforcing | normalize and specialize `changed=0`, no reboot, hostname unchanged |
+
+On `ubu2404` the checks were those made on `deb13`: SSH login as `initial`, passwordless sudo, the umask (`0027` in `/etc/login.defs` and `/etc/profile.d/umask.sh`, home directory `750`), and the three firewall layers in ufw, `allow-ssh`, `allow-monitoring` from `10.0.0.0/24` and `allow-http`, with port 80 timing out before specialize and the page returned after it. Nothing in the repository needed changing for Ubuntu.
+
+On a container, the absence of a reboot is read from the log (no `Reboot` handler) and from the start time of PID 1. `/proc/sys/kernel/random/boot_id` belongs to the host kernel there and does not change when a container restarts; on a virtual machine it does.
 
 Verified on `rky9`, and only there:
 
@@ -99,7 +105,6 @@ Verified on `rky9`, and only there:
 
 Not verified:
 
-- Ubuntu 24.04 in this version. `ubu2404` ran onboard and normalize during the v0.1.5 work, but not specialize and not a from-scratch run.
 - `site.yml` as one invocation. It is only syntax-checked.
 - A reboot caused by an actual hostname change. The hostname never changed on either node.
 - Debian or Ubuntu as a virtual machine, where auditd and time sync would run.
@@ -817,7 +822,7 @@ Make it compliant. Lives in `converge/playbooks/`. Validates onboarded (and, on 
 | `timezone` | Removed. The onboard stage sets the timezone through `locale_timezone` and `ntp_timezone` |
 | `chrony` | Removed. See Time Sync |
 
-Run with `failed=0` on `deb13` and `rky9` from `10-onboarded`, and on `ubu2404` during the v0.1.5 work; the monitoring rule is present with its `10.0.0.0/24` source restriction.
+Run with `failed=0` on `deb13`, `ubu2404` and `rky9` from `10-onboarded`; the monitoring rule is present with its `10.0.0.0/24` source restriction.
 
 #### Reboots and Role Order
 
