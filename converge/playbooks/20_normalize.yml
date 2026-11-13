@@ -3,6 +3,9 @@
 - name: validate and promote onboarded nodes
   hosts: onboarded
   gather_facts: no
+  # ansible.cfg turns become on globally; the reachability check runs on the
+  # controller, where sudo would need a password.
+  become: no
 
   tasks:
     - name: confirm reachability
@@ -38,16 +41,23 @@
         (firewall_rules_onboard | default([]))
         + (firewall_rules_normalize | default([]))
       }}
+    # Container virtualization types, as in the ntp gate in 10_onboard.yml.
+    # Roles that need the kernel or host access a container does not have are
+    # skipped there; VMs and bare metal run them.
+    normalize_container_types: ['lxc', 'lxd', 'incus', 'docker', 'podman', 'systemd-nspawn', 'container', 'openvz']
 
+  # Removed, none of them exists in requirements.yml: pam, limits and motd
+  # (no stated requirement; no configuration is invented), timezone (the
+  # onboard stage sets it through locale_timezone and ntp_timezone), and
+  # chrony (time sync is a pending proposal; see Time Sync in
+  # en/docs/uc-controller-v0.1.4.md).
   roles:
     - role: robertdebock.selinux
+    # auditd needs the kernel audit subsystem, which a container cannot use
+    # (the service is masked there).
     - role: robertdebock.auditd
-    - role: robertdebock.pam
-    - role: robertdebock.limits
+      when: ansible_facts['virtualization_type'] | default('') not in normalize_container_types
     - role: robertdebock.sysctl
     - role: robertdebock.hostname
-    - role: robertdebock.timezone
-    - role: robertdebock.motd
-    - role: robertdebock.chrony
     - role: robertdebock.rsyslog
     - role: uc_firewall
