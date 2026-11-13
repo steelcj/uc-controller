@@ -143,7 +143,7 @@
       when: ansible_facts['virtualization_type'] | default('') not in ['lxc', 'lxd', 'incus', 'docker', 'podman', 'systemd-nspawn', 'container', 'openvz']
     - role: robertdebock.openssh      # installs and hardens sshd
     - role: robertdebock.fail2ban
-    - role: robertdebock.firewall     # opens port 22 from firewall_rules
+    - role: uc_firewall               # applies firewall_rules; refuses without the SSH rule
     - role: robertdebock.users        # creates the initial user + sudo + key
 
 - name: Switch onboarded nodes to SSH as the initial user
