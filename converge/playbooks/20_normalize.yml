@@ -44,6 +44,9 @@
           - normalized
           - "{{ target_group | default('ungrouped') }}"
       loop: "{{ ansible_play_hosts }}"
+      # add_host changes only the in-memory inventory; nothing on the node
+      # changes, so it does not count towards the run's changed total.
+      changed_when: false
 
 - name: converge normalized baseline
   hosts: normalizing

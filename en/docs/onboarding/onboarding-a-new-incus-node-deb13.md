@@ -447,7 +447,7 @@ ansible-playbook -i inventories/raw -i inventories/onboard/dev -i inventories/no
   -e specialize_role=webserver
 ```
 
-A first run ends with `failed=0` and a few changes: nginx installed, the page written, and the `allow-http` and `allow-https` rules added. Without `-e specialize_role=...` the run stops at once with `Set the role this stage applies, for example -e specialize_role=webserver.`
+A first run ends with `failed=0` and a few changes: nginx installed, the page written, and the `allow-http` rule added. Without `-e specialize_role=...` the run stops at once with `Set the role this stage applies, for example -e specialize_role=webserver.`
 
 Check the page, SSH, and that every firewall layer is present:
 
@@ -467,11 +467,10 @@ To                         Action      From
 22/tcp                     ALLOW       Anywhere                   # allow-ssh
 9100/tcp                   ALLOW       10.0.0.0/24                # allow-monitoring
 80/tcp                     ALLOW       Anywhere                   # allow-http
-443/tcp                    ALLOW       Anywhere                   # allow-https
 22/tcp (v6)                ALLOW       Anywhere (v6)              # allow-ssh
 ```
 
-`allow-ssh` comes from the onboard layer, `allow-monitoring` from normalize, and `allow-http` and `allow-https` from specialize. Nothing serves 443 yet.
+`allow-ssh` comes from the onboard layer, `allow-monitoring` from normalize, and `allow-http` from specialize. Port 443 stays closed, because nothing serves TLS.
 
 Run the same command a second time. It should report `changed=0`.
 

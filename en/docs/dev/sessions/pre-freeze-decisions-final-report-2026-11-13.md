@@ -6,7 +6,7 @@ Session record: `pre-freeze-decisions-session.md`
 
 ## Summary
 
-Phases 1 to 3 are done and committed. Phase 4 was skipped by decision, so the chain is verified on Debian 13 containers only. Nothing is pushed or merged. The live host entries in `inventories/onboard/dev/hosts.yml` and `inventories/normalized/dev/hosts.yml` are left uncommitted.
+Phases 1 to 3 are done and committed, followed by a cleanup branch that closes port 443 in the inventory data and stops the in-memory promotions from counting as changes. Phase 4 was skipped by decision, so the chain is verified on Debian 13 containers only. Nothing is pushed or merged. The live host entries in `inventories/onboard/dev/hosts.yml` and `inventories/normalized/dev/hosts.yml` are left uncommitted.
 
 ## Branches, in Merge Order
 
@@ -17,6 +17,7 @@ The five branches of the previous kickoff (`feat/multi-source-raw-inventory` to 
 | 1 | `fix/pre-freeze-decisions` | 6 | Phase 1 decisions, design document v0.1.5 started |
 | 2 | `fix/normalize-promotion` | 7 | Phase 2, `shared/roles`, boundary check, stopped-snapshot rule, naming v0.1.3, deb13 guide |
 | 3 | `feat/specialize-webserver` | 4 | Phase 3, guides, verification status, session record, this report |
+| 4 | `fix/pre-freeze-cleanup` | 1 | Port 443 removed, `changed_when: false` on the promotions, Known Issues, this report updated |
 
 ## Decisions and Fixes
 
@@ -30,9 +31,10 @@ The five branches of the previous kickoff (`feat/multi-source-raw-inventory` to 
 | A host that fails normalize is not promoted | Done, with a caveat: run without a `tmp-` snapshot, by decision, because the snapshot hung |
 | Demotion keeps group memberships | Done. Found and fixed: demotion to onboard no longer rewrites the connection settings |
 | `uc_firewall` used by ingress and converge | Done: moved to `shared/roles/`; the boundary check fails on cross-concern role use |
-| Snapshot hang investigation | Done, with a caveat: cause not found. Stopped snapshots are the rule, but a stopped snapshot also hung once and succeeded on retry |
+| Snapshot hang investigation | Done, with a caveat: cause not found. Recorded under Known Issues in the design document: it occurs with the container stopped too, and the time limit and one retry have always worked |
+| In-memory promotions report no change | Done: `changed_when: false` on the `add_host` promotion tasks in `10_onboard.yml` and `20_normalize.yml` |
 | `webserver` specialize role | Done, with a caveat: verified on Debian 13 only |
-| HTTP opened as `webservers` inventory data | Done. The same file opens 443, which nothing serves: needs your decision |
+| HTTP opened as `webservers` inventory data | Done. 443 removed from the data on `fix/pre-freeze-cleanup`. On `deb13` the existing `allow-https` rule remains, because `uc_firewall` never removes rules: needs your decision |
 | `30_specialize.yml` fails early without `specialize_role` | Done |
 | `30-webserver` snapshot | Done |
 | SELinux reboot check on `rky9` | Not done: Phase 4 skipped |
@@ -55,6 +57,8 @@ Node `deb13`, a Debian 13 container, restored to `raw` with the stage inventorie
 | `30-webserver` snapshot | Succeeded | — |
 | Normalize again | `ok=48 changed=1 failed=0`; no reboot, boot ID and hostname unchanged. The change is the in-memory `add_host` | Unchanged |
 | Specialize again | `ok=19 changed=0 failed=0` | Unchanged |
+| Normalize, after the cleanup | `ok=48 changed=0 failed=0`, no reboot | Unchanged |
+| Specialize, after the cleanup | `ok=19 changed=0 failed=0`. Port 443 refused from the controller (nothing listens), but ufw still lists `allow-https` | Unchanged |
 
 `--syntax-check` passes on every playbook, including `site.yml`, and `check_converge_boundary.py` passes.
 
@@ -72,9 +76,8 @@ The chain is verified on Debian 13 containers only. None of the following is kno
 
 ## Open Questions and Things Not Done
 
-- **Port 443.** `webservers.yml` opens 443 although the role serves no TLS. Keep it or remove it?
-- **Snapshot hangs.** The cause is unknown and stopping the instance does not prevent it. The time limit bounds it, and a single retry has worked every time so far. The host disk is at 94 % with 59 GB free.
-- **Normalize always reports one change.** The validation play's `add_host` reports `changed` on every run, so a rerun never shows `changed=0`. `changed_when: false` would fix that; not done, because it was not asked for.
+- **Port 443 on `deb13`.** The data no longer opens 443, but the node keeps the `allow-https` rule from the earlier specialize run, and so does the `30-webserver` snapshot. To match the data, delete the rule by hand (`ufw delete allow from any to any port 443 proto tcp`) or restore `20-normalized` and run specialize again, then retake `30-webserver`.
+- **Snapshot hangs.** A known issue in the design document: the cause is unknown and stopping the instance does not prevent it. The time limit bounds it, and a single retry has worked every time so far. The host disk is at 94 % with 59 GB free.
 - **Warning in normalize.** `Using run_once with the free strategy is not currently supported` comes from the vendored `robertdebock.selinux` role in the free-strategy converge play. Harmless with one host, and the vendored role was not edited.
 - **known_hosts.** `~/.ssh/known_hosts` line 97 still holds the old host key for `10.119.134.49`, so a plain `ssh` to `deb13` fails host key verification. It was not edited. Remove it with `ssh-keygen -R 10.119.134.49` if you want plain `ssh` to work.
 - **Stray fragment.** `en/docs/dev/sessions/manual-testing.md` has a half-written code block (`-i inventories/raw/hosts.yml ingress/playbooks/10_onboard.yml`), committed as it was in `cbde5dd`.

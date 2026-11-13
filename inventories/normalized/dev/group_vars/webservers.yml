@@ -4,7 +4,3 @@ firewall_rules_specialize:
     port: 80
     protocol: tcp
     source: 0.0.0.0/0
-  - name: allow-https
-    port: 443
-    protocol: tcp
-    source: 0.0.0.0/0
