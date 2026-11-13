@@ -138,7 +138,7 @@ In this command we specify items that may or may not be set with different value
 ```sh
 ANSIBLE_HOST_KEY_CHECKING=False ANSIBLE_STDOUT_CALLBACK=default ANSIBLE_CALLBACK_RESULT_FORMAT=yaml \
 ansible-playbook -i inventories/raw/incus.yml -i inventories/onboard/dev \
-  playbooks/lifecycle/10_onboard.yml -l 'ex2-test*' -vv
+  ingress/playbooks/10_onboard.yml -l 'ex2-test*' -e onboard_inventory=inventories/onboard/dev -vv
 ```
 
 The glob limit `'ex2-test*'` matches the FQDN host name. The run moves through five plays: it confirms the raw node is reachable and promotes it, bootstraps Python over the Incus connection, converges the baseline roles, switches the connection to SSH as `initial`, and confirms SSH and sudo work. A clean result is `failed=0` with both of the final plays passing.
@@ -194,7 +194,7 @@ Once in `ansible.cfg`you can simply run:
 
 ```bash
 ansible-playbook -i inventories/raw/incus.yml -i inventories/onboard/dev \
-  playbooks/lifecycle/10_onboard.yml -l 'ex2-test*' -vv
+  ingress/playbooks/10_onboard.yml -l 'ex2-test*' -e onboard_inventory=inventories/onboard/dev -vv
 ```
 
 ## Verify

@@ -46,10 +46,10 @@ sh
 
 ```sh
 ansible-playbook -i inventories/raw/incus.yml -i inventories/onboard/dev \
-  playbooks/lifecycle/10_onboard.yml --syntax-check
+  ingress/playbooks/10_onboard.yml --syntax-check
 
 ansible-playbook -i inventories/raw/incus.yml -i inventories/onboard/dev \
-  playbooks/lifecycle/10_onboard.yml -l ex2-test --list-hosts
+  ingress/playbooks/10_onboard.yml -l ex2-test --list-hosts
 ```
 
 Note: `--check` (dry run) is not reliable for this flow. Bootstrap uses `raw`, and several roles make real changes that check mode can’t model, so the snapshot from step 0 is your real safety net, not `--check`.
@@ -60,7 +60,7 @@ sh
 
 ```sh
 ansible-playbook -i inventories/raw/incus.yml -i inventories/onboard/dev \
-  playbooks/lifecycle/10_onboard.yml -l ex2-test -e target_group=webservers -vv
+  ingress/playbooks/10_onboard.yml -l ex2-test -e target_group=webservers -e onboard_inventory=inventories/onboard/dev -vv
 ```
 
 `-l ex2-test` keeps it to the one container, `-vv` shows you each task. Watch the play boundaries:
@@ -89,6 +89,18 @@ sh
 
 ```sh
 incus snapshot restore ex2-test pre-onboard
+```
+
+Onboarding writes the node into `inventories/onboard/dev/hosts.yml` with an SSH connection contract. After a snapshot reset, the node has no sshd user to answer that contract, so demote it before onboarding it again. A plugin-discovered host such as this one is removed from the onboard inventory and not written to raw:
+
+```sh
+python3 scripts/demote_node.py --from inventories/onboard/dev --to inventories/raw --host ex2-test.default.local --no-commit
+```
+
+Or clear every stage inventory and the fact cache at once:
+
+```sh
+python3 scripts/reset_inventories.py
 ```
 
 Then rerun step 5. Clean slate every time.
