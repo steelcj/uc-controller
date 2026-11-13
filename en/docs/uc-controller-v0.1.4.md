@@ -24,6 +24,7 @@ An Ansible controller configuration that moves nodes through a four stage lifecy
 | Vault placeholders removed | `vaults/` held three unencrypted placeholders; secrets handling is deferred until the first secret exists |
 | Bootstrap gate | The bootstrap play runs only when `needs_python_bootstrap` is true |
 | Firewall traceability | Converge playbooks name the file each `firewall_rules_<stage>` list lives in |
+| Runnable normalize stage | `20_normalize.yml` drops `pam`, `limits`, `motd`, `timezone` and `chrony` (none exists), gates `auditd` off in containers, and runs its controller-side check without become; a time sync proposal is recorded |
 | Firewall rules role | `robertdebock.firewall` read only `firewall_services` and could not restrict sources, so no `firewall_rules` list reached the firewall; it is replaced by the project role `roles/uc_firewall`, which applies `firewall_rules` with ufw or firewalld |
 | Persistence and snapshots | New Persistence and Snapshot Alignment sections: what `add_host` does, when `promote_node.py` runs, the snapshot to take after each playbook, and restore-and-resume |
 | Listings | Playbook and script listings refreshed from the repository |
@@ -671,7 +672,32 @@ Promotion uses `add_host`, which adds hosts and groups to the in-memory inventor
 
 ### 20_normalize.yml
 
-Make it compliant. Validates onboarded nodes, promotes them into the `normalized` group, and converges the compliance baseline.
+Make it compliant. Lives in `converge/playbooks/`. Validates onboarded nodes, promotes them into the `normalized` group in memory, and converges the compliance baseline. Promotion is not persisted yet; run `promote_node.py` by hand afterwards (see Persistence).
+
+#### Role List
+
+| Role | Status |
+|------|--------|
+| `robertdebock.selinux` | Runs. Does nothing on Debian and Ubuntu, which do not use SELinux |
+| `robertdebock.auditd` | Skipped in containers, where `auditd.service` is masked; runs on VMs and bare metal. Untested so far, because both test nodes are containers |
+| `robertdebock.sysctl` | Runs. No settings are defined yet |
+| `robertdebock.hostname` | Runs |
+| `robertdebock.rsyslog` | Runs |
+| `uc_firewall` | Runs. Adds `firewall_rules_normalize` |
+| `pam`, `limits`, `motd` | Removed. There is no role of that name and no stated requirement, and no configuration is invented |
+| `timezone` | Removed. The onboard stage sets the timezone through `locale_timezone` and `ntp_timezone` |
+| `chrony` | Removed. See Time Sync |
+
+Run with `failed=0` on `deb13` and `ubu2404` from `10-onboarded`; the monitoring rule is present with its `10.0.0.0/24` source restriction.
+
+#### Time Sync (Proposal)
+
+Not implemented. Today `robertdebock.ntp` runs in `10_onboard.yml` and is skipped in containers.
+
+- Containers take their clock from the host and usually cannot set it. Leave time sync off there, as now.
+- VMs and bare metal need a client. Debian 13 no longer ships the `ntp` package, so `robertdebock.ntp` cannot be the answer on trixie. Use `systemd-timesyncd` (present on Debian and Ubuntu, a client only) or `chrony` (also the Red Hat default, and able to serve time). The likely choice is chrony everywhere outside containers, from a vendored role or a small project role, configured from one `time_servers` list.
+- It belongs in normalize, not onboard: onboarding only needs a clock good enough for package signatures, which the image provides.
+- Remove `robertdebock.ntp` from onboarding once the normalize role exists, and test on a VM node.
 
 ```yaml
 #!/usr/bin/env ansible-playbook
@@ -679,6 +705,9 @@ Make it compliant. Validates onboarded nodes, promotes them into the `normalized
 - name: validate and promote onboarded nodes
   hosts: onboarded
   gather_facts: no
+  # ansible.cfg turns become on globally; the reachability check runs on the
+  # controller, where sudo would need a password.
+  become: no
 
   tasks:
     - name: confirm reachability
@@ -714,17 +743,24 @@ Make it compliant. Validates onboarded nodes, promotes them into the `normalized
         (firewall_rules_onboard | default([]))
         + (firewall_rules_normalize | default([]))
       }}
+    # Container virtualization types, as in the ntp gate in 10_onboard.yml.
+    # Roles that need the kernel or host access a container does not have are
+    # skipped there; VMs and bare metal run them.
+    normalize_container_types: ['lxc', 'lxd', 'incus', 'docker', 'podman', 'systemd-nspawn', 'container', 'openvz']
 
+  # Removed, none of them exists in requirements.yml: pam, limits and motd
+  # (no stated requirement; no configuration is invented), timezone (the
+  # onboard stage sets it through locale_timezone and ntp_timezone), and
+  # chrony (time sync is a pending proposal; see Time Sync in
+  # en/docs/uc-controller-v0.1.4.md).
   roles:
     - role: robertdebock.selinux
+    # auditd needs the kernel audit subsystem, which a container cannot use
+    # (the service is masked there).
     - role: robertdebock.auditd
-    - role: robertdebock.pam
-    - role: robertdebock.limits
+      when: ansible_facts['virtualization_type'] | default('') not in normalize_container_types
     - role: robertdebock.sysctl
     - role: robertdebock.hostname
-    - role: robertdebock.timezone
-    - role: robertdebock.motd
-    - role: robertdebock.chrony
     - role: robertdebock.rsyslog
     - role: uc_firewall
 ```
@@ -1121,7 +1157,7 @@ Environment selection is implicit: the inventory you point at determines the env
 |-------|---------------------|-----------------------|-----------|
 | discover | What exists? | None | nmap / cloud API |
 | onboard | Can I manage it? | SSH (port 22) | bootstrap, umask, epel, update, locale, auto_update, cron, ntp, openssh, fail2ban, uc_firewall, users |
-| normalize | Does it meet the baseline? | Monitoring, internal services | selinux, auditd, pam, sysctl, rsyslog, uc_firewall |
+| normalize | Does it meet the baseline? | Monitoring, internal services | selinux, auditd (not in containers), sysctl, hostname, rsyslog, uc_firewall |
 | specialize | What is it for? | Application ports (80, 443, etc.) | role-specific + uc_firewall |
 
 ## Scripts
