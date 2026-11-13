@@ -8,6 +8,11 @@ An Ansible controller configuration that moves nodes through a four stage lifecy
 
 | Change | Description |
 |--------|-------------|
+| Red Hat family verified on a VM | `rky9`, a Rocky Linux 9 virtual machine, ran the chain from `raw`: onboard, normalize and specialize with `webserver`, each with `failed=0`, and both reruns with `changed=0`. SELinux enforcing, auditd, the firewalld path of `uc_firewall`, the `webserver` role and chrony through `robertdebock.ntp` are verified there (see Verification Status) |
+| SELinux policy installed before the role | `20_normalize.yml` installs `selinux-policy-targeted` in a `pre_tasks` step on the Red Hat family. The Incus Rocky 9 image has no policy package and no `/etc/selinux/config`, and `robertdebock.selinux` installs only the Python bindings, so its first run failed |
+| Which `Reboot` handler runs | Verified: `robertdebock.selinux` notifies `Reboot`, and the handler that runs is the one `robertdebock.hostname` defines (see Reboots and Role Order) |
+| Known issues | New: with SELinux enforcing, the Incus agent in the Rocky 9 VM cannot start, so `incus exec` and the Incus connection stop working after normalize. New: the Rocky 9 image does not grow its root partition |
+| Listings | The `10_onboard.yml`, `20_normalize.yml` and `30_specialize.yml` listings are refreshed from the repository; in v0.1.5 they lacked `changed_when: false` and the `shared/roles` comment |
 | Port 443 removed from `deb13` | `deb13` was restored to `20-normalized` and specialized again, so ufw no longer lists `allow-https`; `30-webserver` was retaken stopped. An example of the additive firewall's Known Limitation: a removed rule leaves the node only by a rebuild or by hand |
 
 ### v0.1.4 → v0.1.5
@@ -76,22 +81,55 @@ An Ansible controller configuration that moves nodes through a four stage lifecy
 
 ## Verification Status
 
-The lifecycle is verified end to end on Debian 13 containers only. On `deb13`, restored to `raw` with the stage inventories reset, onboard, normalize and specialize with `webserver` each ran as their own command with `failed=0`, and the inventory on disk matched the node after each stage. A second normalize run caused no reboot and no hostname change, and a second specialize run reported no changes. After the in-memory promotion tasks were marked `changed_when: false`, normalize and specialize reruns on `deb13` both report `changed=0`.
+Nothing is described as working here unless it was run. Each node started from its `raw` snapshot with the stage inventories holding no entry for it, and each stage ran as its own command.
 
-Not verified, because the Red Hat family node (`rky9`) was not built. None of these is known to work:
+| Node | OS | Type | Onboard | Normalize | Specialize (`webserver`) | Reruns |
+|------|----|------|---------|-----------|--------------------------|--------|
+| `deb13` | Debian 13 | Incus container | `failed=0` | `failed=0`, no reboot | `failed=0`, page served | normalize and specialize `changed=0` |
+| `rky9` | Rocky Linux 9.8 | Incus virtual machine, 2 vCPU, 2 GiB, 20 GiB disk | `failed=0` | `failed=0`, one reboot | `failed=0`, page served with SELinux enforcing | normalize and specialize `changed=0`, no reboot, hostname unchanged |
 
-- `robertdebock.auditd`, which is skipped in containers and has not run anywhere.
-- The firewalld path of `uc_firewall`.
-- `robertdebock.selinux`, and its `Reboot` handler, which has the same name as the handler in `robertdebock.hostname`. Which handler runs, whether the node reboots when SELinux is first configured, and whether `getenforce` reports `Enforcing` afterwards are all unchecked.
-- The `webserver` role on a Red Hat family node, including its document root and the replacement of the packaged `index.html`.
+Verified on `rky9`, and only there:
 
-Ubuntu 24.04 (`ubu2404`) ran onboard and normalize earlier in this version's work, but not specialize and not the final from-scratch run.
+- **`robertdebock.selinux`.** The image starts with SELinux disabled. After normalize the node has rebooted (the boot ID changed), relabelled its filesystem, and `getenforce` reports `Enforcing` with the `targeted` policy. This needs the policy package that `20_normalize.yml` installs first.
+- **The `Reboot` handler.** `robertdebock.selinux` is the only role that notifies it; the hostname task reports no change. The handler that runs is logged as `robertdebock.hostname : Reboot`, so it is the definition in `robertdebock.hostname`. See Reboots and Role Order.
+- **`robertdebock.auditd`.** `auditd` is active and enabled, and `auditctl -s` reports `enabled 1`.
+- **The firewalld path of `uc_firewall`.** After normalize the `public` zone has `22/tcp` open to all and a rich rule accepting `9100/tcp` from `10.0.0.0/24`; port 80 is refused from the controller. After specialize a rich rule accepts `80/tcp`, the earlier rules are still there and SSH still works.
+- **The `webserver` role.** `curl` from the controller returns `rky9` with SELinux enforcing. The packaged `/usr/share/nginx/html/index.html` is a symlink to `../../testpage/index.html`; the role replaces the link with a regular file, labelled `httpd_sys_content_t`, and leaves the test page itself alone.
+- **Time sync.** `robertdebock.ntp`, in onboarding, installs chrony on Rocky 9; `chronyd` is active, enabled and synchronised.
+
+Not verified:
+
+- Ubuntu 24.04 in this version. `ubu2404` ran onboard and normalize during the v0.1.5 work, but not specialize and not a from-scratch run.
+- `site.yml` as one invocation. It is only syntax-checked.
+- A reboot caused by an actual hostname change. The hostname never changed on either node.
+- Debian or Ubuntu as a virtual machine, where auditd and time sync would run.
+- A Red Hat family container, and any Red Hat family release other than Rocky 9.
 
 ## Known Issues
 
 ### Incus Snapshots Sometimes Hang
 
 `incus snapshot create` occasionally hangs on the workstation. It has happened with the container running and with it stopped. The cause is unknown: at each hang the Incus daemon logged nothing and showed no pending operation, and the kernel log showed no storage or I/O error. Every stage snapshot is therefore taken stopped and under a time limit (see Snapshot Alignment). When a snapshot times out, retrying it once with the instance still stopped has always worked, and finished in under a second. A timed-out create leaves no snapshot, so confirm it with `incus snapshot list`.
+
+### The Incus Agent Cannot Start Under SELinux Enforcing
+
+On `rky9` the Incus agent stops working once normalize has set SELinux to enforcing. `incus-agent.service` fails, and the audit log shows `avc: denied { create }` for `comm="incus-agent"`, source context `init_t`, class `vsock_socket`: the `targeted` policy does not let a service running as `init_t` open the vsock socket the agent talks to the host over.
+
+What stops working:
+
+- `incus exec rky9` answers `VM agent isn't currently running`.
+- The Incus connection plugin, so an ad-hoc command against the node through `inventories/raw` fails. Ansible over SSH is not affected, and every stage after onboarding uses SSH.
+- `incus list` no longer shows the guest's own interface name; it reports the address from the DHCP lease instead.
+
+What still works: `incus stop`, `start`, `snapshot` and `restore`, which do not need the agent.
+
+One consequence for onboarding: a normalized `rky9` that is running is still listed in raw by the plugin, and the re-onboarding guard cannot reach it to see the `initial` user. An onboard run that is not limited with `-l` would wait for it and then report it as failed. Limit onboard runs to the nodes being onboarded.
+
+Not fixed. The options are a local SELinux policy module that allows the socket, a different SELinux domain for the agent, or accepting that a normalized Red Hat family VM is managed over SSH only.
+
+### The Rocky 9 Image Does Not Grow Its Root Partition
+
+`rky9` was launched with a 20 GiB root disk, but the root filesystem stayed at 3.8 GiB: the default image variant has no cloud-init and nothing grows the partition. The chain fits, with about 2 GiB free at the end. A role that installs much more would need the partition grown first.
 
 ## Repository Layout
 
@@ -334,7 +372,7 @@ The firewall settings live with the stage that owns them. The role only ever run
 
 #### Behaviour
 
-- Backend per OS family, the same one `robertdebock.firewall` installed, so nothing else on the node changes: ufw on the Debian family (Debian, Ubuntu) through `community.general.ufw`, firewalld on the Red Hat family through `ansible.posix.firewalld`, with a rich rule for each rule that has a `source`. The firewalld path has not been tested, because there is no Red Hat family test node.
+- Backend per OS family, the same one `robertdebock.firewall` installed, so nothing else on the node changes: ufw on the Debian family (Debian, Ubuntu) through `community.general.ufw`, firewalld on the Red Hat family through `ansible.posix.firewalld`, with a rich rule for each rule that has a `source`. The firewalld path is verified on `rky9`. A rule without a `source` becomes a port in the default zone; a rule with one becomes a rich rule, so `allow-http`, whose data gives `0.0.0.0/0`, is a rich rule too. The role adds to the default zone, `public`, and removes nothing from it: the services the distribution enables there (`ssh`, `dhcpv6-client` and `cockpit` on Rocky 9) stay enabled.
 - SSH safety: before anything is enabled, the role asserts that `firewall_rules` contains a TCP rule for the SSH port in use (`uc_firewall_ssh_port`, default `ansible_port` or 22), and fails with a message naming the file to fix if it does not. `firewall_rules_onboard` in `inventories/onboard/<env>/group_vars/all.yml` holds that rule.
 - Order: allow rules first, then the default policy (deny incoming, allow outgoing), then the firewall is enabled, so the default deny never takes effect before the allow rules exist.
 
@@ -575,6 +613,9 @@ Promotion uses `add_host`, which adds hosts and groups to the in-memory inventor
         ansible_user: "{{ hostvars[item].ansible_user | default(omit) }}"
         ansible_host: "{{ hostvars[item].ansible_host | default(omit) }}"
       loop: "{{ ansible_play_hosts }}"
+      # add_host changes only the in-memory inventory; nothing on the node
+      # changes, so it does not count towards the run's changed total.
+      changed_when: false
 
 - name: Bootstrap Python onto onboarded nodes
   hosts: onboarding
@@ -740,8 +781,8 @@ Make it compliant. Lives in `converge/playbooks/`. Validates onboarded (and, on 
 
 | Role | Status |
 |------|--------|
-| `robertdebock.selinux` | Red Hat family only. On Debian and Ubuntu, which use AppArmor, its defaults installed the SELinux policy, set enforcing and notified a reboot |
-| `robertdebock.auditd` | Skipped in containers, where `auditd.service` is masked; runs on VMs and bare metal. Untested so far, because both test nodes are containers |
+| `robertdebock.selinux` | Red Hat family only, after a `pre_tasks` step that installs `selinux-policy-targeted`. Verified on `rky9`: enforcing after one reboot. On Debian and Ubuntu, which use AppArmor, its defaults installed the SELinux policy, set enforcing and notified a reboot |
+| `robertdebock.auditd` | Skipped in containers, where `auditd.service` is masked; runs on VMs and bare metal. Verified on `rky9` |
 | `robertdebock.sysctl` | Runs. No settings are defined yet |
 | `robertdebock.hostname` | Runs, after `selinux`. Reboots the node when the hostname changes (`hostname_reboot` at its default, true) |
 | `robertdebock.rsyslog` | Runs |
@@ -750,13 +791,21 @@ Make it compliant. Lives in `converge/playbooks/`. Validates onboarded (and, on 
 | `timezone` | Removed. The onboard stage sets the timezone through `locale_timezone` and `ntp_timezone` |
 | `chrony` | Removed. See Time Sync |
 
-Run with `failed=0` on `deb13` and `ubu2404` from `10-onboarded`; the monitoring rule is present with its `10.0.0.0/24` source restriction.
+Run with `failed=0` on `deb13` and `rky9` from `10-onboarded`, and on `ubu2404` during the v0.1.5 work; the monitoring rule is present with its `10.0.0.0/24` source restriction.
 
 #### Reboots and Role Order
 
 `robertdebock.hostname` reboots the node through a handler when it changes the hostname. A reboot after a hostname change is wanted, so `hostname_reboot` stays at its default. Handlers normally run at the end of the play, but `robertdebock.selinux` calls `flush_handlers` partway through its own tasks. `hostname` must therefore stay after `selinux` in the role list, or its reboot would fire mid-play.
 
 Handler names are shared by every role in a play. `robertdebock.selinux` notifies a handler called `Reboot` when it changes the SELinux state, and `robertdebock.hostname` defines one of the same name. Before SELinux was limited to the Red Hat family, this reboot ran on every Debian and Ubuntu normalize run, labelled `robertdebock.hostname : Reboot` even though the hostname had not changed: SELinux had triggered it.
+
+On `rky9` this was observed directly. The only task that notified `Reboot` was `robertdebock.selinux : Manage selinux`; `robertdebock.hostname : Set hostname` reported no change. The log line was `RUNNING HANDLER [robertdebock.hostname : Reboot]`. With two handlers of one name in a play, Ansible runs the one loaded last, and `hostname` is listed after `selinux`. So the SELinux reboot is governed by `hostname_reboot`, not by `selinux_reboot`: setting `hostname_reboot: false` would also stop the reboot SELinux needs. The same happens to `Gather facts`, which both roles define.
+
+The first normalize run on a Red Hat family node therefore reboots it, twice in fact: once into the relabel that `selinux-autorelabel-mark.service` requests while SELinux is disabled, and again from there into enforcing. The handler waited 37 to 49 seconds for the node to come back. A rerun does not reboot.
+
+#### SELinux Policy Package
+
+`robertdebock.selinux` installs the Python bindings and then writes `/etc/selinux/config` through `ansible.posix.selinux`. It does not install a policy. The Incus `rockylinux/9` VM image has SELinux disabled and no `selinux-policy` package, so the module failed with `Unable to find file /etc/selinux/config`. The converge play in `20_normalize.yml` now installs `selinux-policy-targeted` in `pre_tasks`, on the Red Hat family only. The vendored role is not changed. Nothing more is needed for the relabel: `policycoreutils` already marks one at every boot with SELinux disabled.
 
 #### Time Sync (Proposal)
 
@@ -766,6 +815,7 @@ Not implemented. Today `robertdebock.ntp` runs in `10_onboard.yml` and is skippe
 - VMs and bare metal need a client. Debian 13 no longer ships the `ntp` package, so `robertdebock.ntp` cannot be the answer on trixie. Use `systemd-timesyncd` (present on Debian and Ubuntu, a client only) or `chrony` (also the Red Hat default, and able to serve time). The likely choice is chrony everywhere outside containers, from a vendored role or a small project role, configured from one `time_servers` list.
 - It belongs in normalize, not onboard: onboarding only needs a clock good enough for package signatures, which the image provides.
 - Remove `robertdebock.ntp` from onboarding once the normalize role exists, and test on a VM node.
+- Evidence from `rky9`: on Rocky 9 `robertdebock.ntp` installs chrony, not `ntp`, and after onboarding `chronyd` is active, enabled and synchronised. So the trixie problem does not apply to the Red Hat family. The proposal stays open, because time sync still sits in onboarding and no Debian or Ubuntu VM has been tested.
 
 ```yaml
 #!/usr/bin/env ansible-playbook
@@ -814,6 +864,9 @@ Not implemented. Today `robertdebock.ntp` runs in `10_onboard.yml` and is skippe
           - normalized
           - "{{ target_group | default('ungrouped') }}"
       loop: "{{ ansible_play_hosts }}"
+      # add_host changes only the in-memory inventory; nothing on the node
+      # changes, so it does not count towards the run's changed total.
+      changed_when: false
 
 - name: converge normalized baseline
   hosts: normalizing
@@ -829,7 +882,7 @@ Not implemented. Today `robertdebock.ntp` runs in `10_onboard.yml` and is skippe
     # inventory is passed with -i):
     #   firewall_rules_onboard    inventories/onboard/<env>/group_vars/all.yml
     #   firewall_rules_normalize  inventories/normalized/<env>/group_vars/all.yml
-    # converge/roles/uc_firewall applies the combined list (see Firewall Layering in
+    # shared/roles/uc_firewall applies the combined list (see Firewall Layering in
     # en/docs/uc-controller-v0.1.4.md).
     firewall_rules: >-
       {{
@@ -840,6 +893,21 @@ Not implemented. Today `robertdebock.ntp` runs in `10_onboard.yml` and is skippe
     # Roles that need the kernel or host access a container does not have are
     # skipped there; VMs and bare metal run them.
     normalize_container_types: ['lxc', 'lxd', 'incus', 'docker', 'podman', 'systemd-nspawn', 'container', 'openvz']
+
+  # A Red Hat family image can ship without an SELinux policy: the Incus
+  # rockylinux/9 VM image has SELinux disabled, no selinux-policy package and
+  # no /etc/selinux/config. robertdebock.selinux installs only the Python
+  # bindings, so its "Manage selinux" task fails there. Install the policy
+  # first. Nothing else is needed for the first boot into enforcing: while
+  # SELinux is disabled, selinux-autorelabel-mark.service (policycoreutils)
+  # creates /.autorelabel at every boot, so the reboot the role asks for
+  # relabels the filesystem and then boots again, enforcing.
+  pre_tasks:
+    - name: install the SELinux policy the selinux role configures
+      ansible.builtin.package:
+        name: selinux-policy-targeted
+        state: present
+      when: ansible_facts['os_family'] == 'RedHat'
 
   # Removed, none of them exists in requirements.yml: pam, limits and motd
   # (no stated requirement; no configuration is invented), timezone (the
@@ -928,7 +996,7 @@ Make it useful. Applies the role-specific composition and the complete firewall 
     #   firewall_rules_normalize  inventories/normalized/<env>/group_vars/all.yml
     #   firewall_rules_specialize inventories/normalized/<env>/group_vars/<group>.yml
     #                             (for example webservers.yml)
-    # roles/uc_firewall applies the combined list (see Firewall Layering in
+    # shared/roles/uc_firewall applies the combined list (see Firewall Layering in
     # en/docs/uc-controller-v0.1.4.md).
     firewall_rules: >-
       {{
@@ -969,7 +1037,9 @@ Pass the onboard inventory as well as the normalized one. `firewall_rules_onboar
 
 `converge/roles/webserver` is the smallest role that exercises the stage. It installs nginx, enables and starts it, and writes `index.html` with the host's inventory name into the distribution's default document root, `/var/www/html` on the Debian family and `/usr/share/nginx/html` on the Red Hat family. It opens no port. HTTP is opened at the specialize layer by `firewall_rules_specialize` in `inventories/normalized/<env>/group_vars/webservers.yml`, so only hosts in the `webservers` group get it. Port 443 is not opened, because nothing serves TLS. No TLS, no virtual hosts, no templated site configuration.
 
-Run on the freshly onboarded and normalized `deb13`: before specialize, port 80 timed out from the controller and SSH worked. The run finished with `failed=0`; afterwards `curl` returned `deb13`, SSH still worked, and ufw listed `allow-ssh`, `allow-monitoring` (from `10.0.0.0/24`), `allow-http` and `allow-https`. A second run reported `changed=0`. Not yet run on a Red Hat family node.
+Run on the freshly onboarded and normalized `deb13`: before specialize, port 80 timed out from the controller and SSH worked. The run finished with `failed=0`; afterwards `curl` returned `deb13`, SSH still worked, and ufw listed `allow-ssh`, `allow-monitoring` (from `10.0.0.0/24`), `allow-http` and `allow-https`. A second run reported `changed=0`.
+
+Run on `rky9` with SELinux enforcing: port 80 was refused beforehand, the run finished with `failed=0`, and `curl` returned `rky9`. The packaged `index.html` there is a symlink to the distribution's test page; `copy` replaced the link with a regular file labelled `httpd_sys_content_t`. A second run reported `changed=0`.
 
 `allow-https` was then removed from `webservers.yml`. Because `uc_firewall` is additive (see Known Limitation under Firewall Layering), the rule stays on a node that already has it until it is deleted by hand or the node is rebuilt from a snapshot taken before specialize.
 

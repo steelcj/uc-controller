@@ -74,6 +74,21 @@
     # skipped there; VMs and bare metal run them.
     normalize_container_types: ['lxc', 'lxd', 'incus', 'docker', 'podman', 'systemd-nspawn', 'container', 'openvz']
 
+  # A Red Hat family image can ship without an SELinux policy: the Incus
+  # rockylinux/9 VM image has SELinux disabled, no selinux-policy package and
+  # no /etc/selinux/config. robertdebock.selinux installs only the Python
+  # bindings, so its "Manage selinux" task fails there. Install the policy
+  # first. Nothing else is needed for the first boot into enforcing: while
+  # SELinux is disabled, selinux-autorelabel-mark.service (policycoreutils)
+  # creates /.autorelabel at every boot, so the reboot the role asks for
+  # relabels the filesystem and then boots again, enforcing.
+  pre_tasks:
+    - name: install the SELinux policy the selinux role configures
+      ansible.builtin.package:
+        name: selinux-policy-targeted
+        state: present
+      when: ansible_facts['os_family'] == 'RedHat'
+
   # Removed, none of them exists in requirements.yml: pam, limits and motd
   # (no stated requirement; no configuration is invented), timezone (the
   # onboard stage sets it through locale_timezone and ntp_timezone), and

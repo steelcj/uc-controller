@@ -569,6 +569,85 @@ nginx starts on its own at boot, a few seconds after SSH answers, so a `curl` st
 
 `deb13` is now a specialized web server, managed over SSH as `initial`, with a snapshot for every stage.
 
+## A Red Hat family virtual machine: rky9
+
+The same steps take a Rocky Linux 9 virtual machine, `rky9`, from launch to a web server. It is a virtual machine, not a container, so that SELinux and auditd get their own kernel. Follow steps 1 to 9 with `rky9` in place of `deb13`, and with the differences below.
+
+### Launch
+
+The image needs a disk for the Incus agent's configuration, and `incus launch` cannot add it in the same command: it creates the instance and then fails to start it with `This virtual machine image requires an agent:config disk be added`. Create the instance first, add the disk, then start it:
+
+```bash
+incus init images:rockylinux/9 rky9 --vm -c limits.cpu=2 -c limits.memory=2GiB -d root,size=20GiB
+incus config device add rky9 agent disk source=agent:config
+incus start rky9
+until incus exec rky9 -- true 2>/dev/null; do sleep 3; done   # wait for the agent
+```
+
+Take `raw` with the instance stopped, as in step 7. The image ships Python and sudo, SELinux disabled, and no sshd, chrony, firewalld or auditd. Its root filesystem is 3.8 GiB whatever the disk size, because nothing grows the partition.
+
+### Onboard
+
+The command is the same. The run has no rescued task, because Python is already there. Outside a container `robertdebock.ntp` runs, and on Rocky 9 it installs chrony:
+
+```bash
+incus exec rky9 -- systemctl is-active chronyd sshd firewalld fail2ban
+```
+
+### Normalize
+
+The first run reboots the node. `20_normalize.yml` installs the SELinux policy, `robertdebock.selinux` sets enforcing, and the `Reboot` handler restarts the node into a filesystem relabel and then into enforcing mode. The handler is logged as `robertdebock.hostname : Reboot` although SELinux asked for it; the two roles share the handler name. Expect the run to wait 40 to 50 seconds there. auditd is installed and started, because the node is not a container.
+
+```text
+RUNNING HANDLER [robertdebock.hostname : Reboot] *******************************
+changed: [rky9]
+
+PLAY RECAP *********************************************************************
+rky9                       : ok=98   changed=14   unreachable=0    failed=0    skipped=16   rescued=0    ignored=0
+```
+
+From here on `incus exec rky9` fails with `VM agent isn't currently running`: SELinux in enforcing mode stops the Incus agent (see Known Issues in the design document). Use SSH for every check, and `incus stop`, `start` and `snapshot`, which still work:
+
+```bash
+IP=10.119.134.116   # from incus list; yours will differ
+ssh -i ~/.ssh/gradus-raw-initial-id_ed25519 -o IdentitiesOnly=yes initial@$IP \
+  'sudo sh -c "getenforce; systemctl is-active auditd; auditctl -s | head -1; firewall-cmd --list-all"'
+```
+
+```text
+Enforcing
+active
+enabled 1
+public (active)
+  services: cockpit dhcpv6-client ssh
+  ports: 22/tcp
+  rich rules:
+	rule family="ipv4" source address="10.0.0.0/24" port port="9100" protocol="tcp" accept
+```
+
+The firewall is firewalld, not ufw. `allow-ssh` is the `22/tcp` port and `allow-monitoring` is the rich rule. `ssh`, `dhcpv6-client` and `cockpit` are services the distribution enables in the zone; the firewall role leaves them. A closed port is refused at once instead of timing out:
+
+```text
+curl: (7) Failed to connect to 10.119.134.116 port 80 after 0 ms: Couldn't connect to server
+```
+
+A second normalize run reports `changed=0` and does not reboot.
+
+### Specialize
+
+The command is the same. The document root is `/usr/share/nginx/html`, where the packaged `index.html` is a symlink to the distribution's test page; the role replaces the link with its own file. `allow-http` appears as a second rich rule:
+
+```text
+	rule family="ipv4" source address="0.0.0.0/0" port port="80" protocol="tcp" accept
+	rule family="ipv4" source address="10.0.0.0/24" port port="9100" protocol="tcp" accept
+```
+
+`curl -sS -m 5 http://$IP/` returns `rky9` with SELinux enforcing. A second run reports `changed=0`.
+
+### Going back
+
+Restores and demotions work as for `deb13`. A normalized `rky9` that is running is still listed in raw, but Ansible cannot reach it there, because the Incus connection needs the agent. Always limit onboard runs with `-l` to the nodes you are onboarding.
+
 ## Quick reference
 
 The whole chain for a new node, without the checks. Take each stage snapshot as in step 7.
