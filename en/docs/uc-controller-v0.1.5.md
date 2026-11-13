@@ -10,9 +10,12 @@ An Ansible controller configuration that moves nodes through a four stage lifecy
 |--------|-------------|
 | Hostname reboot kept | `hostname_reboot` stays at the role default; `robertdebock.hostname` must stay after `robertdebock.selinux`, which flushes handlers partway through |
 | SELinux on the Red Hat family only | `robertdebock.selinux` runs only when `os_family` is `RedHat`; on Debian and Ubuntu it installed a policy, set enforcing and triggered the shared `Reboot` handler |
-| Firewall role location | `uc_firewall` moved to `converge/roles/`; `roles/` holds only vendored roles |
+| Role directories | Four role directories with one rule each (see Role Directories); `uc_firewall`, used by onboarding and both converge stages, lives in `shared/roles/`; `roles/` holds only vendored roles; the boundary check fails on a role used across concerns |
 | Scaffold removed | `tools/scaffold.yml`, the experimental role-defaults scaffold, was deleted: it wrote a mapping where the firewall plays expect a list, and nothing depended on it |
 | Vault guidance | The onboarding guide no longer tells readers to create vault files; the secrets pattern is not decided |
+| Normalize persists its promotion | `20_normalize.yml` ends with a play that moves each host that completed it from `onboard_inventory` to `normalized_inventory` through `promote_node.py`; both variables are required |
+| Stopped snapshots | Stage snapshots are taken with the instance stopped (stop, snapshot, start, each with a time limit, then wait for SSH) after snapshots of running containers hung |
+| Group memberships kept | Moves between onboard and normalized, in either direction, keep every group other than the stage group and leave the connection settings unchanged |
 
 ### v0.1.3 → v0.1.4
 
@@ -79,8 +82,7 @@ uc-controller/
 │   ├── playbooks/
 │   │   ├── 20_normalize.yml
 │   │   └── 30_specialize.yml
-│   └── roles/
-│       └── uc_firewall/          # project firewall role, also used by onboarding
+│   └── roles/                    # repository roles used by converge only
 │
 ├── inventories/
 │   ├── raw/                      # flat: no environment split
@@ -118,7 +120,11 @@ uc-controller/
 │           │   └── all.yml
 │           └── host_vars/
 │
-├── roles/                        # vendored Galaxy roles, shared by both concerns
+├── shared/
+│   └── roles/                    # repository roles used by ingress and converge
+│       └── uc_firewall/
+│
+├── roles/                        # vendored Galaxy roles only
 │
 ├── scripts/
 │   ├── promote_node.py
@@ -126,6 +132,17 @@ uc-controller/
 │   ├── reset_inventories.py
 │   └── check_converge_boundary.py
 ```
+
+### Role Directories
+
+| Directory | Holds | Edited here |
+|-----------|-------|-------------|
+| `roles/` | Vendored roles, installed from `requirements.yml` (Galaxy or git) | No |
+| `shared/roles/` | Repository roles used by both ingress and converge playbooks | Yes |
+| `ingress/roles/` | Repository roles used only by ingress playbooks | Yes |
+| `converge/roles/` | Repository roles used only by converge playbooks | Yes |
+
+All four are on `roles_path`, in that order, so any playbook resolves a role by name wherever it lives. The directories state who uses a role, and `scripts/check_converge_boundary.py` holds ingress and converge to it: it fails when a playbook in `ingress/playbooks/` uses a role from `converge/roles/`, or one in `converge/playbooks/` uses a role from `ingress/roles/`. A role that both need moves to `shared/roles/`. `uc_firewall` is there because onboarding opens SSH with it and both converge stages add their layers with it. Role names built from a variable, such as `{{ specialize_role }}`, are not checked.
 
 A `prod` environment, when it exists, follows the same pattern as `dev` and `stage` under `onboard/` and `normalized/`. Secrets handling is deferred until the first secret exists; the earlier `vaults/` placeholders held none and were removed.
 
@@ -184,6 +201,7 @@ Raw is what the sources report: the Incus plugin, the hand-maintained `hosts.yml
 
 - Promotion out of raw removes a scanned host from `discovered.yml`, so the host is not listed in two stages until the next scan. This is the only case where a script changes a raw file.
 - A host entered by hand in `hosts.yml` is copied on promotion, not moved, and marked `uc_origin: static`. A plugin host is created from `--address` and marked `uc_origin: plugin`.
+- Moves between onboard and normalized, in either direction, keep the host's connection settings and every group it was in other than the stage group. The connection contract is written only on promotion out of raw.
 - Demotion to raw removes the host's entry from the onboard (or normalized) inventory and writes nothing. The node reappears in raw through its source: the plugin lists a running Incus instance, a hand-entered host never left `hosts.yml`, and a scanned host is found by the next scan.
 
 Demotion is inventory bookkeeping. It exists so the inventory can follow a node after a snapshot restore, and it has nothing to do with making onboarding repeatable. Onboarding is one-shot; see Re-onboarding Guard.
@@ -276,7 +294,7 @@ The firewall settings live with the stage that owns them. The role only ever run
 
 ### The Firewall Role
 
-`uc_firewall` is a project role, not a vendored one. It lives in `converge/roles/`. `roles_path` is shared, so `10_onboard.yml` resolves it too. It replaced `robertdebock.firewall`, which read only `firewall_services` and could not restrict a rule's source address.
+`uc_firewall` is a project role, not a vendored one. It lives in `shared/roles/` (see Role Directories), because onboarding and both converge stages use it. It replaced `robertdebock.firewall`, which read only `firewall_services` and could not restrict a rule's source address.
 
 #### Rule Schema
 
@@ -689,7 +707,7 @@ Promotion uses `add_host`, which adds hosts and groups to the in-memory inventor
 
 ### 20_normalize.yml
 
-Make it compliant. Lives in `converge/playbooks/`. Validates onboarded nodes, promotes them into the `normalized` group in memory, and converges the compliance baseline. Promotion is not persisted yet; run `promote_node.py` by hand afterwards (see Persistence).
+Make it compliant. Lives in `converge/playbooks/`. Validates onboarded (and, on a rerun, normalized) nodes, promotes them into the `normalized` group in memory, converges the compliance baseline, and persists the promotion with `promote_node.py` (see Persistence). It requires `-e onboard_inventory=... -e normalized_inventory=...`.
 
 #### Role List
 
@@ -726,13 +744,30 @@ Not implemented. Today `robertdebock.ntp` runs in `10_onboard.yml` and is skippe
 #!/usr/bin/env ansible-playbook
 ---
 - name: validate and promote onboarded nodes
-  hosts: onboarded
+  # normalized too, so normalize can be rerun on a node already promoted.
+  hosts: onboarded:normalized
   gather_facts: no
   # ansible.cfg turns become on globally; the reachability check runs on the
   # controller, where sudo would need a password.
   become: no
 
   tasks:
+    # The last play moves each normalized host from the onboard inventory to
+    # the normalized inventory, so both have to be named up front. They are
+    # passed in, not derived from playbook_dir, as in 10_onboard.yml.
+    - name: require the onboard and normalized inventories
+      ansible.builtin.assert:
+        that:
+          - onboard_inventory is defined
+          - onboard_inventory | length > 0
+          - normalized_inventory is defined
+          - normalized_inventory | length > 0
+        fail_msg: >-
+          Set onboard_inventory and normalized_inventory for this environment,
+          for example -e onboard_inventory=inventories/onboard/dev
+          -e normalized_inventory=inventories/normalized/dev.
+        quiet: true
+
     - name: confirm reachability
       wait_for:
         host: "{{ ansible_host | default(inventory_hostname) }}"
@@ -740,17 +775,21 @@ Not implemented. Today `robertdebock.ntp` runs in `10_onboard.yml` and is skippe
         timeout: 10
       delegate_to: localhost
 
+    # normalizing holds only the hosts in this run; the later plays target
+    # it. normalized is what 30_specialize.yml targets when chained in the
+    # same run through site.yml.
     - name: promote to normalized group
       add_host:
         name: "{{ item }}"
         ansible_host: "{{ hostvars[item].ansible_host | default(item) }}"
         groups:
+          - normalizing
           - normalized
           - "{{ target_group | default('ungrouped') }}"
       loop: "{{ ansible_play_hosts }}"
 
 - name: converge normalized baseline
-  hosts: normalized
+  hosts: normalizing
   become: yes
   gather_facts: yes
   # Each node converges independently, so a slow node does not hold the
@@ -800,6 +839,45 @@ Not implemented. Today `robertdebock.ntp` runs in `10_onboard.yml` and is skippe
     - role: robertdebock.hostname
     - role: robertdebock.rsyslog
     - role: uc_firewall
+
+- name: Persist the promotion to the normalized inventory
+  hosts: normalizing
+  gather_facts: no
+  become: no
+  # Linear, the config default, although the converge play above runs free:
+  # the single run_once task below must see every host that completed.
+
+  vars:
+    # Resolved on the controller against the directory ansible-playbook was
+    # started from, the repository root, as in 10_onboard.yml.
+    promote_script: "{{ uc_scripts_dir | default('scripts') | ansible.builtin.realpath }}/promote_node.py"
+    promote_from: "{{ onboard_inventory | ansible.builtin.realpath }}"
+    promote_to: "{{ normalized_inventory | ansible.builtin.realpath }}"
+
+  tasks:
+    # promote_node.py is the only code that writes hosts.yml entries. One
+    # run_once task loops over the hosts that completed the converge play (a
+    # host that failed is not in this play), serializing the writes. Only
+    # hosts still listed in the onboard inventory are moved; a rerun on a
+    # node already normalized moves nothing. Connection settings and group
+    # memberships carry over in promote_node.py. become is off because
+    # ansible.cfg enables it globally and this writes to the operator's
+    # working tree. The commit is left to the operator.
+    - name: move each normalized host to the normalized inventory
+      ansible.builtin.command:
+        argv: >-
+          {{
+            [ansible_playbook_python, promote_script,
+             '--from', promote_from,
+             '--to', promote_to,
+             '--host', item,
+             '--no-commit']
+            + (['--group', target_group] if target_group is defined else [])
+          }}
+      loop: "{{ ansible_play_hosts | select('in', groups['onboarded'] | default([])) | list }}"
+      run_once: true
+      delegate_to: localhost
+      become: no
 ```
 
 ### 30_specialize.yml
@@ -859,7 +937,7 @@ The playbooks move a node between groups with `add_host`. That changes only the 
 ### When promote_node.py Runs
 
 - After `10_onboard.yml`: automatically. The playbook's last play calls `promote_node.py` once for all hosts that passed the SSH check, with `--address`, `--key-file`, `--no-commit` and `--group` when `target_group` is set. It writes each host and its connection contract into the onboard inventory named by `onboard_inventory`. The change is left uncommitted for the operator to review.
-- After `20_normalize.yml`: by hand, until normalize gains its own persist play. Run `promote_node.py --from inventories/onboard/<env> --to inventories/normalized/<env> --host <host>` for each node that converged.
+- After `20_normalize.yml`: automatically. Its last play, on the default linear strategy, calls `promote_node.py` once on the controller and moves each host that completed the converge play from the inventory named by `onboard_inventory` to the one named by `normalized_inventory`. Both variables are required, and the playbook fails at once without them. A host that failed is not moved, and a host already in the normalized inventory (a rerun) is left where it is. The change is left uncommitted.
 - After a snapshot restore: run `demote_node.py` so the inventory matches the restored node (see Restore and Resume).
 
 ### What Is Lost If It Is Skipped
@@ -891,16 +969,23 @@ Incus snapshot names follow the playbook numbers (see *Incus: Instance Naming*).
 | `20-normalized` | After `20_normalize.yml` succeeds and `promote_node.py` has run | `normalized/<env>/hosts.yml` |
 | `30-<role>` | After `30_specialize.yml` succeeds with that role | `normalized/<env>/hosts.yml` |
 
+Take every stage snapshot with the instance stopped, each step under a time limit, and wait for SSH before continuing:
+
 ```bash
-incus snapshot create deb13 10-onboarded
+timeout 120 incus stop deb13
+timeout 120 incus snapshot create deb13 10-onboarded
+timeout 120 incus start deb13
+ansible -i inventories/onboard/dev deb13 -m ansible.builtin.wait_for_connection
 ```
+
+A snapshot of a running container hung twice on the workstation. The investigation found no kernel or storage error at either hang and nothing heavy running inside the container; the host root filesystem, which holds the Incus pool's loop image, had filled up once in between. With the instance stopped there is nothing to freeze. The host disk is worth watching, because a full root filesystem stops the pool from growing.
 
 ### Restore and Resume
 
 Restoring a snapshot changes the instance only. The inventory entry and the fact cache still describe the later state, so move both back by hand.
 
 - Restore the instance to the snapshot of the stage you want to resume from.
-- Demote the inventory entry to the stage that snapshot belongs to. Demoting to raw removes the entry from the onboard inventory and writes nothing to raw; the node is listed in raw again by its source. Demoting from normalized to onboard moves the entry back.
+- Demote the inventory entry to the stage that snapshot belongs to. Demoting to raw removes the entry from the onboard inventory and writes nothing to raw; the node is listed in raw again by its source. Demoting from normalized to onboard moves the entry back with its connection settings and every group it was in, such as `webservers`.
 - Flush the node's cached facts, so the next run does not reach the node at a stale address or skip a fact gathering it needs. The jsonfile cache keeps one file per host in the directory `fact_caching_connection` names; ansible-core 2.21 prefixes the file name, for example `s1_deb13`.
 - Run the next playbook.
 
@@ -973,6 +1058,7 @@ ansible-playbook \
   -i inventories/normalized/dev \
   site.yml \
   -e onboard_inventory=inventories/onboard/dev \
+  -e normalized_inventory=inventories/normalized/dev \
   -e target_group=webservers \
   -e specialize_role=web-server
 
@@ -997,7 +1083,8 @@ ansible-playbook \
   -i inventories/onboard/dev \
   -i inventories/normalized/dev \
   converge/playbooks/20_normalize.yml \
-  -e target_group=webservers
+  -e onboard_inventory=inventories/onboard/dev \
+  -e normalized_inventory=inventories/normalized/dev
 
 ansible-playbook \
   -i inventories/raw \
@@ -1065,6 +1152,8 @@ inventories/raw/:
 - A scanned host is removed from raw/discovered.yml when promoted, so it is
   not listed in two stages until the next scan. This is the only case where
   a script changes a raw file.
+- Between onboard and normalized, in either direction, the host keeps its
+  connection settings and every group it was in other than the stage group.
 - Demotion to raw removes the host's entry from the source stage and writes
   nothing. The node reappears in raw through its source: the plugin lists a
   running instance, a hand-entered host never left hosts.yml, and a scanned
@@ -1173,19 +1262,24 @@ def static_files(inventory: Path) -> list[Path]:
 def find_host(inventory: Path, host: str):
     """Pop host from the first static file holding it.
 
-    Return (file, its data with the host removed, host vars), or
-    (None, None, None) when no static file holds it.
+    Return (file, its data with the host removed, host vars, the groups that
+    listed it), or (None, None, None, []) when no static file holds it.
     """
     for path in static_files(inventory):
         data = load(path)
+        groups = host_groups(data, host)
         found, host_vars = pop_host(data, host)
         if found:
-            return path, data, host_vars
-    return None, None, None
+            return path, data, host_vars, groups
+    return None, None, None, []
 
 
 def pop_host(groups: dict, host: str):
-    """Remove host from every group in the tree. Return (found, its vars)."""
+    """Remove host from every group in the tree. Return (found, its vars).
+
+    The host's vars live under one group (normally the stage group); the other
+    groups list it with no vars. Prefer the entry that carries vars.
+    """
     found, host_vars = False, None
     for group in groups.values():
         if not isinstance(group, dict):
@@ -1193,14 +1287,29 @@ def pop_host(groups: dict, host: str):
         hosts = group.get("hosts")
         if isinstance(hosts, dict) and host in hosts:
             removed = hosts.pop(host)
-            if not found:
+            if not found or (host_vars is None and removed is not None):
                 found, host_vars = True, removed
         children = group.get("children")
         if isinstance(children, dict):
             child_found, child_vars = pop_host(children, host)
-            if child_found and not found:
+            if child_found and (not found or (host_vars is None and child_vars is not None)):
                 found, host_vars = True, child_vars
     return found, host_vars
+
+
+def host_groups(groups: dict, host: str) -> list[str]:
+    """Names of every group in the tree that lists host, in file order."""
+    names = []
+    for name, group in groups.items():
+        if not isinstance(group, dict):
+            continue
+        hosts = group.get("hosts")
+        if isinstance(hosts, dict) and host in hosts:
+            names.append(name)
+        children = group.get("children")
+        if isinstance(children, dict):
+            names.extend(host_groups(children, host))
+    return names
 
 
 def add_host(data: dict, group: str, host: str, host_vars) -> None:
@@ -1272,7 +1381,7 @@ def main(direction: str = "promote") -> int:
     if (direction == "promote" and step <= 0) or (direction == "demote" and step >= 0):
         raise SystemExit(f"error: cannot {direction} from {from_stage} to {to_stage}")
 
-    source_file, source_data, host_vars = find_host(args.source, args.host)
+    source_file, source_data, host_vars, source_groups = find_host(args.source, args.host)
     found = source_file is not None
     if not found and (to_stage == "raw" or not args.address):
         raise SystemExit(
@@ -1298,7 +1407,9 @@ def main(direction: str = "promote") -> int:
         return 0
 
     dest_file = args.dest / "hosts.yml"
-    if to_stage == "onboard":
+    # The connection contract is written once, on promotion out of raw. Moves
+    # between onboard and normalized carry the entry over unchanged.
+    if from_stage == "raw":
         host_vars = with_contract(host_vars, args.address, args.key_file, args.host)
 
     # pop_host clears every existing entry for the host, so a repeat
@@ -1306,8 +1417,16 @@ def main(direction: str = "promote") -> int:
     dest_data = load(dest_file)
     pop_host(dest_data, args.host)
     add_host(dest_data, STAGE_GROUP[to_stage], args.host, host_vars)
-    if args.group:
-        add_host(dest_data, args.group, args.host, None)
+    # Between onboard and normalized, in either direction, the host keeps
+    # every group it was in other than the stage group itself (webservers and
+    # the like). Raw's groups are source groups and do not carry over.
+    extra = [] if from_stage == "raw" else [
+        g for g in source_groups if g not in STAGE_GROUP.values()
+    ]
+    if args.group and args.group not in extra:
+        extra.append(args.group)
+    for group in extra:
+        add_host(dest_data, group, args.host, None)
 
     written = [dest_file]
     if found and not read_only:
@@ -1362,7 +1481,8 @@ restore, and has nothing to do with making onboarding repeatable.
   nothing under inventories/raw/. The node reappears in raw through its
   source: the Incus plugin lists a running instance, a hand-entered host
   never left raw/hosts.yml, and a scanned host is found by the next scan.
-- Demotion from normalized to onboard moves the entry back.
+- Demotion from normalized to onboard moves the entry back, with its
+  connection settings and every group it was in other than the stage group.
 """
 import sys
 
@@ -1386,7 +1506,10 @@ python scripts/demote_node.py \
 ```ini
 # ansible.cfg
 [defaults]
-roles_path = ./roles:./ingress/roles:./converge/roles:~/.ansible/roles:/usr/share/ansible/roles
+# Role directories: ./roles vendored Galaxy roles; ./shared/roles repository roles
+# used by both ingress and converge; ./ingress/roles and ./converge/roles
+# repository roles used by one concern only.
+roles_path = ./roles:./shared/roles:./ingress/roles:./converge/roles:~/.ansible/roles:/usr/share/ansible/roles
 inventory = ./inventories/raw
 # Hosts handled in parallel. Test nodes share this machine with the controller.
 forks = 20

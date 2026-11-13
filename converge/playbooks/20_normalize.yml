@@ -1,13 +1,30 @@
 #!/usr/bin/env ansible-playbook
 ---
 - name: validate and promote onboarded nodes
-  hosts: onboarded
+  # normalized too, so normalize can be rerun on a node already promoted.
+  hosts: onboarded:normalized
   gather_facts: no
   # ansible.cfg turns become on globally; the reachability check runs on the
   # controller, where sudo would need a password.
   become: no
 
   tasks:
+    # The last play moves each normalized host from the onboard inventory to
+    # the normalized inventory, so both have to be named up front. They are
+    # passed in, not derived from playbook_dir, as in 10_onboard.yml.
+    - name: require the onboard and normalized inventories
+      ansible.builtin.assert:
+        that:
+          - onboard_inventory is defined
+          - onboard_inventory | length > 0
+          - normalized_inventory is defined
+          - normalized_inventory | length > 0
+        fail_msg: >-
+          Set onboard_inventory and normalized_inventory for this environment,
+          for example -e onboard_inventory=inventories/onboard/dev
+          -e normalized_inventory=inventories/normalized/dev.
+        quiet: true
+
     - name: confirm reachability
       wait_for:
         host: "{{ ansible_host | default(inventory_hostname) }}"
@@ -15,17 +32,21 @@
         timeout: 10
       delegate_to: localhost
 
+    # normalizing holds only the hosts in this run; the later plays target
+    # it. normalized is what 30_specialize.yml targets when chained in the
+    # same run through site.yml.
     - name: promote to normalized group
       add_host:
         name: "{{ item }}"
         ansible_host: "{{ hostvars[item].ansible_host | default(item) }}"
         groups:
+          - normalizing
           - normalized
           - "{{ target_group | default('ungrouped') }}"
       loop: "{{ ansible_play_hosts }}"
 
 - name: converge normalized baseline
-  hosts: normalized
+  hosts: normalizing
   become: yes
   gather_facts: yes
   # Each node converges independently, so a slow node does not hold the
@@ -38,7 +59,7 @@
     # inventory is passed with -i):
     #   firewall_rules_onboard    inventories/onboard/<env>/group_vars/all.yml
     #   firewall_rules_normalize  inventories/normalized/<env>/group_vars/all.yml
-    # converge/roles/uc_firewall applies the combined list (see Firewall Layering in
+    # shared/roles/uc_firewall applies the combined list (see Firewall Layering in
     # en/docs/uc-controller-v0.1.4.md).
     firewall_rules: >-
       {{
@@ -75,3 +96,42 @@
     - role: robertdebock.hostname
     - role: robertdebock.rsyslog
     - role: uc_firewall
+
+- name: Persist the promotion to the normalized inventory
+  hosts: normalizing
+  gather_facts: no
+  become: no
+  # Linear, the config default, although the converge play above runs free:
+  # the single run_once task below must see every host that completed.
+
+  vars:
+    # Resolved on the controller against the directory ansible-playbook was
+    # started from, the repository root, as in 10_onboard.yml.
+    promote_script: "{{ uc_scripts_dir | default('scripts') | ansible.builtin.realpath }}/promote_node.py"
+    promote_from: "{{ onboard_inventory | ansible.builtin.realpath }}"
+    promote_to: "{{ normalized_inventory | ansible.builtin.realpath }}"
+
+  tasks:
+    # promote_node.py is the only code that writes hosts.yml entries. One
+    # run_once task loops over the hosts that completed the converge play (a
+    # host that failed is not in this play), serializing the writes. Only
+    # hosts still listed in the onboard inventory are moved; a rerun on a
+    # node already normalized moves nothing. Connection settings and group
+    # memberships carry over in promote_node.py. become is off because
+    # ansible.cfg enables it globally and this writes to the operator's
+    # working tree. The commit is left to the operator.
+    - name: move each normalized host to the normalized inventory
+      ansible.builtin.command:
+        argv: >-
+          {{
+            [ansible_playbook_python, promote_script,
+             '--from', promote_from,
+             '--to', promote_to,
+             '--host', item,
+             '--no-commit']
+            + (['--group', target_group] if target_group is defined else [])
+          }}
+      loop: "{{ ansible_play_hosts | select('in', groups['onboarded'] | default([])) | list }}"
+      run_once: true
+      delegate_to: localhost
+      become: no

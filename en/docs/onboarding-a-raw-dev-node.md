@@ -38,6 +38,8 @@ After creating a new container you should create a snapshot of it called somethi
 
 ```sh
 incus snapshot create ex2-test fresh
+incus snapshot list deb13
+incus snapshot create deb13-uct raw
 ```
 
 This will allow you to test on a fresh node and allow you to restore a pristine state between testing and development runs.

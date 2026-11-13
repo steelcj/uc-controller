@@ -9,7 +9,8 @@ restore, and has nothing to do with making onboarding repeatable.
   nothing under inventories/raw/. The node reappears in raw through its
   source: the Incus plugin lists a running instance, a hand-entered host
   never left raw/hosts.yml, and a scanned host is found by the next scan.
-- Demotion from normalized to onboard moves the entry back.
+- Demotion from normalized to onboard moves the entry back, with its
+  connection settings and every group it was in other than the stage group.
 """
 import sys
 
