@@ -91,6 +91,9 @@
         ansible_user: "{{ hostvars[item].ansible_user | default(omit) }}"
         ansible_host: "{{ hostvars[item].ansible_host | default(omit) }}"
       loop: "{{ ansible_play_hosts }}"
+      # add_host changes only the in-memory inventory; nothing on the node
+      # changes, so it does not count towards the run's changed total.
+      changed_when: false
 
 - name: Bootstrap Python onto onboarded nodes
   hosts: onboarding

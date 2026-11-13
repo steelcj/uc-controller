@@ -17,6 +17,9 @@ An Ansible controller configuration that moves nodes through a four stage lifecy
 | Stopped snapshots | Stage snapshots are taken with the instance stopped (stop, snapshot, start, each with a time limit, then wait for SSH) after snapshots of running containers hung |
 | Specialize stage | `converge/roles/webserver` installs nginx and serves a one-line page naming the host; `30_specialize.yml` includes the role as a task and fails early with a clear message when `specialize_role` is not set. HTTP is opened only as `firewall_rules_specialize` data for the `webservers` group |
 | Verification status | New section: the chain is verified on Debian 13 containers only; auditd, firewalld, the SELinux role and its `Reboot` handler collision, and the `webserver` role on the Red Hat family are untested |
+| Port 443 not opened | `allow-https` removed from `webservers.yml`; nothing serves TLS |
+| Promotions report no change | The in-memory `add_host` promotion tasks in `10_onboard.yml` and `20_normalize.yml` set `changed_when: false`, so a normalize rerun can report `changed=0` |
+| Known issues | New section: Incus snapshots sometimes hang, with the instance running or stopped; the time limit and one retry have always worked |
 | Group memberships kept | Moves between onboard and normalized, in either direction, keep every group other than the stage group and leave the connection settings unchanged |
 
 ### v0.1.3 → v0.1.4
@@ -67,7 +70,7 @@ An Ansible controller configuration that moves nodes through a four stage lifecy
 
 ## Verification Status
 
-The lifecycle is verified end to end on Debian 13 containers only. On `deb13`, restored to `raw` with the stage inventories reset, onboard, normalize and specialize with `webserver` each ran as their own command with `failed=0`, and the inventory on disk matched the node after each stage. A second normalize run caused no reboot and no hostname change, and a second specialize run reported no changes.
+The lifecycle is verified end to end on Debian 13 containers only. On `deb13`, restored to `raw` with the stage inventories reset, onboard, normalize and specialize with `webserver` each ran as their own command with `failed=0`, and the inventory on disk matched the node after each stage. A second normalize run caused no reboot and no hostname change, and a second specialize run reported no changes. After the in-memory promotion tasks were marked `changed_when: false`, normalize and specialize reruns on `deb13` both report `changed=0`.
 
 Not verified, because the Red Hat family node (`rky9`) was not built. None of these is known to work:
 
@@ -77,6 +80,12 @@ Not verified, because the Red Hat family node (`rky9`) was not built. None of th
 - The `webserver` role on a Red Hat family node, including its document root and the replacement of the packaged `index.html`.
 
 Ubuntu 24.04 (`ubu2404`) ran onboard and normalize earlier in this version's work, but not specialize and not the final from-scratch run.
+
+## Known Issues
+
+### Incus Snapshots Sometimes Hang
+
+`incus snapshot create` occasionally hangs on the workstation. It has happened with the container running and with it stopped. The cause is unknown: at each hang the Incus daemon logged nothing and showed no pending operation, and the kernel log showed no storage or I/O error. Every stage snapshot is therefore taken stopped and under a time limit (see Snapshot Alignment). When a snapshot times out, retrying it once with the instance still stopped has always worked, and finished in under a second. A timed-out create leaves no snapshot, so confirm it with `incus snapshot list`.
 
 ## Repository Layout
 
@@ -277,10 +286,6 @@ firewall_rules_specialize:
     port: 80
     protocol: tcp
     source: 0.0.0.0/0
-  - name: allow-https
-    port: 443
-    protocol: tcp
-    source: 0.0.0.0/0
 ```
 
 ### Combine Expression
@@ -303,7 +308,7 @@ vars:
 
 - **Onboard** knows it needs SSH. That's all it knows.
 - **Normalize** knows it needs monitoring. It doesn't care about SSH.
-- **Specialize** knows it needs ports 80/443. It doesn't care about monitoring.
+- **Specialize** knows it needs port 80. It doesn't care about monitoring.
 - **None of them know the full picture individually.** The combine at play time is the convergence.
 
 The firewall settings live with the stage that owns them. The role only ever runs against the merged result. That's layering without overwrite.
@@ -956,9 +961,11 @@ Pass the onboard inventory as well as the normalized one. `firewall_rules_onboar
 
 #### The webserver Role
 
-`converge/roles/webserver` is the smallest role that exercises the stage. It installs nginx, enables and starts it, and writes `index.html` with the host's inventory name into the distribution's default document root, `/var/www/html` on the Debian family and `/usr/share/nginx/html` on the Red Hat family. It opens no port. HTTP is opened at the specialize layer by `firewall_rules_specialize` in `inventories/normalized/<env>/group_vars/webservers.yml`, so only hosts in the `webservers` group get it. That file also opens 443, which nothing serves yet. No TLS, no virtual hosts, no templated site configuration.
+`converge/roles/webserver` is the smallest role that exercises the stage. It installs nginx, enables and starts it, and writes `index.html` with the host's inventory name into the distribution's default document root, `/var/www/html` on the Debian family and `/usr/share/nginx/html` on the Red Hat family. It opens no port. HTTP is opened at the specialize layer by `firewall_rules_specialize` in `inventories/normalized/<env>/group_vars/webservers.yml`, so only hosts in the `webservers` group get it. Port 443 is not opened, because nothing serves TLS. No TLS, no virtual hosts, no templated site configuration.
 
 Run on the freshly onboarded and normalized `deb13`: before specialize, port 80 timed out from the controller and SSH worked. The run finished with `failed=0`; afterwards `curl` returned `deb13`, SSH still worked, and ufw listed `allow-ssh`, `allow-monitoring` (from `10.0.0.0/24`), `allow-http` and `allow-https`. A second run reported `changed=0`. Not yet run on a Red Hat family node.
+
+`allow-https` was then removed from `webservers.yml`. Because `uc_firewall` is additive (see Known Limitation under Firewall Layering), the rule stays on a node that already has it until it is deleted by hand or the node is rebuilt from a snapshot taken before specialize.
 
 ### site.yml
 
