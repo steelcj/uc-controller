@@ -37,13 +37,16 @@ locale_timezone: America/Toronto  # Etc/UTC if you keep servers on UTC
 ntp_timezone: America/Toronto     # keep in step with locale_timezone
 # ntp_pool defaults to pool.ntp.org; set ntp_server for an internal source.
 
-# --- firewall (robertdebock.firewall) --------------------------------------
-# IMPORTANT: this role consumes firewall_services (a service name or a port
-# number, with optional protocol/state). It does NOT read firewall_rules or
-# the firewall_rules_onboard schema from the design doc, and it has no
-# per-source restriction. See the note I sent with this file.
-firewall_services:
-  - name: ssh
+# --- firewall (uc_firewall) ------------------------------------------------
+# The onboard stage's firewall rules. The plays combine firewall_rules_onboard,
+# firewall_rules_normalize and firewall_rules_specialize into firewall_rules,
+# which roles/uc_firewall applies. Schema: name, port, protocol (default tcp),
+# and optional source (no source means open to all addresses). The SSH rule
+# must stay: uc_firewall refuses to enable the firewall without it.
+firewall_rules_onboard:
+  - name: allow-ssh
+    port: 22
+    protocol: tcp
 
 # --- users (robertdebock.users) --------------------------------------------
 # Creates the initial management user with your key and passwordless sudo.

@@ -1,0 +1,42 @@
+---
+- name: Choose the firewall backend for this OS family
+  ansible.builtin.set_fact:
+    uc_firewall_backend: "{{ uc_firewall_backends[ansible_facts['os_family']] | default('') }}"
+
+- name: Check the OS family is supported
+  ansible.builtin.assert:
+    that: uc_firewall_backend | length > 0
+    fail_msg: >-
+      uc_firewall supports the Debian family (ufw) and the Red Hat family
+      (firewalld), not {{ ansible_facts['os_family'] }}.
+    quiet: true
+
+- name: Check every rule has a name and a port
+  ansible.builtin.assert:
+    that:
+      - item.name is defined
+      - item.port is defined
+      - (item.protocol | default('tcp')) in ['tcp', 'udp']
+    fail_msg: "Each firewall rule needs name and port, and protocol tcp or udp: {{ item }}"
+    quiet: true
+  loop: "{{ firewall_rules }}"
+  loop_control:
+    label: "{{ item.name | default(item) }}"
+
+# Lock-out protection: never enable a default deny without the SSH rule.
+- name: Refuse to enable the firewall without an SSH rule
+  ansible.builtin.assert:
+    that: >-
+      (uc_firewall_ssh_port | string) ~ '/tcp' in (
+        firewall_rules | map(attribute='port') | map('string')
+        | zip(firewall_rules | map(attribute='protocol', default='tcp'))
+        | map('join', '/') | list
+      )
+    fail_msg: >-
+      firewall_rules has no TCP rule for the SSH port {{ uc_firewall_ssh_port }},
+      so enabling the firewall would lock the controller out. Add one to
+      firewall_rules_onboard in inventories/onboard/<env>/group_vars/all.yml.
+    quiet: true
+
+- name: Apply the rules with {{ uc_firewall_backend }}
+  ansible.builtin.include_tasks: "{{ uc_firewall_backend }}.yml"

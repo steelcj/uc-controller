@@ -20,7 +20,6 @@ roles:
   - name: robertdebock.ntp
   - name: robertdebock.openssh
   - name: robertdebock.fail2ban
-  - name: robertdebock.firewall
   - name: robertdebock.users
   - name: robertdebock.selinux
   - name: robertdebock.auditd

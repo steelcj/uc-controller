@@ -1,0 +1,41 @@
+---
+- name: Remove conflicting firewall software
+  ansible.builtin.package:
+    name: "{{ uc_firewall_packages.ufw.conflicting }}"
+    state: absent
+
+- name: Install ufw
+  ansible.builtin.package:
+    name: "{{ uc_firewall_packages.ufw.required }}"
+    state: present
+
+# Allow rules go in before the default deny takes effect.
+- name: Allow each rule
+  community.general.ufw:
+    rule: allow
+    port: "{{ item.port | string }}"
+    proto: "{{ item.protocol | default('tcp') }}"
+    from_ip: "{{ item.source | default('any') }}"
+    comment: "{{ item.name }}"
+  loop: "{{ firewall_rules }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Deny incoming by default
+  community.general.ufw:
+    direction: incoming
+    default: deny
+
+- name: Allow outgoing by default
+  community.general.ufw:
+    direction: outgoing
+    default: allow
+
+- name: Enable ufw
+  community.general.ufw:
+    state: enabled
+
+- name: Start ufw at boot
+  ansible.builtin.service:
+    name: ufw
+    enabled: true

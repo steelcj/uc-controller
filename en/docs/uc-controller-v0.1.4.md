@@ -23,7 +23,8 @@ An Ansible controller configuration that moves nodes through a four stage lifecy
 | Script path | `10_onboard.yml` resolves `promote_node.py` from the repository root, as discovery resolves `raw_inventory` |
 | Vault placeholders removed | `vaults/` held three unencrypted placeholders; secrets handling is deferred until the first secret exists |
 | Bootstrap gate | The bootstrap play runs only when `needs_python_bootstrap` is true |
-| Firewall traceability | Converge playbooks name the file each `firewall_rules_<stage>` list lives in; the mismatch with `robertdebock.firewall` is described with two options, decision pending |
+| Firewall traceability | Converge playbooks name the file each `firewall_rules_<stage>` list lives in |
+| Firewall rules role | `robertdebock.firewall` read only `firewall_services` and could not restrict sources, so no `firewall_rules` list reached the firewall; it is replaced by the project role `roles/uc_firewall`, which applies `firewall_rules` with ufw or firewalld |
 | Persistence and snapshots | New Persistence and Snapshot Alignment sections: what `add_host` does, when `promote_node.py` runs, the snapshot to take after each playbook, and restore-and-resume |
 | Listings | Playbook and script listings refreshed from the repository |
 
@@ -107,7 +108,8 @@ uc-controller/
 │           │   └── all.yml
 │           └── host_vars/
 │
-├── roles/                        # vendored Galaxy roles, shared by both concerns
+├── roles/                        # shared by both concerns: vendored Galaxy roles
+│   └── uc_firewall/              #   and the project firewall role
 │
 ├── scripts/
 │   ├── promote_node.py
@@ -214,7 +216,6 @@ firewall_rules_onboard:
   - name: allow-ssh
     port: 22
     protocol: tcp
-    source: 0.0.0.0/0
 ```
 
 ```yaml
@@ -251,7 +252,7 @@ vars:
     }}
 ```
 
-The role runs against the merged list. Run it once or ten times, same result, idempotent.
+`roles/uc_firewall` runs against the merged list. Run it once or ten times, same result, idempotent.
 
 **Important:** the `default([])` guards only prevent a template error when a variable is undefined. They do not recover rules from an inventory that was not loaded. All inventories contributing rules must be passed with `-i` in the correct order. See Usage below.
 
@@ -264,35 +265,28 @@ The role runs against the merged list. Run it once or ten times, same result, id
 
 The firewall settings live with the stage that owns them. The role only ever runs against the merged result. That's layering without overwrite.
 
-### The Role Does Not Read firewall_rules (Decision Pending)
+### The Firewall Role
 
-The design above assumes the firewall role consumes `firewall_rules` with `name`, `port`, `protocol` and `source`. `robertdebock.firewall` does not. It reads `firewall_services`, a list of entries with `name` (a service name or port number), an optional `protocol`, and an optional `rule`, and it has no field for a source address. As a result:
+`roles/uc_firewall` is a project role, not a vendored one. It lives in `./roles`, the shared role directory that both ingress and converge playbooks resolve first through `roles_path`, beside the vendored Galaxy roles. It replaced `robertdebock.firewall`, which read only `firewall_services` and could not restrict a rule's source address.
 
-- The combined `firewall_rules` in `10_onboard.yml`, `20_normalize.yml` and `30_specialize.yml` reaches no task.
-- The only firewall input that takes effect is `firewall_services: [ssh]` in `inventories/onboard/dev/group_vars/all.yml`, which opens SSH to everyone.
-- `firewall_rules_onboard` is defined only for `stage`, not `dev`.
-- `firewall_rules_normalize` restricts port 9100 to `10.0.0.0/24`, which the role cannot express.
+#### Rule Schema
 
-Each converge playbook names the file each stage list is expected to live in, so the dependency is traceable while the fix is pending.
+| Key | Required | Meaning |
+|-----|----------|---------|
+| `name` | yes | Rule name, used as the rule comment |
+| `port` | yes | Port number |
+| `protocol` | no | `tcp` (default) or `udp` |
+| `source` | no | Address or network allowed to connect. A rule without `source` is open to all addresses. |
 
-#### Option 1: Stage-Namespaced firewall_services Lists
+#### Behaviour
 
-Rename the stage lists to `firewall_services_onboard`, `firewall_services_normalize` and `firewall_services_specialize`, in the role's own schema, and combine them into `firewall_services` at play time exactly as `firewall_rules` is combined now.
+- Backend per OS family, the same one `robertdebock.firewall` installed, so nothing else on the node changes: ufw on the Debian family (Debian, Ubuntu) through `community.general.ufw`, firewalld on the Red Hat family through `ansible.posix.firewalld`, with a rich rule for each rule that has a `source`. The firewalld path has not been tested, because there is no Red Hat family test node.
+- SSH safety: before anything is enabled, the role asserts that `firewall_rules` contains a TCP rule for the SSH port in use (`uc_firewall_ssh_port`, default `ansible_port` or 22), and fails with a message naming the file to fix if it does not. `firewall_rules_onboard` in `inventories/onboard/<env>/group_vars/all.yml` holds that rule.
+- Order: allow rules first, then the default policy (deny incoming, allow outgoing), then the firewall is enabled, so the default deny never takes effect before the allow rules exist.
 
-- Keeps the vendored role and the layering pattern unchanged.
-- Small change: three variable renames, a schema change in four `group_vars` files, and three combine expressions.
-- Source restrictions are lost. Port 9100 would be open to every address, not `10.0.0.0/24`, and any later rule that needs a source restriction cannot be written.
+#### Known Limitation
 
-#### Option 2: A Role That Supports Source Restrictions
-
-Keep `firewall_rules_<stage>` with its `source` field, and replace `robertdebock.firewall` with a role that can express it. The likely shape is a small project role in `./roles` that applies each rule with `community.general.ufw` (Debian and Ubuntu, which `robertdebock.firewall` already configures with ufw) or `ansible.posix.firewalld` rich rules (the Red Hat family). Both collections are already installed.
-
-- Keeps the documented schema and expresses source restrictions.
-- More work: a role to write and test on each OS family, and the onboard play must move from `firewall_services` to the new role without dropping SSH during the switch.
-
-#### Recommendation
-
-Option 2. The normalize rule already depends on a source restriction, and Option 1 would silently widen it to every address, which is the opposite of what a firewall layer is for. If the role cannot be written yet, Option 1 is a safe interim step only if `firewall_rules_normalize` is held back until Option 2 lands.
+The role is additive. It adds and keeps the rules in the list, and it never removes a rule that is missing from the list. Deleting a rule from `firewall_rules_<stage>` leaves it on nodes that already have it; remove it by hand (`ufw delete allow ...`) or rebuild the node from its snapshot.
 
 ## Playbooks
 
@@ -579,7 +573,7 @@ Promotion uses `add_host`, which adds hosts and groups to the in-memory inventor
       when: ansible_facts['virtualization_type'] | default('') not in ['lxc', 'lxd', 'incus', 'docker', 'podman', 'systemd-nspawn', 'container', 'openvz']
     - role: robertdebock.openssh      # installs and hardens sshd
     - role: robertdebock.fail2ban
-    - role: robertdebock.firewall     # opens port 22 from firewall_rules
+    - role: uc_firewall               # applies firewall_rules; refuses without the SSH rule
     - role: robertdebock.users        # creates the initial user + sudo + key
 
 - name: Switch onboarded nodes to SSH as the initial user
@@ -713,9 +707,8 @@ Make it compliant. Validates onboarded nodes, promotes them into the `normalized
     # inventory is passed with -i):
     #   firewall_rules_onboard    inventories/onboard/<env>/group_vars/all.yml
     #   firewall_rules_normalize  inventories/normalized/<env>/group_vars/all.yml
-    # robertdebock.firewall reads firewall_services, not firewall_rules, so
-    # this combined list does not reach the firewall yet. The fix is pending a
-    # decision; see Firewall Layering in en/docs/uc-controller-v0.1.4.md.
+    # roles/uc_firewall applies the combined list (see Firewall Layering in
+    # en/docs/uc-controller-v0.1.4.md).
     firewall_rules: >-
       {{
         (firewall_rules_onboard | default([]))
@@ -733,7 +726,7 @@ Make it compliant. Validates onboarded nodes, promotes them into the `normalized
     - role: robertdebock.motd
     - role: robertdebock.chrony
     - role: robertdebock.rsyslog
-    - role: robertdebock.firewall
+    - role: uc_firewall
 ```
 
 ### 30_specialize.yml
@@ -755,9 +748,8 @@ Make it useful. Applies the role-specific composition and the complete firewall 
     #   firewall_rules_normalize  inventories/normalized/<env>/group_vars/all.yml
     #   firewall_rules_specialize inventories/normalized/<env>/group_vars/<group>.yml
     #                             (for example webservers.yml)
-    # robertdebock.firewall reads firewall_services, not firewall_rules, so
-    # this combined list does not reach the firewall yet. The fix is pending a
-    # decision; see Firewall Layering in en/docs/uc-controller-v0.1.4.md.
+    # roles/uc_firewall applies the combined list (see Firewall Layering in
+    # en/docs/uc-controller-v0.1.4.md).
     firewall_rules: >-
       {{
         (firewall_rules_onboard | default([]))
@@ -767,7 +759,7 @@ Make it useful. Applies the role-specific composition and the complete firewall 
 
   roles:
     - role: "{{ specialize_role }}"
-    - role: robertdebock.firewall
+    - role: uc_firewall
 ```
 
 ### site.yml
@@ -946,6 +938,7 @@ ansible-playbook tools/scaffold.yml \
 | No diff detection on role upgrade | Add a `scaffold_check=true` mode that diffs current file against regenerated output and reports drift |
 | Host-level override still manual | Workflow: `cp group_vars/firewall.yml host_vars/myhost.yml` then edit |
 | Galaxy-installed roles live outside the repo | Requires `ANSIBLE_ROLES_PATH` to be set correctly in `ansible.cfg` |
+| Does not fit the `uc_firewall` schema | The scaffold writes a role's defaults, a mapping, under `firewall_rules_<stage>`, which the plays concatenate as a list. The variable names still match, but for `uc_firewall` the output (`firewall_rules_onboard: {uc_firewall_ssh_port: ...}`) is not a rule list and would break the combine expression. The examples above name `robertdebock.firewall`, which is no longer installed. Write `firewall_rules_<stage>` by hand until the scaffold is reworked or retired |
 
 ## Persistence
 
@@ -1127,9 +1120,9 @@ Environment selection is implicit: the inventory you point at determines the env
 | Stage | Question it answers | Firewall contribution | Key roles |
 |-------|---------------------|-----------------------|-----------|
 | discover | What exists? | None | nmap / cloud API |
-| onboard | Can I manage it? | SSH (port 22) | bootstrap, epel, update, openssh, fail2ban, firewall, users |
-| normalize | Does it meet the baseline? | Monitoring, internal services | selinux, auditd, pam, sysctl, rsyslog, firewall |
-| specialize | What is it for? | Application ports (80, 443, etc.) | role-specific + firewall |
+| onboard | Can I manage it? | SSH (port 22) | bootstrap, umask, epel, update, locale, auto_update, cron, ntp, openssh, fail2ban, uc_firewall, users |
+| normalize | Does it meet the baseline? | Monitoring, internal services | selinux, auditd, pam, sysctl, rsyslog, uc_firewall |
+| specialize | What is it for? | Application ports (80, 443, etc.) | role-specific + uc_firewall |
 
 ## Scripts
 
@@ -1511,6 +1504,15 @@ collections: []
 
 roles:
   - name: robertdebock.bootstrap
+
+  # Our fork of robertdebock.umask, adding the umask_system option for a
+  # system-wide umask (login.defs + profile.d). Sourced from git, not Galaxy,
+  # because the option does not exist upstream. Must run before
+  # robertdebock.users so new home directories get the intended permissions.
+  - name: steelcj.umask
+    src: git@github.com:steelcj/ansible-role-umask.git
+    scm: git
+    version: master
   - name: robertdebock.epel
   - name: robertdebock.update
   - name: robertdebock.locale
@@ -1519,17 +1521,16 @@ roles:
   - name: robertdebock.ntp
   - name: robertdebock.openssh
   - name: robertdebock.fail2ban
-  - name: robertdebock.firewall
   - name: robertdebock.users
   - name: robertdebock.selinux
   - name: robertdebock.auditd
-  - name: robertdebock.pam
-  - name: robertdebock.limits
+#  - name: robertdebock.pam      # robert does not have a role called pam
+#  - name: robertdebock.limits   # robert does not have a role called limits
   - name: robertdebock.sysctl
   - name: robertdebock.hostname
-  - name: robertdebock.timezone
-  - name: robertdebock.motd
-  - name: robertdebock.chrony
+#  - name: robertdebock.timezone # robert does not have a role called timezone (see local and ntp)
+#  - name: robertdebock.motd     # robert does not have a role called mod
+#  - name: robertdebock.chrony   # robert does not have a role with this name
   - name: robertdebock.rsyslog
 ```
 

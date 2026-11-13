@@ -12,9 +12,8 @@
     #   firewall_rules_normalize  inventories/normalized/<env>/group_vars/all.yml
     #   firewall_rules_specialize inventories/normalized/<env>/group_vars/<group>.yml
     #                             (for example webservers.yml)
-    # robertdebock.firewall reads firewall_services, not firewall_rules, so
-    # this combined list does not reach the firewall yet. The fix is pending a
-    # decision; see Firewall Layering in en/docs/uc-controller-v0.1.4.md.
+    # roles/uc_firewall applies the combined list (see Firewall Layering in
+    # en/docs/uc-controller-v0.1.4.md).
     firewall_rules: >-
       {{
         (firewall_rules_onboard | default([]))
@@ -24,4 +23,4 @@
 
   roles:
     - role: "{{ specialize_role }}"
-    - role: robertdebock.firewall
+    - role: uc_firewall
