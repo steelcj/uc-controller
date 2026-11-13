@@ -4,6 +4,8 @@
   hosts: normalized
   become: yes
   gather_facts: yes
+  # Each node converges independently; the config default stays linear.
+  strategy: free
 
   vars:
     # Where each stage's list is expected to live (loaded only when that
