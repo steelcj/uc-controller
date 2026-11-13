@@ -16,6 +16,8 @@ inventories/raw/:
 - A scanned host is removed from raw/discovered.yml when promoted, so it is
   not listed in two stages until the next scan. This is the only case where
   a script changes a raw file.
+- Between onboard and normalized, in either direction, the host keeps its
+  connection settings and every group it was in other than the stage group.
 - Demotion to raw removes the host's entry from the source stage and writes
   nothing. The node reappears in raw through its source: the plugin lists a
   running instance, a hand-entered host never left hosts.yml, and a scanned
@@ -124,19 +126,24 @@ def static_files(inventory: Path) -> list[Path]:
 def find_host(inventory: Path, host: str):
     """Pop host from the first static file holding it.
 
-    Return (file, its data with the host removed, host vars), or
-    (None, None, None) when no static file holds it.
+    Return (file, its data with the host removed, host vars, the groups that
+    listed it), or (None, None, None, []) when no static file holds it.
     """
     for path in static_files(inventory):
         data = load(path)
+        groups = host_groups(data, host)
         found, host_vars = pop_host(data, host)
         if found:
-            return path, data, host_vars
-    return None, None, None
+            return path, data, host_vars, groups
+    return None, None, None, []
 
 
 def pop_host(groups: dict, host: str):
-    """Remove host from every group in the tree. Return (found, its vars)."""
+    """Remove host from every group in the tree. Return (found, its vars).
+
+    The host's vars live under one group (normally the stage group); the other
+    groups list it with no vars. Prefer the entry that carries vars.
+    """
     found, host_vars = False, None
     for group in groups.values():
         if not isinstance(group, dict):
@@ -144,14 +151,29 @@ def pop_host(groups: dict, host: str):
         hosts = group.get("hosts")
         if isinstance(hosts, dict) and host in hosts:
             removed = hosts.pop(host)
-            if not found:
+            if not found or (host_vars is None and removed is not None):
                 found, host_vars = True, removed
         children = group.get("children")
         if isinstance(children, dict):
             child_found, child_vars = pop_host(children, host)
-            if child_found and not found:
+            if child_found and (not found or (host_vars is None and child_vars is not None)):
                 found, host_vars = True, child_vars
     return found, host_vars
+
+
+def host_groups(groups: dict, host: str) -> list[str]:
+    """Names of every group in the tree that lists host, in file order."""
+    names = []
+    for name, group in groups.items():
+        if not isinstance(group, dict):
+            continue
+        hosts = group.get("hosts")
+        if isinstance(hosts, dict) and host in hosts:
+            names.append(name)
+        children = group.get("children")
+        if isinstance(children, dict):
+            names.extend(host_groups(children, host))
+    return names
 
 
 def add_host(data: dict, group: str, host: str, host_vars) -> None:
@@ -223,7 +245,7 @@ def main(direction: str = "promote") -> int:
     if (direction == "promote" and step <= 0) or (direction == "demote" and step >= 0):
         raise SystemExit(f"error: cannot {direction} from {from_stage} to {to_stage}")
 
-    source_file, source_data, host_vars = find_host(args.source, args.host)
+    source_file, source_data, host_vars, source_groups = find_host(args.source, args.host)
     found = source_file is not None
     if not found and (to_stage == "raw" or not args.address):
         raise SystemExit(
@@ -249,7 +271,9 @@ def main(direction: str = "promote") -> int:
         return 0
 
     dest_file = args.dest / "hosts.yml"
-    if to_stage == "onboard":
+    # The connection contract is written once, on promotion out of raw. Moves
+    # between onboard and normalized carry the entry over unchanged.
+    if from_stage == "raw":
         host_vars = with_contract(host_vars, args.address, args.key_file, args.host)
 
     # pop_host clears every existing entry for the host, so a repeat
@@ -257,8 +281,16 @@ def main(direction: str = "promote") -> int:
     dest_data = load(dest_file)
     pop_host(dest_data, args.host)
     add_host(dest_data, STAGE_GROUP[to_stage], args.host, host_vars)
-    if args.group:
-        add_host(dest_data, args.group, args.host, None)
+    # Between onboard and normalized, in either direction, the host keeps
+    # every group it was in other than the stage group itself (webservers and
+    # the like). Raw's groups are source groups and do not carry over.
+    extra = [] if from_stage == "raw" else [
+        g for g in source_groups if g not in STAGE_GROUP.values()
+    ]
+    if args.group and args.group not in extra:
+        extra.append(args.group)
+    for group in extra:
+        add_host(dest_data, group, args.host, None)
 
     written = [dest_file]
     if found and not read_only:
