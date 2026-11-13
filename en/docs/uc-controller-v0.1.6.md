@@ -11,7 +11,7 @@ An Ansible controller configuration that moves nodes through a four stage lifecy
 | Red Hat family verified on a VM | `rky9`, a Rocky Linux 9 virtual machine, ran the chain from `raw`: onboard, normalize and specialize with `webserver`, each with `failed=0`, and both reruns with `changed=0`. SELinux enforcing, auditd, the firewalld path of `uc_firewall`, the `webserver` role and chrony through `robertdebock.ntp` are verified there (see Verification Status) |
 | SELinux policy installed before the role | `20_normalize.yml` installs `selinux-policy-targeted` in a `pre_tasks` step on the Red Hat family. The Incus Rocky 9 image has no policy package and no `/etc/selinux/config`, and `robertdebock.selinux` installs only the Python bindings, so its first run failed |
 | Which `Reboot` handler runs | Verified: `robertdebock.selinux` notifies `Reboot`, and the handler that runs is the one `robertdebock.hostname` defines (see Reboots and Role Order) |
-| Known issues | New: with SELinux enforcing, the Incus agent in the Rocky 9 VM cannot start, so `incus exec` and the Incus connection stop working after normalize. New: the Rocky 9 image does not grow its root partition |
+| Known issues | New: with SELinux enforcing, the Incus agent in the Rocky 9 VM cannot start, so `incus exec` and the Incus connection stop working after normalize; the cause is the missing `bin_t` file context for the agent binary, and a fix is proposed but not applied. New: `hostname_reboot` controls the SELinux reboot. New: the Rocky 9 image does not grow its root partition. New: firewalld's `public` zone keeps `cockpit` and `dhcpv6-client` |
 | Listings | The `10_onboard.yml`, `20_normalize.yml` and `30_specialize.yml` listings are refreshed from the repository; in v0.1.5 they lacked `changed_when: false` and the `shared/roles` comment |
 | Port 443 removed from `deb13` | `deb13` was restored to `20-normalized` and specialized again, so ufw no longer lists `allow-https`; `30-webserver` was retaken stopped. An example of the additive firewall's Known Limitation: a removed rule leaves the node only by a rebuild or by hand |
 
@@ -113,7 +113,11 @@ Not verified:
 
 ### The Incus Agent Cannot Start Under SELinux Enforcing
 
-On `rky9` the Incus agent stops working once normalize has set SELinux to enforcing. `incus-agent.service` fails, and the audit log shows `avc: denied { create }` for `comm="incus-agent"`, source context `init_t`, class `vsock_socket`: the `targeted` policy does not let a service running as `init_t` open the vsock socket the agent talks to the host over.
+On `rky9` the Incus agent stops working once normalize has set SELinux to enforcing. `incus-agent.service` fails after ten restarts, and the audit log holds one denial per attempt:
+
+```text
+type=AVC msg=audit(1794594786.848:90): avc:  denied  { create } for  pid=765 comm="incus-agent" scontext=system_u:system_r:init_t:s0 tcontext=system_u:system_r:init_t:s0 tclass=vsock_socket permissive=0
+```
 
 What stops working:
 
@@ -125,11 +129,33 @@ What still works: `incus stop`, `start`, `snapshot` and `restore`, which do not 
 
 One consequence for onboarding: a normalized `rky9` that is running is still listed in raw by the plugin, and the re-onboarding guard cannot reach it to see the `initial` user. An onboard run that is not limited with `-l` would wait for it and then report it as failed. Limit onboard runs to the nodes being onboarded.
 
-Not fixed. The options are a local SELinux policy module that allows the socket, a different SELinux domain for the agent, or accepting that a normalized Red Hat family VM is managed over SSH only.
+**Cause.** The agent binary has the wrong label. A read-only check on the normalized node found:
+
+- `/run/incus_agent/incus-agent` is labelled `var_run_t`, and `matchpathcon` gives `var_run_t` for it under both `/run` and `/var/run`. systemd starts it without a domain transition, so it runs as `init_t`, which the `targeted` policy does not allow to create a `vsock_socket`.
+- `semanage fcontext -l -C` lists no local rule. The agent's `install.sh` adds one, `bin_t` for `/run/incus_agent/incus-agent` and `/var/run/incus_agent/incus-agent`, but only when `getenforce` and `semanage` both run, and it discards the result. When the image was built there was no `semanage` and no policy store, so the rule was never written.
+- `/run/incus_agent` is a tmpfs that `incus-agent-setup` fills at every start and then runs `restorecon -R` on. With no rule, `restorecon` keeps `var_run_t`. With the rule it would set `bin_t` at every boot, so the rule alone is enough to survive a reboot.
+- `semanage` is installed on the normalized node (`policycoreutils-python-utils`).
+
+**Proposed fix, not applied.** Add the rule the install script meant to add, once a policy exists:
+
+- `bin_t` file context for `/run/incus_agent/incus-agent` and `/var/run/incus_agent/incus-agent`, through `community.general.sefcontext`, then `restorecon` on the binary and a start of `incus-agent.service` for a node that is already enforcing.
+- Guarded to Incus virtual machines by what is on the node, not by where it came from: the Red Hat family, and `incus-agent.service` installed. Converge must not depend on the source of a node, so the inventory group is not the condition.
+- It would live in the converge play of `20_normalize.yml`, in `pre_tasks` after the policy package is installed and before `robertdebock.selinux` reboots the node, so the first enforcing boot already finds the rule. If it grows beyond those tasks, it becomes a small role in `converge/roles/`.
+- It must be tested across a reboot: from `10-onboarded`, normalize, then `incus exec rky9 -- true`, a reboot, and `incus exec` again, with `ls -Z` showing `bin_t` and no new denial for `incus-agent`. That `bin_t` gives the agent a domain that may open the socket is expected, not yet observed.
+
+Until then a normalized Red Hat family VM is managed over SSH only.
 
 ### The Rocky 9 Image Does Not Grow Its Root Partition
 
 `rky9` was launched with a 20 GiB root disk, but the root filesystem stayed at 3.8 GiB: the default image variant has no cloud-init and nothing grows the partition. The chain fits, with about 2 GiB free at the end. A role that installs much more would need the partition grown first.
+
+### hostname_reboot Controls the SELinux Reboot
+
+`robertdebock.selinux` and `robertdebock.hostname` both define a handler called `Reboot`, and Ansible runs the one loaded last, which is the one in `robertdebock.hostname` (see Reboots and Role Order). The reboot SELinux needs on its first run is therefore switched by `hostname_reboot`, and `selinux_reboot` has no effect in this play. Setting `hostname_reboot: false` to avoid a reboot on a hostname change would leave a Red Hat family node with SELinux configured as enforcing but not yet active, with nothing in the run saying so. Keep `hostname_reboot` at its default. The vendored roles are not changed.
+
+### The Public Zone Keeps cockpit and dhcpv6-client
+
+On the Red Hat family `uc_firewall` adds its rules to firewalld's default zone, `public`, and removes nothing. Rocky 9 enables the services `ssh`, `dhcpv6-client` and `cockpit` in that zone, so after onboarding `firewall-cmd --list-all` shows them beside the rules from the inventory. Port 9090 for `cockpit` is open in the firewall although nothing listens on it, and `ssh` is open twice, as the service and as the `22/tcp` port from `allow-ssh`. This is the same additive behaviour as the Known Limitation under Firewall Layering: the firewall holds what the inventory lists and whatever was there before.
 
 ## Repository Layout
 
