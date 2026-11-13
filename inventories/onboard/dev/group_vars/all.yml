@@ -40,7 +40,7 @@ ntp_timezone: America/Toronto     # keep in step with locale_timezone
 # --- firewall (uc_firewall) ------------------------------------------------
 # The onboard stage's firewall rules. The plays combine firewall_rules_onboard,
 # firewall_rules_normalize and firewall_rules_specialize into firewall_rules,
-# which converge/roles/uc_firewall applies. Schema: name, port, protocol (default tcp),
+# which shared/roles/uc_firewall applies. Schema: name, port, protocol (default tcp),
 # and optional source (no source means open to all addresses). The SSH rule
 # must stay: uc_firewall refuses to enable the firewall without it.
 firewall_rules_onboard:
