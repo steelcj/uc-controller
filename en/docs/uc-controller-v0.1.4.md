@@ -16,7 +16,12 @@ An Ansible controller configuration that moves nodes through a four stage lifecy
 | Reset helper | `reset_inventories.py` never touches the static `raw/hosts.yml` |
 | Discovery output | `00_discover.yml` writes only `inventories/raw/discovered.yml` (subnet) or `cloud.yml` (placeholder), never `hosts.yml`; its directory comes from `raw_inventory`, not `playbook_dir` |
 | Provisional names | Discovered hosts are named `disc-<ip>` and carry `name_provisional: true`; a rename-at-onboarding proposal is recorded |
-| Scripts find hosts in any static file | `promote_node.py` searches every static inventory file in the source stage; `raw/hosts.yml` is read-only to scripts (`uc_origin: static`); demotion to raw writes `raw/discovered.yml` |
+| Scripts find hosts in any static file | `promote_node.py` searches every static inventory file in the source stage; `raw/hosts.yml` is read-only to scripts (`uc_origin: static`) |
+| Scripts never add hosts to raw | Demotion to raw removes the host's entry and writes nothing under `inventories/raw/`; the node reappears through its source. Promotion still removes a scanned host from `discovered.yml` |
+| Re-onboarding guard | `10_onboard.yml` checks for the `initial` user first and ends the play for a host that is already onboarded; later plays target only the hosts promoted in the run |
+| Generated raw files ignored | `inventories/raw/discovered.yml` and `cloud.yml` are in `.gitignore`; live host entries are not committed |
+| Script path | `10_onboard.yml` resolves `promote_node.py` from the repository root, as discovery resolves `raw_inventory` |
+| Vault placeholders removed | `vaults/` held three unencrypted placeholders; secrets handling is deferred until the first secret exists |
 | Bootstrap gate | The bootstrap play runs only when `needs_python_bootstrap` is true |
 | Firewall traceability | Converge playbooks name the file each `firewall_rules_<stage>` list lives in; the mismatch with `robertdebock.firewall` is described with two options, decision pending |
 | Persistence and snapshots | New Persistence and Snapshot Alignment sections: what `add_host` does, when `promote_node.py` runs, the snapshot to take after each playbook, and restore-and-resume |
@@ -109,11 +114,9 @@ uc-controller/
 │   ├── demote_node.py
 │   ├── reset_inventories.py
 │   └── check_converge_boundary.py
-│
-└── vaults/
 ```
 
-A `prod` environment, when it exists, follows the same pattern as `dev` and `stage` under `onboard/` and `normalized/`.
+A `prod` environment, when it exists, follows the same pattern as `dev` and `stage` under `onboard/` and `normalized/`. Secrets handling is deferred until the first secret exists; the earlier `vaults/` placeholders held none and were removed.
 
 ## Raw Inventory
 
@@ -125,8 +128,8 @@ The raw inventory describes nodes as their source provides them, before onboardi
 |------|------|------------|
 | `hosts.yml` | Static inventory | Hand. No playbook or script writes to it. |
 | `incus.yml` | Dynamic inventory plugin config (`community.general.incus`) | Hand. The plugin generates the hosts at run time. |
-| `discovered.yml` | Generated inventory, `discovered` group | `00_discover.yml` (subnet scan, overwritten each run) and `demote_node.py`. Not committed. |
-| `cloud.yml` | Generated inventory, `cloud` group, placeholder | The cloud branch of `00_discover.yml`. Not a child of `raw`, so not onboarded. |
+| `discovered.yml` | Generated inventory, `discovered` group | `00_discover.yml` (subnet scan, overwritten each run). `promote_node.py` removes a host from it when promoting that host. Ignored by git. |
+| `cloud.yml` | Generated inventory, `cloud` group, placeholder | The cloud branch of `00_discover.yml`. Not a child of `raw`, so not onboarded. Ignored by git. |
 | `group_vars/all.yml` | Shared defaults for every source | Hand |
 | `group_vars/<source>.yml` | How that source's nodes are reached | Hand |
 
@@ -163,6 +166,16 @@ Add a source only when there is a node to test it against.
 - Confirm with `ansible-inventory -i inventories/raw --graph` that the new hosts appear under `raw` and the source group, and with `--host` that they get the source's connection settings.
 
 Nothing in `onboard/`, `normalized/`, or the converge playbooks changes.
+
+### Scripts Never Add Hosts to Raw
+
+Raw is what the sources report: the Incus plugin, the hand-maintained `hosts.yml`, and the scan's `discovered.yml`. No script adds a host to any file under `inventories/raw/`.
+
+- Promotion out of raw removes a scanned host from `discovered.yml`, so the host is not listed in two stages until the next scan. This is the only case where a script changes a raw file.
+- A host entered by hand in `hosts.yml` is copied on promotion, not moved, and marked `uc_origin: static`. A plugin host is created from `--address` and marked `uc_origin: plugin`.
+- Demotion to raw removes the host's entry from the onboard (or normalized) inventory and writes nothing. The node reappears in raw through its source: the plugin lists a running Incus instance, a hand-entered host never left `hosts.yml`, and a scanned host is found by the next scan.
+
+Demotion is inventory bookkeeping. It exists so the inventory can follow a node after a snapshot restore, and it has nothing to do with making onboarding repeatable. Onboarding is one-shot; see Re-onboarding Guard.
 
 ## Variable Precedence
 
@@ -356,8 +369,9 @@ Discovered hosts are written into the `discovered` group, which `hosts.yml` decl
         content: |
           # inventories/raw/discovered.yml
           #
-          # Generated inventory, written by ingress/playbooks/00_discover.yml
-          # and overwritten on every subnet scan. Do not edit by hand.
+          # Generated inventory, written by ingress/playbooks/00_discover.yml and
+          # overwritten on every subnet scan. promote_node.py removes a host from it
+          # when promoting that host. Not committed. Do not edit by hand.
           # Names are provisional (disc-<ip>) until onboarding.
           discovered:
           {% if discovered_named | length == 0 %}
@@ -392,7 +406,7 @@ Discovered hosts are written into the `discovered` group, which `hosts.yml` decl
           # inventories/raw/cloud.yml
           #
           # Generated inventory, written by the cloud placeholder in
-          # ingress/playbooks/00_discover.yml. Not wired into raw.
+          # ingress/playbooks/00_discover.yml. Not committed. Not wired into raw.
           cloud:
             hosts:
           {% for instance in cloud_instances.json %}
@@ -410,7 +424,7 @@ Discovered hosts are written into the `discovered` group, which `hosts.yml` decl
 
 Make it manageable. Lives in `ingress/playbooks/`. It requires `-e onboard_inventory=inventories/onboard/<env>` and fails at once without it.
 
-- Play 1 probes each raw node with `raw: 'true'` over whatever connection its source provides, and promotes it into `onboarded` in memory.
+- Play 1 first skips any node that is already onboarded (see Re-onboarding Guard), then probes each raw node with `raw: 'true'` over whatever connection its source provides, and promotes it into `onboarding` and `onboarded` in memory.
 - Play 2 runs `robertdebock.bootstrap` (Python and sudo) when `needs_python_bootstrap` is true, still over the source connection as root.
 - Play 3 converges the onboarding baseline, including the `initial` user.
 - Play 4 re-targets the node over SSH as `initial` with the full connection contract.
@@ -441,6 +455,30 @@ Promotion uses `add_host`, which adds hosts and groups to the in-memory inventor
   become: no
 
   tasks:
+    # Re-onboarding guard. Onboarding is one-shot, and an onboarded Incus
+    # instance stays in raw for as long as it runs, because the plugin lists
+    # it. If the initial user already exists, the node has been onboarded:
+    # say so and end the play for that host only. raw needs no Python, and an
+    # unreachable node is left to the readiness probe below.
+    - name: check whether the node is already onboarded
+      ansible.builtin.raw: id initial
+      register: onboarded_probe
+      failed_when: false
+      changed_when: false
+      ignore_unreachable: true
+
+    - name: report a node that is already onboarded
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }} is already onboarded (the initial user
+          exists); skipping it. Restore it to its raw snapshot and demote its
+          inventory entry to onboard it again.
+      when: onboarded_probe.rc | default(1) == 0
+
+    - name: end the play for a node that is already onboarded
+      ansible.builtin.meta: end_host
+      when: onboarded_probe.rc | default(1) == 0
+
     # The last play writes each promoted host into the onboard inventory, so
     # the destination has to be named up front. It is passed in, not derived
     # from playbook_dir, so it does not depend on where this file lives.
@@ -468,6 +506,12 @@ Promotion uses `add_host`, which adds hosts and groups to the in-memory inventor
       until: probe is succeeded
       changed_when: false
 
+    # Promoted nodes join two in-memory groups. onboarding holds only the
+    # nodes promoted in this run, and the later plays here target it, so a
+    # node already listed in the onboard inventory's onboarded group is not
+    # touched again. onboarded is what 20_normalize.yml targets when it is
+    # chained in the same run through site.yml.
+    #
     # add_host runs once per play, so loop over ansible_play_hosts to promote
     # every node still active in the play. The connection vars are carried
     # across with default(omit) so an Incus node keeps its incus connection and
@@ -476,6 +520,7 @@ Promotion uses `add_host`, which adds hosts and groups to the in-memory inventor
       ansible.builtin.add_host:
         name: "{{ item }}"
         groups:
+          - onboarding
           - onboarded
           - "{{ target_group | default('ungrouped') }}"
         ansible_connection: "{{ hostvars[item].ansible_connection | default(omit) }}"
@@ -484,7 +529,7 @@ Promotion uses `add_host`, which adds hosts and groups to the in-memory inventor
       loop: "{{ ansible_play_hosts }}"
 
 - name: Bootstrap Python onto onboarded nodes
-  hosts: onboarded
+  hosts: onboarding
   gather_facts: no          # Python is not present yet; bootstrap installs it.
   become: no                # Already root over the incus/ssh-root connection.
 
@@ -502,7 +547,7 @@ Promotion uses `add_host`, which adds hosts and groups to the in-memory inventor
       when: needs_python_bootstrap | default(true) | bool
 
 - name: Converge the onboard baseline
-  hosts: onboarded
+  hosts: onboarding
   gather_facts: yes         # Safe now: bootstrap installed Python above.
   become: no                # Still root over the root connection.
 
@@ -538,7 +583,7 @@ Promotion uses `add_host`, which adds hosts and groups to the in-memory inventor
     - role: robertdebock.users        # creates the initial user + sudo + key
 
 - name: Switch onboarded nodes to SSH as the initial user
-  hosts: onboarded
+  hosts: onboarding
   gather_facts: no
   become: no
 
@@ -567,7 +612,7 @@ Promotion uses `add_host`, which adds hosts and groups to the in-memory inventor
       loop: "{{ ansible_play_hosts }}"
 
 - name: Confirm SSH as the initial user works
-  hosts: onboarded
+  hosts: onboarding
   gather_facts: no
   become: yes               # initial has passwordless sudo
 
@@ -586,14 +631,16 @@ Promotion uses `add_host`, which adds hosts and groups to the in-memory inventor
         msg: "{{ inventory_hostname }}: {{ initial_id.stdout }}"
 
 - name: Persist the promotion to the onboard inventory
-  hosts: onboarded
+  hosts: onboarding
   gather_facts: no
   become: no
 
   vars:
     # Paths are resolved on the controller against the directory
-    # ansible-playbook was started from, which is the repository root.
-    promote_script: "{{ playbook_dir }}/../../scripts/promote_node.py"
+    # ansible-playbook was started from, which is the repository root, the
+    # same way 00_discover.yml resolves raw_inventory. They do not depend on
+    # where this playbook lives.
+    promote_script: "{{ uc_scripts_dir | default('scripts') | ansible.builtin.realpath }}/promote_node.py"
     promote_from: "{{ raw_inventory | default('inventories/raw') | ansible.builtin.realpath }}"
     promote_to: "{{ onboard_inventory | ansible.builtin.realpath }}"
 
@@ -910,7 +957,7 @@ The playbooks move a node between groups with `add_host`. That changes only the 
 
 - After `10_onboard.yml`: automatically. The playbook's last play calls `promote_node.py` once for all hosts that passed the SSH check, with `--address`, `--key-file`, `--no-commit` and `--group` when `target_group` is set. It writes each host and its connection contract into the onboard inventory named by `onboard_inventory`. The change is left uncommitted for the operator to review.
 - After `20_normalize.yml`: by hand, until normalize gains its own persist play. Run `promote_node.py --from inventories/onboard/<env> --to inventories/normalized/<env> --host <host>` for each node that converged.
-- Before onboarding a node a second time, for example after a snapshot restore: run `demote_node.py` to move its entry back (see Restore and Resume).
+- After a snapshot restore: run `demote_node.py` so the inventory matches the restored node (see Restore and Resume).
 
 ### What Is Lost If It Is Skipped
 
@@ -918,13 +965,25 @@ The playbooks move a node between groups with `add_host`. That changes only the 
 - The connection contract is not on disk. Loaded together with raw, an Incus node falls back to the Incus connection as root. A discovered node falls back to SSH as root, which onboarding has just disabled, so the converge run cannot reach it at all.
 - The address gathered during onboarding is lost with the run.
 
+## Re-onboarding Guard
+
+Onboarding is one-shot and is not made safe to rerun. An onboarded Incus instance stays in `raw` for as long as it runs, because the plugin lists it, so `10_onboard.yml` would target it again. Loaded together with the onboard inventory, the host's contract would then reach it over SSH as `initial`, and the bootstrap and baseline plays would run as a non-root user and fail partway.
+
+The first task of the first play guards against that. It runs `raw: id initial`, which needs no Python. If the `initial` user exists, the play prints that the host is already onboarded and ends for that host only with `meta: end_host`, without failing the run. The later plays target `onboarding`, an in-memory group holding only the hosts promoted in the current run, so a host already listed in the onboard inventory's `onboarded` group is not touched. A second run against onboarded nodes reports both as already onboarded and changes nothing.
+
+To onboard a node again, restore its `raw` snapshot and demote its inventory entry.
+
+### A Possible Second Layer
+
+The Incus plugin's `filters` option is passed to `incus list`, which accepts instance config keys as filters (`incus list image.os=Ubuntu` lists only Ubuntu instances). Promotion could set a user config key such as `user.uc_stage=onboarded` on the instance, and the plugin config could filter on it, so onboarded instances drop out of `raw` altogether. This is not implemented. `incus list` filters match a value exactly or as a regular expression (`image.os=Ub.*` works), but have no negation (`image.os!=Ubuntu` silently matches nothing). The filter would therefore have to select instances that are still raw, for example `user.uc_stage=raw` set at launch, rather than exclude onboarded ones, and every launch would have to set the key.
+
 ## Snapshot Alignment
 
 Incus snapshot names follow the playbook numbers (see *Incus: Instance Naming*). Take each snapshot after the playbook succeeds and its inventory change is in place.
 
 | Snapshot | Taken | Inventory stage holding the node |
 |----------|-------|----------------------------------|
-| `raw` | At launch, before Ansible touches the instance | raw (plugin or `discovered.yml`) |
+| `raw` | At launch, before Ansible touches the instance | raw, through its source (plugin, `hosts.yml`, or `discovered.yml`); no entry in `onboard/` |
 | `10-onboarded` | After `10_onboard.yml` succeeds | `onboard/<env>/hosts.yml` |
 | `20-normalized` | After `20_normalize.yml` succeeds and `promote_node.py` has run | `normalized/<env>/hosts.yml` |
 | `30-<role>` | After `30_specialize.yml` succeeds with that role | `normalized/<env>/hosts.yml` |
@@ -938,7 +997,7 @@ incus snapshot create deb13 10-onboarded
 Restoring a snapshot changes the instance only. The inventory entry and the fact cache still describe the later state, so move both back by hand.
 
 - Restore the instance to the snapshot of the stage you want to resume from.
-- Demote the inventory entry to the stage that snapshot belongs to. A host marked `uc_origin: plugin` or `static` is removed when demoted to raw, because raw still supplies it.
+- Demote the inventory entry to the stage that snapshot belongs to. Demoting to raw removes the entry from the onboard inventory and writes nothing to raw; the node is listed in raw again by its source. Demoting from normalized to onboard moves the entry back.
 - Flush the node's cached facts, so the next run does not reach the node at a stale address or skip a fact gathering it needs. The jsonfile cache keeps one file per host in the directory `fact_caching_connection` names; ansible-core 2.21 prefixes the file name, for example `s1_deb13`.
 - Run the next playbook.
 
@@ -1090,24 +1149,28 @@ The host is removed from the source `hosts.yml` and added to the destination `ho
 
 Removes the host from whichever static inventory file in the source
 inventory directory holds it (hosts.yml, discovered.yml, and so on; dynamic
-plugin configs are skipped), adds it to the destination stage's file under
-that stage's group, then commits the changed files to git.
+plugin configs are skipped), adds it to the destination stage's hosts.yml
+under that stage's group, then commits the changed files to git.
 
-Destinations: onboard and normalized use <env>/hosts.yml. Raw uses the
-generated raw/discovered.yml under the discovered group, because
-raw/hosts.yml is hand-maintained and no script writes to it.
-
-Plugin-discovered hosts (Incus and similar) are in no static file. Promote
-one by passing --address; the destination entry is then created rather than
-moved, and marked uc_origin: plugin. A host listed by hand in raw/hosts.yml
-is copied, not moved, and marked uc_origin: static.
+Raw is what the sources report, and no script adds a host to any file under
+inventories/raw/:
+- Plugin-discovered hosts (Incus and similar) are in no static file. Promote
+  one by passing --address; the destination entry is created and marked
+  uc_origin: plugin.
+- A host listed by hand in raw/hosts.yml is copied, not moved, and marked
+  uc_origin: static. Scripts never write raw/hosts.yml.
+- A scanned host is removed from raw/discovered.yml when promoted, so it is
+  not listed in two stages until the next scan. This is the only case where
+  a script changes a raw file.
+- Demotion to raw removes the host's entry from the source stage and writes
+  nothing. The node reappears in raw through its source: the plugin lists a
+  running instance, a hand-entered host never left hosts.yml, and a scanned
+  host is found by the next scan. Demotion is inventory bookkeeping that
+  lets the inventory follow a node after a snapshot restore.
 
 A host promoted into the onboard stage carries the connection contract at
 host level, so it wins over the raw inventory's group variables whichever
-order the inventories are loaded in. On demotion to raw, a host marked
-uc_origin: plugin or static is only removed, since raw still supplies it;
-any other host moves to raw/discovered.yml with ansible_host kept and the
-rest of the contract removed. Runs on Linux, macOS, and Windows. Requires PyYAML,
+order the inventories are loaded in. Runs on Linux, macOS, and Windows. Requires PyYAML,
 which is already present wherever Ansible is installed.
 """
 from __future__ import annotations
@@ -1123,21 +1186,17 @@ import yaml
 # Lifecycle order.
 STAGES = ["raw", "onboard", "normalized"]
 
-# Where a host entry is written in each stage: (file, group). raw/hosts.yml
-# is hand-maintained, so a host demoted to raw goes to the generated
-# discovered.yml, the only raw source that holds static hosts.
-DEST = {
-    "raw": ("discovered.yml", "discovered"),
-    "onboard": ("hosts.yml", "onboarded"),
-    "normalized": ("hosts.yml", "normalized"),
-}
+# The group a host entry is written under in each stage's hosts.yml. Raw is
+# absent: no script adds a host to raw.
+STAGE_GROUP = {"onboard": "onboarded", "normalized": "normalized"}
 
-# Header comments rewritten whenever the script writes these files.
+# Header comments rewritten whenever the script rewrites these files.
 HEADERS = {
     ("raw", "discovered.yml"):
         "# inventories/raw/discovered.yml\n#\n"
-        "# Generated inventory, written by ingress/playbooks/00_discover.yml\n"
-        "# (overwritten on every subnet scan) and by demote_node.py.\n"
+        "# Generated inventory, written by ingress/playbooks/00_discover.yml and\n"
+        "# overwritten on every subnet scan. promote_node.py removes a host from it\n"
+        "# when promoting that host. Not committed. Do not edit by hand.\n"
         "# Names are provisional (disc-<ip>) until onboarding.\n",
 }
 
@@ -1149,17 +1208,11 @@ CONTRACT = {
     "ansible_user": "initial",
     "ansible_ssh_common_args": "-o IdentitiesOnly=yes",
 }
-# Removed on demotion to raw. ansible_host is kept: for a static host it is
-# still the raw address.
-CONTRACT_STRIP = ("ansible_connection", "ansible_user",
-                  "ansible_ssh_private_key_file", "ansible_ssh_common_args")
-
-# Marks a host that raw keeps supplying after promotion, so demotion to raw
-# removes it without writing it back:
+# Records where a promoted host came from, for the operator:
 #   plugin: created from --address; a dynamic inventory plugin supplies it
 #   static: listed by hand in raw/hosts.yml, which scripts never write
+# A scanned host carries no marker; it came from raw/discovered.yml.
 ORIGIN_KEY, ORIGIN_PLUGIN, ORIGIN_STATIC = "uc_origin", "plugin", "static"
-RAW_SUPPLIED = (ORIGIN_PLUGIN, ORIGIN_STATIC)
 
 # Hand-maintained files that scripts read but never write.
 READ_ONLY = {("raw", "hosts.yml")}
@@ -1273,12 +1326,6 @@ def with_contract(host_vars, address: str | None, key_file: str | None,
     return host_vars
 
 
-def without_contract(host_vars):
-    """Return host_vars with the onboard connection contract removed."""
-    if not isinstance(host_vars, dict):
-        return host_vars
-    remaining = {k: v for k, v in host_vars.items() if k not in CONTRACT_STRIP}
-    return remaining or None
 
 
 def git_commit(files: list[Path], message: str) -> None:
@@ -1322,12 +1369,9 @@ def main(direction: str = "promote") -> int:
     if (direction == "promote" and step <= 0) or (direction == "demote" and step >= 0):
         raise SystemExit(f"error: cannot {direction} from {from_stage} to {to_stage}")
 
-    dest_name, dest_group = DEST[to_stage]
-    dest_file = args.dest / dest_name
-
     source_file, source_data, host_vars = find_host(args.source, args.host)
     found = source_file is not None
-    if not found and not args.address:
+    if not found and (to_stage == "raw" or not args.address):
         raise SystemExit(
             f"error: host {args.host} not found in any static inventory file in {args.source}"
         )
@@ -1340,29 +1384,25 @@ def main(direction: str = "promote") -> int:
         host_vars[ORIGIN_KEY] = ORIGIN_STATIC
         print(f"note: {source_file} is hand-maintained; its entry for {args.host} is left in place")
 
-    if to_stage == "raw" and isinstance(host_vars, dict) \
-            and host_vars.get(ORIGIN_KEY) in RAW_SUPPLIED:
-        # Raw still supplies this host, through its plugin or hosts.yml; a
-        # second entry would only duplicate it. Remove it from the source and
-        # write nothing to raw.
+    if to_stage == "raw":
+        # Raw is what the sources report. Remove the entry and write nothing;
+        # the node reappears in raw through its source.
         dump(source_file, source_data, HEADERS.get((from_stage, source_file.name)))
-        print(f"{direction.capitalize()}d {args.host}: removed from {args.source}; "
-              f"{ORIGIN_KEY}: {host_vars[ORIGIN_KEY]}, so not written to {args.dest}")
+        print(f"{direction.capitalize()}d {args.host}: removed from {source_file}; "
+              f"nothing written to {args.dest}")
         if not args.no_commit:
             git_commit([source_file], f"{direction} {args.host}: {from_stage} -> {to_stage}")
         return 0
 
+    dest_file = args.dest / "hosts.yml"
     if to_stage == "onboard":
         host_vars = with_contract(host_vars, args.address, args.key_file, args.host)
-    elif to_stage == "raw":
-        # Back to raw: reached through the raw inventory again.
-        host_vars = without_contract(host_vars)
 
     # pop_host clears every existing entry for the host, so a repeat
     # promotion replaces the entry instead of adding a second one.
     dest_data = load(dest_file)
     pop_host(dest_data, args.host)
-    add_host(dest_data, dest_group, args.host, host_vars)
+    add_host(dest_data, STAGE_GROUP[to_stage], args.host, host_vars)
     if args.group:
         add_host(dest_data, args.group, args.host, None)
 
@@ -1373,7 +1413,7 @@ def main(direction: str = "promote") -> int:
     elif not found:
         print(f"note: {args.host} was not in any static file in {args.source}; "
               "created from --address")
-    dump(dest_file, dest_data, HEADERS.get((to_stage, dest_name)))
+    dump(dest_file, dest_data)
     print(f"{direction.capitalize()}d {args.host}: {args.source} -> {args.dest}")
 
     if (args.source / "host_vars" / f"{args.host}.yml").exists():
@@ -1411,14 +1451,15 @@ Rolls back a node to a previous state. Inverse of promote: same interface, oppos
 #!/usr/bin/env python3
 """Roll a host back to an earlier inventory stage.
 
-Inverse of promote_node.py: same interface, opposite direction. On demotion
-to raw, a host marked uc_origin: plugin or uc_origin: static is removed and
-not written back, because raw still supplies it (through its inventory
-plugin, or by hand in raw/hosts.yml). Any other host is written to the
-generated raw/discovered.yml under the discovered group, keeping
-ansible_host, with ansible_connection, ansible_user,
-ansible_ssh_private_key_file and ansible_ssh_common_args removed. Demote a
-node before onboarding it a second time, for example after a snapshot reset.
+Inverse of promote_node.py: same interface, opposite direction. Demotion is
+inventory bookkeeping: it lets the inventory follow a node after a snapshot
+restore, and has nothing to do with making onboarding repeatable.
+
+- Demotion to raw removes the host's entry from the source stage and writes
+  nothing under inventories/raw/. The node reappears in raw through its
+  source: the Incus plugin lists a running instance, a hand-entered host
+  never left raw/hosts.yml, and a scanned host is found by the next scan.
+- Demotion from normalized to onboard moves the entry back.
 """
 import sys
 
