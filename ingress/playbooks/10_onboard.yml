@@ -112,8 +112,17 @@
 
 - name: Converge the onboard baseline
   hosts: onboarding
-  gather_facts: yes         # Safe now: bootstrap installed Python above.
+  gather_facts: no          # Gathered fresh by the setup pre_task below.
   become: no                # Still root over the root connection.
+
+  # Always gather fresh facts here, never from the cache. Instance names are
+  # reused across rebuilds, and the SSH switch below takes the node's address
+  # from these facts; under gathering = smart a cached fact from an earlier
+  # instance of the same name could point at a stale address. Python is
+  # present now, installed by bootstrap above.
+  pre_tasks:
+    - name: gather fresh facts
+      ansible.builtin.setup:
 
   vars:
     firewall_rules: >-
