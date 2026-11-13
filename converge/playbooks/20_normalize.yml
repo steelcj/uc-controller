@@ -38,7 +38,7 @@
     # inventory is passed with -i):
     #   firewall_rules_onboard    inventories/onboard/<env>/group_vars/all.yml
     #   firewall_rules_normalize  inventories/normalized/<env>/group_vars/all.yml
-    # roles/uc_firewall applies the combined list (see Firewall Layering in
+    # converge/roles/uc_firewall applies the combined list (see Firewall Layering in
     # en/docs/uc-controller-v0.1.4.md).
     firewall_rules: >-
       {{
@@ -55,8 +55,18 @@
   # onboard stage sets it through locale_timezone and ntp_timezone), and
   # chrony (time sync is a pending proposal; see Time Sync in
   # en/docs/uc-controller-v0.1.4.md).
+  # Role order matters for the reboot. robertdebock.hostname reboots the node
+  # through a handler when the hostname changes (hostname_reboot is left at
+  # the role default, true). Handlers run at the end of the play, but
+  # robertdebock.selinux flushes handlers partway through its own tasks, so
+  # hostname must stay after selinux or its reboot would fire mid-play.
+  # Handler names are shared across roles: selinux also notifies Reboot.
   roles:
+    # SELinux only on the Red Hat family. On Debian and Ubuntu, which use
+    # AppArmor, the role's defaults would install a policy, set enforcing and
+    # reboot. An OS family condition is not a source condition.
     - role: robertdebock.selinux
+      when: ansible_facts['os_family'] == 'RedHat'
     # auditd needs the kernel audit subsystem, which a container cannot use
     # (the service is masked there).
     - role: robertdebock.auditd
