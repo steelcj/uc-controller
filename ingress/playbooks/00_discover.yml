@@ -1,8 +1,26 @@
 #!/usr/bin/env ansible-playbook
 ---
+# Find raw nodes and write them to a generated inventory file.
+#
+# Discovery never writes inventories/raw/hosts.yml, which is hand-maintained.
+# Each source writes only its own root-level file in inventories/raw/:
+#   subnet -> discovered.yml, hosts in the discovered group
+#   cloud  -> cloud.yml (placeholder, not wired into raw; see below)
+#
+# The directory comes from raw_inventory (default inventories/raw), resolved
+# against the directory ansible-playbook is started from, which is the
+# repository root. It does not depend on where this playbook lives.
+#
+# Generated names are provisional: disc-<ip with dots as hyphens>, with
+# name_provisional: true on the host. Renaming is not done here.
+
 - name: discover raw nodes
   hosts: localhost
   gather_facts: no
+  become: no
+
+  vars:
+    discover_raw_dir: "{{ raw_inventory | default('inventories/raw') | ansible.builtin.realpath }}"
 
   tasks:
     - name: scan subnet for SSH-capable hosts
@@ -22,28 +40,41 @@
           }}
       when: (discover_source | default('subnet')) == 'subnet'
 
-    - name: derive unique hostnames from IPs
+    - name: derive provisional hostnames from IPs
       set_fact:
         discovered_named: >-
           {{
             discovered_hosts
-            | map('regex_replace', '[^a-zA-Z0-9._]', '-')
+            | map('replace', '.', '-')
+            | map('regex_replace', '^', 'disc-')
             | zip(discovered_hosts)
             | list
           }}
       when: (discover_source | default('subnet')) == 'subnet'
 
-    - name: build raw inventory from subnet scan
+    # Overwritten on every subnet scan. ansible_connection and ansible_user
+    # come from raw/group_vars/discovered.yml.
+    - name: write the discovered inventory from the subnet scan
       copy:
-        dest: "{{ playbook_dir }}/../../inventories/raw/hosts.yml"
+        dest: "{{ discover_raw_dir }}/discovered.yml"
         content: |
-          raw:
+          # inventories/raw/discovered.yml
+          #
+          # Generated inventory, written by ingress/playbooks/00_discover.yml and
+          # overwritten on every subnet scan. promote_node.py removes a host from it
+          # when promoting that host. Not committed. Do not edit by hand.
+          # Names are provisional (disc-<ip>) until onboarding.
+          discovered:
+          {% if discovered_named | length == 0 %}
+            hosts: {}
+          {% else %}
             hosts:
           {% for pair in discovered_named %}
               {{ pair[0] }}:
                 ansible_host: {{ pair[1] }}
-                ansible_user: root
+                name_provisional: true
           {% endfor %}
+          {% endif %}
       when: (discover_source | default('subnet')) == 'subnet'
 
     - name: query cloud API for instances
@@ -56,11 +87,18 @@
       register: cloud_instances
       when: (discover_source | default('subnet')) == 'cloud'
 
-    - name: build raw inventory from cloud results
+    # Placeholder, not developed further. It writes its own file so it cannot
+    # clobber anything. The cloud group is not a child of raw in hosts.yml,
+    # so these hosts are not onboarded until a cloud source is added.
+    - name: write the cloud placeholder inventory
       copy:
-        dest: "{{ playbook_dir }}/../../inventories/raw/hosts.yml"
+        dest: "{{ discover_raw_dir }}/cloud.yml"
         content: |
-          raw:
+          # inventories/raw/cloud.yml
+          #
+          # Generated inventory, written by the cloud placeholder in
+          # ingress/playbooks/00_discover.yml. Not committed. Not wired into raw.
+          cloud:
             hosts:
           {% for instance in cloud_instances.json %}
               {{ instance.name }}:

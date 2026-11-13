@@ -19,6 +19,30 @@
   become: no
 
   tasks:
+    # Re-onboarding guard. Onboarding is one-shot, and an onboarded Incus
+    # instance stays in raw for as long as it runs, because the plugin lists
+    # it. If the initial user already exists, the node has been onboarded:
+    # say so and end the play for that host only. raw needs no Python, and an
+    # unreachable node is left to the readiness probe below.
+    - name: check whether the node is already onboarded
+      ansible.builtin.raw: id initial
+      register: onboarded_probe
+      failed_when: false
+      changed_when: false
+      ignore_unreachable: true
+
+    - name: report a node that is already onboarded
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }} is already onboarded (the initial user
+          exists); skipping it. Restore it to its raw snapshot and demote its
+          inventory entry to onboard it again.
+      when: onboarded_probe.rc | default(1) == 0
+
+    - name: end the play for a node that is already onboarded
+      ansible.builtin.meta: end_host
+      when: onboarded_probe.rc | default(1) == 0
+
     # The last play writes each promoted host into the onboard inventory, so
     # the destination has to be named up front. It is passed in, not derived
     # from playbook_dir, so it does not depend on where this file lives.
@@ -46,6 +70,12 @@
       until: probe is succeeded
       changed_when: false
 
+    # Promoted nodes join two in-memory groups. onboarding holds only the
+    # nodes promoted in this run, and the later plays here target it, so a
+    # node already listed in the onboard inventory's onboarded group is not
+    # touched again. onboarded is what 20_normalize.yml targets when it is
+    # chained in the same run through site.yml.
+    #
     # add_host runs once per play, so loop over ansible_play_hosts to promote
     # every node still active in the play. The connection vars are carried
     # across with default(omit) so an Incus node keeps its incus connection and
@@ -54,6 +84,7 @@
       ansible.builtin.add_host:
         name: "{{ item }}"
         groups:
+          - onboarding
           - onboarded
           - "{{ target_group | default('ungrouped') }}"
         ansible_connection: "{{ hostvars[item].ansible_connection | default(omit) }}"
@@ -62,7 +93,7 @@
       loop: "{{ ansible_play_hosts }}"
 
 - name: Bootstrap Python onto onboarded nodes
-  hosts: onboarded
+  hosts: onboarding
   gather_facts: no          # Python is not present yet; bootstrap installs it.
   become: no                # Already root over the incus/ssh-root connection.
 
@@ -73,10 +104,14 @@
     bootstrap_become: false
 
   roles:
+    # needs_python_bootstrap defaults to true in raw/group_vars/all.yml. A
+    # source opts out in its own group_vars only when its images ship both
+    # Python and sudo; the users role later in this playbook needs sudo.
     - role: robertdebock.bootstrap
+      when: needs_python_bootstrap | default(true) | bool
 
 - name: Converge the onboard baseline
-  hosts: onboarded
+  hosts: onboarding
   gather_facts: yes         # Safe now: bootstrap installed Python above.
   become: no                # Still root over the root connection.
 
@@ -112,7 +147,7 @@
     - role: robertdebock.users        # creates the initial user + sudo + key
 
 - name: Switch onboarded nodes to SSH as the initial user
-  hosts: onboarded
+  hosts: onboarding
   gather_facts: no
   become: no
 
@@ -141,7 +176,7 @@
       loop: "{{ ansible_play_hosts }}"
 
 - name: Confirm SSH as the initial user works
-  hosts: onboarded
+  hosts: onboarding
   gather_facts: no
   become: yes               # initial has passwordless sudo
 
@@ -160,14 +195,16 @@
         msg: "{{ inventory_hostname }}: {{ initial_id.stdout }}"
 
 - name: Persist the promotion to the onboard inventory
-  hosts: onboarded
+  hosts: onboarding
   gather_facts: no
   become: no
 
   vars:
     # Paths are resolved on the controller against the directory
-    # ansible-playbook was started from, which is the repository root.
-    promote_script: "{{ playbook_dir }}/../../scripts/promote_node.py"
+    # ansible-playbook was started from, which is the repository root, the
+    # same way 00_discover.yml resolves raw_inventory. They do not depend on
+    # where this playbook lives.
+    promote_script: "{{ uc_scripts_dir | default('scripts') | ansible.builtin.realpath }}/promote_node.py"
     promote_from: "{{ raw_inventory | default('inventories/raw') | ansible.builtin.realpath }}"
     promote_to: "{{ onboard_inventory | ansible.builtin.realpath }}"
 

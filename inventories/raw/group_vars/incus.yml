@@ -1,6 +1,7 @@
 ---
 # inventories/raw/group_vars/incus.yml
 #
+# Maintained by hand.
 # Incus instances are reached through the Incus API as root, with no SSH.
 # needs_python_bootstrap stays at the raw default (true): the Debian image
 # ships sudo but not Python.

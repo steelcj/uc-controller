@@ -1,5 +1,7 @@
 ---
-# Raw stage variables, shared by every source. Raw nodes contribute no
+# inventories/raw/group_vars/all.yml
+#
+# Maintained by hand. Raw stage variables, shared by every source. Raw nodes contribute no
 # firewall rules.
 
 # Whether 10_onboard.yml runs robertdebock.bootstrap on the node. Bootstrap

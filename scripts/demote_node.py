@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """Roll a host back to an earlier inventory stage.
 
-Inverse of promote_node.py: same interface, opposite direction. On demotion
-to raw, a host marked uc_origin: plugin is removed and not written to
-raw/hosts.yml, because its inventory plugin still supplies it. Any other host
-moves back to raw/hosts.yml keeping ansible_host, with ansible_connection,
-ansible_user, ansible_ssh_private_key_file and ansible_ssh_common_args
-removed. Demote a node before onboarding it a second time, for example after
-a snapshot reset.
+Inverse of promote_node.py: same interface, opposite direction. Demotion is
+inventory bookkeeping: it lets the inventory follow a node after a snapshot
+restore, and has nothing to do with making onboarding repeatable.
+
+- Demotion to raw removes the host's entry from the source stage and writes
+  nothing under inventories/raw/. The node reappears in raw through its
+  source: the Incus plugin lists a running instance, a hand-entered host
+  never left raw/hosts.yml, and a scanned host is found by the next scan.
+- Demotion from normalized to onboard moves the entry back.
 """
 import sys
 

@@ -1,6 +1,7 @@
 ---
 # inventories/raw/group_vars/discovered.yml
 #
+# Maintained by hand.
 # Nodes found by a network scan are reached over plain SSH as root.
 # ansible_host is set per host by the generated inventory.
 ansible_connection: ssh
