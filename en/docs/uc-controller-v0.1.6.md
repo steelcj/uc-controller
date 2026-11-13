@@ -13,6 +13,7 @@ An Ansible controller configuration that moves nodes through a four stage lifecy
 | SELinux policy installed before the role | `20_normalize.yml` installs `selinux-policy-targeted` in a `pre_tasks` step on the Red Hat family. The Incus Rocky 9 image has no policy package and no `/etc/selinux/config`, and `robertdebock.selinux` installs only the Python bindings, so its first run failed |
 | Which `Reboot` handler runs | Verified: `robertdebock.selinux` notifies `Reboot`, and the handler that runs is the one `robertdebock.hostname` defines (see Reboots and Role Order) |
 | Known issues | New: with SELinux enforcing, the Incus agent in the Rocky 9 VM cannot start, so `incus exec` and the Incus connection stop working after normalize; the cause is the missing `bin_t` file context for the agent binary, and a fix is proposed but not applied. New: `hostname_reboot` controls the SELinux reboot. New: the Rocky 9 image does not grow its root partition. New: firewalld's `public` zone keeps `cockpit` and `dhcpv6-client` |
+| Pinned versions | `requirements.yml` pins every role to its installed version, `steelcj.umask` to a commit, and lists `community.general` 13.5.1 and `ansible.posix` 2.2.2; new sections Pinned Versions and Bumping a Pinned Version |
 | Listings | The `10_onboard.yml`, `20_normalize.yml` and `30_specialize.yml` listings are refreshed from the repository; in v0.1.5 they lacked `changed_when: false` and the `shared/roles` comment |
 | Port 443 removed from `deb13` | `deb13` was restored to `20-normalized` and specialized again, so ufw no longer lists `allow-https`; `30-webserver` was retaken stopped. An example of the additive firewall's Known Limitation: a removed rule leaves the node only by a rebuild or by hand |
 
@@ -1708,10 +1709,23 @@ Roles are installed from Ansible Galaxy with `ansible-galaxy install -r requirem
 ```yaml
 # requirements.yml
 ---
-collections: []
+# Every role and collection is pinned to an exact version: the versions the
+# lifecycle was verified with (see Verification Status in the design
+# document). To move one, see "Bumping a Pinned Version" there.
+
+# The collections the playbooks and the vendored roles use. Both also ship
+# inside the "ansible" package of the controller's virtual environment;
+# installing them from this file puts the pinned versions in the user's
+# collections path, which Ansible searches first.
+collections:
+  - name: community.general
+    version: 13.5.1
+  - name: ansible.posix
+    version: 2.2.2
 
 roles:
   - name: robertdebock.bootstrap
+    version: 7.1.7
 
   # Our fork of robertdebock.umask, adding the umask_system option for a
   # system-wide umask (login.defs + profile.d). Sourced from git, not Galaxy,
@@ -1720,27 +1734,68 @@ roles:
   - name: steelcj.umask
     src: git@github.com:steelcj/ansible-role-umask.git
     scm: git
-    version: master
+    # A commit, not a branch: the fork has no tagged release. This is the head
+    # of master on 2026-11-13.
+    version: 424960626fd48d86ecd23ba1654fdf8b722f7821
   - name: robertdebock.epel
+    version: 4.1.7
   - name: robertdebock.update
+    version: 3.1.10
   - name: robertdebock.locale
+    version: 3.3.12
   - name: robertdebock.auto_update
+    version: 3.1.9
   - name: robertdebock.cron
+    version: 2.2.8
   - name: robertdebock.ntp
+    version: 3.1.7
   - name: robertdebock.openssh
+    version: 5.0.4
   - name: robertdebock.fail2ban
+    version: 5.0.7
   - name: robertdebock.users
+    version: 6.1.8
   - name: robertdebock.selinux
+    version: 3.1.12
   - name: robertdebock.auditd
+    version: 3.2.13
 #  - name: robertdebock.pam      # robert does not have a role called pam
 #  - name: robertdebock.limits   # robert does not have a role called limits
   - name: robertdebock.sysctl
+    version: 2.1.10
   - name: robertdebock.hostname
+    version: 3.1.11
 #  - name: robertdebock.timezone # robert does not have a role called timezone (see local and ntp)
 #  - name: robertdebock.motd     # robert does not have a role called mod
 #  - name: robertdebock.chrony   # robert does not have a role with this name
   - name: robertdebock.rsyslog
+    version: 5.0.1
 ```
+
+### Pinned Versions
+
+Every role and collection in `requirements.yml` has an exact version, the one the lifecycle was verified with. Galaxy roles are pinned to their release. `steelcj.umask`, the fork, has no tagged release and is pinned to a commit. The file also lists the two collections the playbooks and the vendored roles use, `community.general` 13.5.1 and `ansible.posix` 2.2.2.
+
+The vendored roles are committed under `roles/`, so the pins describe what is there; they do not change a run by themselves. The collections also ship inside the `ansible` package of the controller's virtual environment, at the same versions for `ansible` 14.6.0. `ansible-galaxy collection install -r requirements.yml` puts the pinned versions in the user's collections path, which Ansible searches before the virtual environment, so the pins hold when the virtual environment is rebuilt with a newer `ansible`.
+
+The pinned file was checked by installing it into empty temporary directories. All 16 roles came out byte for byte as they are in `roles/`. Both collections matched the installed ones in every file the virtual environment ships; the Galaxy archives add tests, documentation and CI files.
+
+### Bumping a Pinned Version
+
+One role or collection at a time, on its own branch:
+
+1. Read the upstream changelog between the two versions. Look for renamed variables, changed defaults and new handlers; handler names are shared across roles in a play (see Reboots and Role Order).
+2. Change the version in `requirements.yml`. For `steelcj.umask`, use the new commit hash, or a tag once the fork has one.
+3. Reinstall that role into `roles/`, or the collection into the collections path:
+
+    ```bash
+    ansible-galaxy role install -r requirements.yml --force -p roles robertdebock.openssh
+    ansible-galaxy collection install -r requirements.yml --force
+    ```
+
+4. Review `git diff roles/` before going further. This is the only place a vendored role changes.
+5. Test. Run `python3 scripts/check_converge_boundary.py` and `ansible-playbook --syntax-check` on every playbook, then the end-to-end check from `raw` on a node of each OS family the role runs on: `deb13` or `ubu2404` for the Debian family and `rky9` for the Red Hat family. A role used only in normalize still needs the whole chain, because the reruns must report `changed=0`.
+6. Commit `requirements.yml` and `roles/` together, and record the new version under Verification Status if the result differs.
 
 ## Node Lifecycle Flow
 
