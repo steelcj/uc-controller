@@ -10,7 +10,7 @@ An Ansible controller configuration that moves nodes through a four stage lifecy
 |--------|-------------|
 | Hostname reboot kept | `hostname_reboot` stays at the role default; `robertdebock.hostname` must stay after `robertdebock.selinux`, which flushes handlers partway through |
 | SELinux on the Red Hat family only | `robertdebock.selinux` runs only when `os_family` is `RedHat`; on Debian and Ubuntu it installed a policy, set enforcing and triggered the shared `Reboot` handler |
-| Firewall role location | `uc_firewall` moved to `converge/roles/`; `roles/` holds only vendored roles |
+| Role directories | Four role directories with one rule each (see Role Directories); `uc_firewall`, used by onboarding and both converge stages, lives in `shared/roles/`; `roles/` holds only vendored roles; the boundary check fails on a role used across concerns |
 | Scaffold removed | `tools/scaffold.yml`, the experimental role-defaults scaffold, was deleted: it wrote a mapping where the firewall plays expect a list, and nothing depended on it |
 | Vault guidance | The onboarding guide no longer tells readers to create vault files; the secrets pattern is not decided |
 | Normalize persists its promotion | `20_normalize.yml` ends with a play that moves each host that completed it from `onboard_inventory` to `normalized_inventory` through `promote_node.py`; both variables are required |
@@ -81,8 +81,7 @@ uc-controller/
 │   ├── playbooks/
 │   │   ├── 20_normalize.yml
 │   │   └── 30_specialize.yml
-│   └── roles/
-│       └── uc_firewall/          # project firewall role, also used by onboarding
+│   └── roles/                    # repository roles used by converge only
 │
 ├── inventories/
 │   ├── raw/                      # flat: no environment split
@@ -120,7 +119,11 @@ uc-controller/
 │           │   └── all.yml
 │           └── host_vars/
 │
-├── roles/                        # vendored Galaxy roles, shared by both concerns
+├── shared/
+│   └── roles/                    # repository roles used by ingress and converge
+│       └── uc_firewall/
+│
+├── roles/                        # vendored Galaxy roles only
 │
 ├── scripts/
 │   ├── promote_node.py
@@ -128,6 +131,17 @@ uc-controller/
 │   ├── reset_inventories.py
 │   └── check_converge_boundary.py
 ```
+
+### Role Directories
+
+| Directory | Holds | Edited here |
+|-----------|-------|-------------|
+| `roles/` | Vendored roles, installed from `requirements.yml` (Galaxy or git) | No |
+| `shared/roles/` | Repository roles used by both ingress and converge playbooks | Yes |
+| `ingress/roles/` | Repository roles used only by ingress playbooks | Yes |
+| `converge/roles/` | Repository roles used only by converge playbooks | Yes |
+
+All four are on `roles_path`, in that order, so any playbook resolves a role by name wherever it lives. The directories state who uses a role, and `scripts/check_converge_boundary.py` holds ingress and converge to it: it fails when a playbook in `ingress/playbooks/` uses a role from `converge/roles/`, or one in `converge/playbooks/` uses a role from `ingress/roles/`. A role that both need moves to `shared/roles/`. `uc_firewall` is there because onboarding opens SSH with it and both converge stages add their layers with it. Role names built from a variable, such as `{{ specialize_role }}`, are not checked.
 
 A `prod` environment, when it exists, follows the same pattern as `dev` and `stage` under `onboard/` and `normalized/`. Secrets handling is deferred until the first secret exists; the earlier `vaults/` placeholders held none and were removed.
 
@@ -279,7 +293,7 @@ The firewall settings live with the stage that owns them. The role only ever run
 
 ### The Firewall Role
 
-`uc_firewall` is a project role, not a vendored one. It lives in `converge/roles/`. `roles_path` is shared, so `10_onboard.yml` resolves it too. It replaced `robertdebock.firewall`, which read only `firewall_services` and could not restrict a rule's source address.
+`uc_firewall` is a project role, not a vendored one. It lives in `shared/roles/` (see Role Directories), because onboarding and both converge stages use it. It replaced `robertdebock.firewall`, which read only `firewall_services` and could not restrict a rule's source address.
 
 #### Rule Schema
 
@@ -1484,7 +1498,10 @@ python scripts/demote_node.py \
 ```ini
 # ansible.cfg
 [defaults]
-roles_path = ./roles:./ingress/roles:./converge/roles:~/.ansible/roles:/usr/share/ansible/roles
+# Role directories: ./roles vendored Galaxy roles; ./shared/roles repository roles
+# used by both ingress and converge; ./ingress/roles and ./converge/roles
+# repository roles used by one concern only.
+roles_path = ./roles:./shared/roles:./ingress/roles:./converge/roles:~/.ansible/roles:/usr/share/ansible/roles
 inventory = ./inventories/raw
 # Hosts handled in parallel. Test nodes share this machine with the controller.
 forks = 20
