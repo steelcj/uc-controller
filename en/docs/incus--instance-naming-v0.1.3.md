@@ -162,7 +162,7 @@ timeout 120 incus snapshot create deb13 20-normalized
 timeout 120 incus start deb13
 ```
 
-A snapshot of a running container hung twice on the uc-controller workstation, and the cause was not found. A stopped instance has no running processes, so there is nothing to freeze or race against. `raw` is the exception in practice only: it is taken right after first boot, before anything runs, and the same stopped procedure applies if it is retaken on a new instance.
+A snapshot of a running container hung twice on the uc-controller workstation, and the cause was not found. A stopped instance has no running processes, so there is nothing to freeze or race against. Stopping does not rule the hang out: one snapshot of a stopped instance also ran into its time limit and was not created, and an immediate retry succeeded. If `snapshot create` times out, retry it once with the instance still stopped, and confirm the snapshot exists with `incus snapshot list` before starting the instance. `raw` is the exception in practice only: it is taken right after first boot, before anything runs, and the same stopped procedure applies if it is retaken on a new instance.
 
 ### Scratch snapshots
 
@@ -233,4 +233,4 @@ Linux Containers. (n.d.-b). *Instance properties*. Incus documentation. Retrieve
 | 0.1.0 | Draft | Initial draft; codifies OS-based instance names, unnumbered raw snapshot, numbered lifecycle stages, and tmp-prefixed scratch snapshots |
 | 0.1.1 | Draft | Return-to-citation links placed after the reference text |
 | 0.1.2 | Draft | Adds the Scope section for created versus discovered nodes; frontmatter version matches the filename; Abstract notes host_fqdn: false |
-| 0.1.3 | Draft | Adds Taking a snapshot: stage snapshots are taken with the instance stopped |
+| 0.1.3 | Draft | Adds Taking a snapshot: stage snapshots are taken with the instance stopped, and a timed-out snapshot is retried once |

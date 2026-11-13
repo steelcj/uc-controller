@@ -1,0 +1,29 @@
+---
+- name: Check the OS family is supported
+  ansible.builtin.assert:
+    that: ansible_facts['os_family'] in webserver_docroots
+    fail_msg: >-
+      webserver supports the Debian and Red Hat families, not
+      {{ ansible_facts['os_family'] }}.
+    quiet: true
+
+- name: Install nginx
+  ansible.builtin.package:
+    name: nginx
+    state: present
+
+# On the Red Hat family index.html may be a symlink to the distribution's
+# test page; copy replaces the link with this file.
+- name: Write the page naming the host
+  ansible.builtin.copy:
+    content: "{{ inventory_hostname }}\n"
+    dest: "{{ webserver_docroots[ansible_facts['os_family']] }}/index.html"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Start and enable nginx
+  ansible.builtin.service:
+    name: nginx
+    state: started
+    enabled: true

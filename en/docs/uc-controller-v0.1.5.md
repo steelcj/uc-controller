@@ -15,6 +15,8 @@ An Ansible controller configuration that moves nodes through a four stage lifecy
 | Vault guidance | The onboarding guide no longer tells readers to create vault files; the secrets pattern is not decided |
 | Normalize persists its promotion | `20_normalize.yml` ends with a play that moves each host that completed it from `onboard_inventory` to `normalized_inventory` through `promote_node.py`; both variables are required |
 | Stopped snapshots | Stage snapshots are taken with the instance stopped (stop, snapshot, start, each with a time limit, then wait for SSH) after snapshots of running containers hung |
+| Specialize stage | `converge/roles/webserver` installs nginx and serves a one-line page naming the host; `30_specialize.yml` includes the role as a task and fails early with a clear message when `specialize_role` is not set. HTTP is opened only as `firewall_rules_specialize` data for the `webservers` group |
+| Verification status | New section: the chain is verified on Debian 13 containers only; auditd, firewalld, the SELinux role and its `Reboot` handler collision, and the `webserver` role on the Red Hat family are untested |
 | Group memberships kept | Moves between onboard and normalized, in either direction, keep every group other than the stage group and leave the connection settings unchanged |
 
 ### v0.1.3 → v0.1.4
@@ -63,6 +65,19 @@ An Ansible controller configuration that moves nodes through a four stage lifecy
 | `wait_for` delegation | All `wait_for` tasks now run on the controller via `delegate_to: localhost` |
 | Hostname collisions | Discovery now derives unique hostnames from full IPs instead of first octet |
 
+## Verification Status
+
+The lifecycle is verified end to end on Debian 13 containers only. On `deb13`, restored to `raw` with the stage inventories reset, onboard, normalize and specialize with `webserver` each ran as their own command with `failed=0`, and the inventory on disk matched the node after each stage. A second normalize run caused no reboot and no hostname change, and a second specialize run reported no changes.
+
+Not verified, because the Red Hat family node (`rky9`) was not built. None of these is known to work:
+
+- `robertdebock.auditd`, which is skipped in containers and has not run anywhere.
+- The firewalld path of `uc_firewall`.
+- `robertdebock.selinux`, and its `Reboot` handler, which has the same name as the handler in `robertdebock.hostname`. Which handler runs, whether the node reboots when SELinux is first configured, and whether `getenforce` reports `Enforcing` afterwards are all unchecked.
+- The `webserver` role on a Red Hat family node, including its document root and the replacement of the packaged `index.html`.
+
+Ubuntu 24.04 (`ubu2404`) ran onboard and normalize earlier in this version's work, but not specialize and not the final from-scratch run.
+
 ## Repository Layout
 
 ```text
@@ -83,6 +98,7 @@ uc-controller/
 │   │   ├── 20_normalize.yml
 │   │   └── 30_specialize.yml
 │   └── roles/                    # repository roles used by converge only
+│       └── webserver/            # specialize: nginx and a one-line page
 │
 ├── inventories/
 │   ├── raw/                      # flat: no environment split
@@ -910,10 +926,39 @@ Make it useful. Applies the role-specific composition and the complete firewall 
         + (firewall_rules_specialize | default([]))
       }}
 
-  roles:
-    - role: "{{ specialize_role }}"
-    - role: uc_firewall
+  # The roles are included as tasks, not listed under roles:, so the play can
+  # check specialize_role first. A roles: entry named by an undefined variable
+  # fails while the playbook is parsed, with only "'specialize_role' is
+  # undefined" as the message.
+  tasks:
+    - name: require specialize_role
+      ansible.builtin.assert:
+        that:
+          - specialize_role is defined
+          - specialize_role | length > 0
+        fail_msg: >-
+          Set the role this stage applies, for example
+          -e specialize_role=webserver.
+        quiet: true
+
+    - name: apply the specialize role
+      ansible.builtin.include_role:
+        name: "{{ specialize_role }}"
+
+    - name: apply the combined firewall rules
+      ansible.builtin.include_role:
+        name: uc_firewall
 ```
+
+The specialize role is chosen at run time with `-e specialize_role=<role>`. The play checks it is set before anything else runs, which a `roles:` list cannot do: a role named by an undefined variable stops the playbook while it is being parsed. Both roles are included with `include_role`, so they run in the listed order, the specialize role first and the firewall last.
+
+Pass the onboard inventory as well as the normalized one. `firewall_rules_onboard`, which holds the SSH rule, is only loaded from `inventories/onboard/<env>/group_vars/all.yml`, and `uc_firewall` refuses to enable the firewall without an SSH rule.
+
+#### The webserver Role
+
+`converge/roles/webserver` is the smallest role that exercises the stage. It installs nginx, enables and starts it, and writes `index.html` with the host's inventory name into the distribution's default document root, `/var/www/html` on the Debian family and `/usr/share/nginx/html` on the Red Hat family. It opens no port. HTTP is opened at the specialize layer by `firewall_rules_specialize` in `inventories/normalized/<env>/group_vars/webservers.yml`, so only hosts in the `webservers` group get it. That file also opens 443, which nothing serves yet. No TLS, no virtual hosts, no templated site configuration.
+
+Run on the freshly onboarded and normalized `deb13`: before specialize, port 80 timed out from the controller and SSH worked. The run finished with `failed=0`; afterwards `curl` returned `deb13`, SSH still worked, and ufw listed `allow-ssh`, `allow-monitoring` (from `10.0.0.0/24`), `allow-http` and `allow-https`. A second run reported `changed=0`. Not yet run on a Red Hat family node.
 
 ### site.yml
 
@@ -978,7 +1023,9 @@ timeout 120 incus start deb13
 ansible -i inventories/onboard/dev deb13 -m ansible.builtin.wait_for_connection
 ```
 
-A snapshot of a running container hung twice on the workstation. The investigation found no kernel or storage error at either hang and nothing heavy running inside the container; the host root filesystem, which holds the Incus pool's loop image, had filled up once in between. With the instance stopped there is nothing to freeze. The host disk is worth watching, because a full root filesystem stops the pool from growing.
+A snapshot of a running container hung twice on the workstation. The investigation found no kernel or storage error at either hang and nothing heavy running inside the container; the host root filesystem, which holds the Incus pool's loop image, had filled up once in between. The host disk is worth watching, because a full root filesystem stops the pool from growing.
+
+Stopping the instance does not prevent the hang. In the final verification, one snapshot of the stopped `deb13` (`10-onboarded`, right after the old one was deleted) ran into its 120-second limit and was not created; the Incus daemon showed no pending operation and logged nothing, and the kernel log showed no error. An immediate retry, still stopped, finished in under a second, as did the next two stage snapshots, each also taken right after deleting the old one. The cause is unknown. The procedure stays: the time limit bounds a hang, and a snapshot that times out is retried once with the instance still stopped. Check `incus snapshot list` afterwards, because a timed-out create leaves no snapshot.
 
 ### Restore and Resume
 
@@ -1060,7 +1107,7 @@ ansible-playbook \
   -e onboard_inventory=inventories/onboard/dev \
   -e normalized_inventory=inventories/normalized/dev \
   -e target_group=webservers \
-  -e specialize_role=web-server
+  -e specialize_role=webserver
 
 # Individual stages
 
@@ -1091,7 +1138,7 @@ ansible-playbook \
   -i inventories/onboard/dev \
   -i inventories/normalized/dev \
   converge/playbooks/30_specialize.yml \
-  -e specialize_role=web-server
+  -e specialize_role=webserver
 ```
 
 Discovered nodes are onboarded the same way. They are reached over SSH as root until onboarding disables root login, so the controller's key must already be in root's `authorized_keys`:

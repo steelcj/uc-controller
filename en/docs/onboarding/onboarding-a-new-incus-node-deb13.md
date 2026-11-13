@@ -1,14 +1,15 @@
 # Onboarding a New Incus Node: deb13
 
-This guide takes a brand-new Debian 13 Incus container called `deb13` from launch to an onboarded and normalized node that the controller manages over SSH as the `initial` user. Every command runs on the controller, from the root of the `uc-controller` repository.
+This guide takes a brand-new Debian 13 Incus container called `deb13` from launch to a specialized web server that the controller manages over SSH as the `initial` user. Every command runs on the controller, from the root of the `uc-controller` repository.
 
-The node goes through four states, and each one gets a snapshot so you can return to it later:
+The node goes through five states, and each one gets a snapshot so you can return to it later:
 
 | State | How it gets there | Snapshot | Inventory that holds it |
 |-------|-------------------|----------|-------------------------|
 | Raw | `incus launch` | `pristine`, `raw` | `inventories/raw`, through the Incus plugin |
 | Onboarded | `10_onboard.yml` | `10-onboarded` | `inventories/onboard/dev/hosts.yml` |
 | Normalized | `20_normalize.yml` | `20-normalized` | `inventories/normalized/dev/hosts.yml` |
+| Specialized as a web server | `30_specialize.yml` with `webserver` | `30-webserver` | `inventories/normalized/dev/hosts.yml` |
 
 ## Before you start
 
@@ -424,6 +425,69 @@ incus snapshot list deb13
 
 The list should now show `raw`, `pristine`, `10-onboarded` and `20-normalized`. The node is ready for `30_specialize.yml`.
 
+## 9. Specialize as a web server
+
+Specialize gives a normalized node its job. The role is chosen at run time with `specialize_role`; here it is `webserver`, which installs nginx and serves a one-line page naming the host. The role opens no port itself. HTTP comes from `firewall_rules_specialize` in `inventories/normalized/dev/group_vars/webservers.yml`, which applies because onboarding put `deb13` in the `webservers` group.
+
+Before you run it, port 80 is closed:
+
+```bash
+curl -sS -m 5 http://$IP/
+```
+
+```text
+curl: (28) Connection timed out after 5002 milliseconds
+```
+
+Run specialize. Pass all three inventories: the SSH rule lives in the onboard inventory's `group_vars`, and the firewall role refuses to enable a default deny without it.
+
+```bash
+ansible-playbook -i inventories/raw -i inventories/onboard/dev -i inventories/normalized/dev \
+  converge/playbooks/30_specialize.yml -l deb13 \
+  -e specialize_role=webserver
+```
+
+A first run ends with `failed=0` and a few changes: nginx installed, the page written, and the `allow-http` and `allow-https` rules added. Without `-e specialize_role=...` the run stops at once with `Set the role this stage applies, for example -e specialize_role=webserver.`
+
+Check the page, SSH, and that every firewall layer is present:
+
+```bash
+curl -sS -m 5 http://$IP/
+ssh -i ~/.ssh/gradus-raw-initial-id_ed25519 -o IdentitiesOnly=yes initial@$IP id
+incus exec deb13 -- ufw status
+```
+
+```text
+deb13
+uid=1000(initial) gid=1000(initial) groups=1000(initial)
+Status: active
+
+To                         Action      From
+--                         ------      ----
+22/tcp                     ALLOW       Anywhere                   # allow-ssh
+9100/tcp                   ALLOW       10.0.0.0/24                # allow-monitoring
+80/tcp                     ALLOW       Anywhere                   # allow-http
+443/tcp                    ALLOW       Anywhere                   # allow-https
+22/tcp (v6)                ALLOW       Anywhere (v6)              # allow-ssh
+```
+
+`allow-ssh` comes from the onboard layer, `allow-monitoring` from normalize, and `allow-http` and `allow-https` from specialize. Nothing serves 443 yet.
+
+Run the same command a second time. It should report `changed=0`.
+
+The inventory does not change: specialize leaves the node in `normalized` and `webservers`.
+
+Snapshot, stopped:
+
+```bash
+timeout 120 incus stop deb13
+timeout 120 incus snapshot create deb13 30-webserver
+timeout 120 incus start deb13
+ansible -i inventories/normalized/dev deb13 -m ansible.builtin.wait_for_connection
+```
+
+nginx starts on its own at boot, a few seconds after SSH answers, so a `curl` straight after the start can be refused. Wait a moment and it serves the page again.
+
 ## Going back
 
 Restoring a snapshot changes the container only. Move the inventory entry back to the matching stage and flush the cached facts, or the next run reaches the node at a stale address.
@@ -447,6 +511,14 @@ find "$CACHE" -maxdepth 1 \( -name deb13 -o -name '*_deb13' \) -delete
 ```
 
 Demoting from normalized to onboard keeps the connection settings and the `webservers` membership.
+
+To specialize again from the normalized state, restore `20-normalized` and flush the cached facts. The inventory entry stays where it is, because specialize does not move it:
+
+```bash
+incus snapshot restore deb13 20-normalized
+CACHE="$(ansible-config dump | awk -F' = ' '/^CACHE_PLUGIN_CONNECTION/{print $2}')"; CACHE="${CACHE/#\~/$HOME}"
+find "$CACHE" -maxdepth 1 \( -name deb13 -o -name '*_deb13' \) -delete
+```
 
 ## Troubleshooting
 
