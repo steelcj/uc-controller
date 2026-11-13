@@ -23,6 +23,25 @@
         + (firewall_rules_specialize | default([]))
       }}
 
-  roles:
-    - role: "{{ specialize_role }}"
-    - role: uc_firewall
+  # The roles are included as tasks, not listed under roles:, so the play can
+  # check specialize_role first. A roles: entry named by an undefined variable
+  # fails while the playbook is parsed, with only "'specialize_role' is
+  # undefined" as the message.
+  tasks:
+    - name: require specialize_role
+      ansible.builtin.assert:
+        that:
+          - specialize_role is defined
+          - specialize_role | length > 0
+        fail_msg: >-
+          Set the role this stage applies, for example
+          -e specialize_role=webserver.
+        quiet: true
+
+    - name: apply the specialize role
+      ansible.builtin.include_role:
+        name: "{{ specialize_role }}"
+
+    - name: apply the combined firewall rules
+      ansible.builtin.include_role:
+        name: uc_firewall

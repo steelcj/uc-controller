@@ -1,0 +1,6 @@
+---
+# nginx's default document root per OS family, where the packaged default
+# site already serves index.html.
+webserver_docroots:
+  Debian: /var/www/html
+  RedHat: /usr/share/nginx/html

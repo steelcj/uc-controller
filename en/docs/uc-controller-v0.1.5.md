@@ -15,6 +15,7 @@ An Ansible controller configuration that moves nodes through a four stage lifecy
 | Vault guidance | The onboarding guide no longer tells readers to create vault files; the secrets pattern is not decided |
 | Normalize persists its promotion | `20_normalize.yml` ends with a play that moves each host that completed it from `onboard_inventory` to `normalized_inventory` through `promote_node.py`; both variables are required |
 | Stopped snapshots | Stage snapshots are taken with the instance stopped (stop, snapshot, start, each with a time limit, then wait for SSH) after snapshots of running containers hung |
+| Specialize stage | `converge/roles/webserver` installs nginx and serves a one-line page naming the host; `30_specialize.yml` includes the role as a task and fails early with a clear message when `specialize_role` is not set. HTTP is opened only as `firewall_rules_specialize` data for the `webservers` group |
 | Group memberships kept | Moves between onboard and normalized, in either direction, keep every group other than the stage group and leave the connection settings unchanged |
 
 ### v0.1.3 → v0.1.4
@@ -83,6 +84,7 @@ uc-controller/
 │   │   ├── 20_normalize.yml
 │   │   └── 30_specialize.yml
 │   └── roles/                    # repository roles used by converge only
+│       └── webserver/            # specialize: nginx and a one-line page
 │
 ├── inventories/
 │   ├── raw/                      # flat: no environment split
@@ -910,10 +912,39 @@ Make it useful. Applies the role-specific composition and the complete firewall 
         + (firewall_rules_specialize | default([]))
       }}
 
-  roles:
-    - role: "{{ specialize_role }}"
-    - role: uc_firewall
+  # The roles are included as tasks, not listed under roles:, so the play can
+  # check specialize_role first. A roles: entry named by an undefined variable
+  # fails while the playbook is parsed, with only "'specialize_role' is
+  # undefined" as the message.
+  tasks:
+    - name: require specialize_role
+      ansible.builtin.assert:
+        that:
+          - specialize_role is defined
+          - specialize_role | length > 0
+        fail_msg: >-
+          Set the role this stage applies, for example
+          -e specialize_role=webserver.
+        quiet: true
+
+    - name: apply the specialize role
+      ansible.builtin.include_role:
+        name: "{{ specialize_role }}"
+
+    - name: apply the combined firewall rules
+      ansible.builtin.include_role:
+        name: uc_firewall
 ```
+
+The specialize role is chosen at run time with `-e specialize_role=<role>`. The play checks it is set before anything else runs, which a `roles:` list cannot do: a role named by an undefined variable stops the playbook while it is being parsed. Both roles are included with `include_role`, so they run in the listed order, the specialize role first and the firewall last.
+
+Pass the onboard inventory as well as the normalized one. `firewall_rules_onboard`, which holds the SSH rule, is only loaded from `inventories/onboard/<env>/group_vars/all.yml`, and `uc_firewall` refuses to enable the firewall without an SSH rule.
+
+#### The webserver Role
+
+`converge/roles/webserver` is the smallest role that exercises the stage. It installs nginx, enables and starts it, and writes `index.html` with the host's inventory name into the distribution's default document root, `/var/www/html` on the Debian family and `/usr/share/nginx/html` on the Red Hat family. It opens no port. HTTP is opened at the specialize layer by `firewall_rules_specialize` in `inventories/normalized/<env>/group_vars/webservers.yml`, so only hosts in the `webservers` group get it. That file also opens 443, which nothing serves yet. No TLS, no virtual hosts, no templated site configuration.
+
+Run on the freshly onboarded and normalized `deb13`: before specialize, port 80 timed out from the controller and SSH worked. The run finished with `failed=0`; afterwards `curl` returned `deb13`, SSH still worked, and ufw listed `allow-ssh`, `allow-monitoring` (from `10.0.0.0/24`), `allow-http` and `allow-https`. A second run reported `changed=0`. Not yet run on a Red Hat family node.
 
 ### site.yml
 
@@ -1060,7 +1091,7 @@ ansible-playbook \
   -e onboard_inventory=inventories/onboard/dev \
   -e normalized_inventory=inventories/normalized/dev \
   -e target_group=webservers \
-  -e specialize_role=web-server
+  -e specialize_role=webserver
 
 # Individual stages
 
@@ -1091,7 +1122,7 @@ ansible-playbook \
   -i inventories/onboard/dev \
   -i inventories/normalized/dev \
   converge/playbooks/30_specialize.yml \
-  -e specialize_role=web-server
+  -e specialize_role=webserver
 ```
 
 Discovered nodes are onboarded the same way. They are reached over SSH as root until onboarding disables root login, so the controller's key must already be in root's `authorized_keys`:
