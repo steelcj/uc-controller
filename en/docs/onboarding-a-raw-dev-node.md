@@ -77,21 +77,7 @@ This shows the name, state, IPv4 address, and type. Note the address, you will u
 
 ## Secrets and Ansible vaults
 
-Some individuals or organizations make use of ansible vaults to store secrets or sensitive information. This can be helpful for manual testing, automated testing and/or CI depending on your organisations policies or your personal preferences depending on the situation. You can place them where you like. This repository includes three for testing development setups:
-
-```bash
-vaults/
-├── normalized_secrets.yml
-├── onboard_secrets.yml
-└── raw_secrets.yml
-```
-
-Creating and editing vaults
-
-```bash
-ansible-vault create vaults/raw_secrets.yml
-ansible-vault edit vaults/raw_secrets.yml
-```
+The secrets pattern is not decided yet, and nothing in the lifecycle reads a vault today.
 
 ## Confirm the inventory sees the node
 
