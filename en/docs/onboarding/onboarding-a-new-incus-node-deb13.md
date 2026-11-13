@@ -52,7 +52,7 @@ Expected output:
 ```bash
 incus list                                   # list running containers and VMs
 incus exec deb13 -- cat /etc/os-release      # confirm connectivity
-incus exec deb13 -- systemctl status         # confirm systemd is up
+incus exec deb13 -- systemctl status --no-pager  # confirm systemd is up
 incus exec deb13 -- ip a                     # get the IP address
 ```
 
@@ -237,6 +237,14 @@ Log in as `initial`:
 ssh -i ~/.ssh/gradus-raw-initial-id_ed25519 -o IdentitiesOnly=yes initial@$IP id
 ```
 
+If ssh stops with `WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!`, an earlier node at the same address left its host key in `~/.ssh/known_hosts`. Every rebuild or restore to `raw` gives the node new host keys. Remove the old entry and connect again:
+
+```bash
+ssh-keygen -R "$IP"
+```
+
+Ansible does not stop on this, because `ansible.cfg` sets `host_key_checking = False` for test nodes.
+
 ```text
 uid=1000(initial) gid=1000(initial) groups=1000(initial)
 ```
@@ -259,7 +267,7 @@ incus exec deb13 -- stat -c '%a %n' /home/initial
 incus exec deb13 -- ufw status
 ```
 
-output examples:
+Output example:
 
 ```text
 HOME_MODE	0750
@@ -273,21 +281,31 @@ To                         Action      From
 22/tcp (v6)                ALLOW       Anywhere (v6)              # allow-ssh
 ```
 
+At this stage the firewall allows only SSH, the onboard layer.
+
 Ansible over the new connection:
 
 ```bash
 ansible -i inventories/onboard/dev deb13 -m ansible.builtin.ping
 ```
 
-output
+Output example:
 
-```bash
-ansible -i inventories/onboard/dev deb13 -m ansible.builtin.ping
+```text
+deb13 | SUCCESS => 
+    changed: false
+    ping: pong
 ```
 
 ## 7. Snapshot the onboarded state
 
-Take every stage snapshot with the container stopped, each step under a time limit, and wait for SSH before you carry on. A snapshot of a running container hung twice on the workstation; a stopped container has nothing to freeze.
+First check that the host disk has room. The Incus storage pool is an image file on the host's root filesystem, and a full root filesystem stops it from growing:
+
+```bash
+df -h /
+```
+
+Take every stage snapshot with the container stopped, each step under a time limit, and wait for SSH before you carry on:
 
 ```bash
 timeout 120 incus stop deb13
@@ -296,10 +314,26 @@ timeout 120 incus start deb13
 ansible -i inventories/onboard/dev deb13 -m ansible.builtin.wait_for_connection
 ```
 
-Check that the host disk has room before snapshotting. A full root filesystem stops the Incus storage pool from growing:
+Output example:
+
+```text
+deb13 | SUCCESS => 
+    changed: false
+    elapsed: 0
+```
+
+`incus snapshot create` occasionally hangs on this workstation, with the container running or stopped, and the cause is unknown. The time limit stops it. A snapshot that timed out was not created, so check before you start the container:
 
 ```bash
-df -h /
+incus snapshot list deb13
+```
+
+If `10-onboarded` is missing, run the `snapshot create` line once more with the container still stopped; a single retry has always worked, in under a second. Then start the container and wait for SSH as above.
+
+If you are retaking a stage snapshot, delete the old one first, then follow the same steps:
+
+```bash
+timeout 120 incus snapshot delete deb13 10-onboarded
 ```
 
 ## 8. Normalize
@@ -367,7 +401,11 @@ Output example:
 +    deb13: null
 ```
 
-The `robertdebock.hostname` role reboots the node if it changes the hostname. That is expected and the run waits for it.
+The `robertdebock.hostname` role reboots the node if it changes the hostname. On `deb13` the image's hostname already matches the inventory name, so there is no reboot. Where there is one, it is expected and the run waits for it.
+
+Normalize is safe to rerun. A second run on the same node reports `changed=0` and leaves the inventory as it is.
+
+The firewall now has the normalize layer as well:
 
 ```bash
 incus exec deb13 -- ufw status
@@ -447,6 +485,24 @@ ansible-playbook -i inventories/raw -i inventories/onboard/dev -i inventories/no
   -e specialize_role=webserver
 ```
 
+Output example:
+
+```text
+PLAY RECAP *********************************************************************
+deb13                      : ok=19   changed=3    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0   
+
+
+TASKS RECAP ********************************************************************
+Friday 13 November 2026  02:03:29 -0500 (0:00:00.359)       0:00:10.093 ******* 
+=============================================================================== 
+webserver : Install nginx ----------------------------------------------- 4.15s
+uc_firewall : Allow each rule ------------------------------------------- 1.92s
+uc_firewall : Install ufw ----------------------------------------------- 0.64s
+webserver : Write the page naming the host ------------------------------ 0.59s
+uc_firewall : Enable ufw ------------------------------------------------ 0.56s
+webserver : Start and enable nginx -------------------------------------- 0.49s
+```
+
 A first run ends with `failed=0` and a few changes: nginx installed, the page written, and the `allow-http` rule added. Without `-e specialize_role=...` the run stops at once with `Set the role this stage applies, for example -e specialize_role=webserver.`
 
 Check the page, SSH, and that every firewall layer is present:
@@ -472,7 +528,12 @@ To                         Action      From
 
 `allow-ssh` comes from the onboard layer, `allow-monitoring` from normalize, and `allow-http` from specialize. Port 443 stays closed, because nothing serves TLS.
 
-Run the same command a second time. It should report `changed=0`.
+Run the same command a second time. It should report `changed=0`:
+
+```text
+PLAY RECAP *********************************************************************
+deb13                      : ok=19   changed=0    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0   
+```
 
 The inventory does not change: specialize leaves the node in `normalized` and `webservers`.
 
@@ -483,15 +544,70 @@ timeout 120 incus stop deb13
 timeout 120 incus snapshot create deb13 30-webserver
 timeout 120 incus start deb13
 ansible -i inventories/normalized/dev deb13 -m ansible.builtin.wait_for_connection
+incus snapshot list deb13
+```
+
+The list now holds every stage:
+
+```text
+┌───────────────┬──────────────────────┬────────────┬──────────┐
+│     NAME      │       TAKEN AT       │ EXPIRES AT │ STATEFUL │
+├───────────────┼──────────────────────┼────────────┼──────────┤
+│ raw           │ 2026/11/12 23:33 EST │            │ NO       │
+├───────────────┼──────────────────────┼────────────┼──────────┤
+│ pristine      │ 2026/11/12 23:39 EST │            │ NO       │
+├───────────────┼──────────────────────┼────────────┼──────────┤
+│ 10-onboarded  │ 2026/11/13 02:02 EST │            │ NO       │
+├───────────────┼──────────────────────┼────────────┼──────────┤
+│ 20-normalized │ 2026/11/13 02:03 EST │            │ NO       │
+├───────────────┼──────────────────────┼────────────┼──────────┤
+│ 30-webserver  │ 2026/11/13 02:03 EST │            │ NO       │
+└───────────────┴──────────────────────┴────────────┴──────────┘
 ```
 
 nginx starts on its own at boot, a few seconds after SSH answers, so a `curl` straight after the start can be refused. Wait a moment and it serves the page again.
+
+`deb13` is now a specialized web server, managed over SSH as `initial`, with a snapshot for every stage.
+
+## Quick reference
+
+The whole chain for a new node, without the checks. Take each stage snapshot as in step 7.
+
+```bash
+. ~/.venvs/ansible/current/bin/activate
+df -h /
+
+incus launch images:debian/13 deb13
+incus snapshot create deb13 raw
+IP=$(incus list deb13 -c4 --format csv | cut -d' ' -f1)
+ansible-inventory -i inventories/raw -i inventories/onboard/dev --graph
+ssh-add -t 8h ~/.ssh/gradus-raw-initial-id_ed25519
+
+ansible-playbook -i inventories/raw -i inventories/onboard/dev \
+  ingress/playbooks/10_onboard.yml -l deb13 \
+  -e target_group=webservers \
+  -e onboard_inventory=inventories/onboard/dev
+# snapshot 10-onboarded
+
+ansible-playbook -i inventories/raw -i inventories/onboard/dev -i inventories/normalized/dev \
+  converge/playbooks/20_normalize.yml -l deb13 \
+  -e onboard_inventory=inventories/onboard/dev \
+  -e normalized_inventory=inventories/normalized/dev
+# snapshot 20-normalized
+
+ansible-playbook -i inventories/raw -i inventories/onboard/dev -i inventories/normalized/dev \
+  converge/playbooks/30_specialize.yml -l deb13 \
+  -e specialize_role=webserver
+# snapshot 30-webserver
+
+curl -sS -m 5 http://$IP/
+```
 
 ## Going back
 
 Restoring a snapshot changes the container only. Move the inventory entry back to the matching stage and flush the cached facts, or the next run reaches the node at a stale address.
 
-To onboard again from scratch:
+To onboard again from scratch, restore `raw`, then remove the entry from whichever stage inventory holds it. This example assumes the node had reached `normalized`; use `--from inventories/onboard/dev` if it only got as far as onboard. On a development machine where every node is reset together, `python3 scripts/reset_inventories.py` replaces the last three lines.
 
 ```bash
 incus snapshot restore deb13 raw
@@ -511,6 +627,8 @@ find "$CACHE" -maxdepth 1 \( -name deb13 -o -name '*_deb13' \) -delete
 
 Demoting from normalized to onboard keeps the connection settings and the `webservers` membership.
 
+After a restore to `raw`, the node has new host keys, so clear its old entry with `ssh-keygen -R "$IP"` before using plain `ssh`.
+
 To specialize again from the normalized state, restore `20-normalized` and flush the cached facts. The inventory entry stays where it is, because specialize does not move it:
 
 ```bash
@@ -527,4 +645,8 @@ find "$CACHE" -maxdepth 1 \( -name deb13 -o -name '*_deb13' \) -delete
 
 **`Connection refused` or `Too many authentication failures` on port 22.** See the troubleshooting section of [Onboarding a Raw Dev Node](../onboarding-a-raw-dev-node.md#troubleshooting), which covers sshd, fail2ban, `IdentitiesOnly` and agent problems.
 
-**A snapshot hangs.** Interrupt it, check `df -h /`, and retake it with the container stopped as in step 7.
+**A snapshot hangs.** The `timeout` stops it after 120 seconds. Check `df -h /`, confirm with `incus snapshot list` that the snapshot was not created, and run `snapshot create` once more with the container still stopped, as in step 7. It happens occasionally on this workstation, with the container running or stopped, and the cause is unknown.
+
+**`REMOTE HOST IDENTIFICATION HAS CHANGED` from ssh.** The node was rebuilt or restored to `raw` and has new host keys. Run `ssh-keygen -R "$IP"`. Ansible runs are not affected.
+
+**`allow-https` (443) is still listed by `ufw status`.** Nodes specialized before port 443 was removed from `webservers.yml` keep the rule, because the firewall role adds rules but never removes them. Restore `20-normalized` and run specialize again, or delete it by hand with `incus exec deb13 -- ufw delete allow from any to any port 443 proto tcp`.
