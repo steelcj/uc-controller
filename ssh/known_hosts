@@ -1,0 +1,12 @@
+# ssh/known_hosts
+#
+# The controller's known hosts for raw nodes admitted by
+# ingress/playbooks/05_admit.yml. Committed: host keys are public, and git
+# history records when a node's keys were first trusted or changed
+# (privileged access policy PA-HOST-02).
+#
+# Entries are keyed by inventory hostname, not address: the admitted group
+# connects with HostKeyAlias=<inventory_hostname>, so a node keeps its keys
+# when its DHCP address changes. Each node's keys sit in a block that
+# 05_admit.yml writes. To forget a node, for example before re-admitting a
+# reinstalled one: ssh-keygen -R <hostname> -f ssh/known_hosts
