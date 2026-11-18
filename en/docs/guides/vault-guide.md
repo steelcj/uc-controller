@@ -8,26 +8,25 @@ description: "How to keep raw node batch passphrases in one Ansible Vault file, 
 
 # uc-controller Vault Guide
 
-A raw node is built with a batch passphrase: the password of the `initial` user, shared by every node of one build batch. The raw node contract makes the controller hold it, and gives the producer only its hash <a id="cite-steel-2026b"></a>[(Steel, 2026b)](#ref-steel-2026b).
+## Abstract
 
-uc-controller keeps those passphrases with standard Ansible Vault and nothing else:
-- one encrypted variables file;
-- one vault passphrase in a file outside the repository;
-- passphrases the operator makes with dice.
+A raw node is built with a batch passphrase: the password of the `initial` user, shared by every node of one build batch. uc-controller keeps these passphrases with standard Ansible Vault and nothing else: one encrypted variables file, one vault passphrase in a file outside the repository, and passphrases the operator makes with dice. This guide covers setting up the vault passphrase, adding a batch, making the hash for uc-ventoy, admitting nodes, viewing, retiring and changing passphrases, and what to do when a secret is exposed. The design is described in the Secrets section of `en/docs/uc-controller-v0.1.7.md`.
 
-The design is described in the Secrets section of `en/docs/uc-controller-v0.1.7.md`.
+## Sources and acknowledgements
+
+The raw node contract makes the controller hold the batch passphrase and gives the producer only its hash <a name="apa-steel-raw-node-contract-citation"></a>([Steel, 2026b](#apa-steel-raw-node-contract-reference)). The privileged access policy sets the rules for generating it <a name="apa-steel-privileged-access-citation"></a>([Steel, 2026a](#apa-steel-privileged-access-reference)). The Ansible commands follow the Ansible Vault documentation, and the passphrase method follows the EFF wordlists and NIST SP 800-63B-4, each cited where it is used.
 
 ## Contents
 
 - [The two secrets](#the-two-secrets)
 - [Where things are](#where-things-are)
 - [Before you start](#before-you-start)
-- [1. Make passphrases with dice](#1-make-passphrases-with-dice)
-- [2. Store the vault passphrase](#2-store-the-vault-passphrase)
-- [3. Create the batch file](#3-create-the-batch-file)
-- [4. Check the batch file](#4-check-the-batch-file)
-- [5. Make the hash for uc-ventoy](#5-make-the-hash-for-uc-ventoy)
-- [6. Admit the nodes](#6-admit-the-nodes)
+- [Make passphrases with dice](#make-passphrases-with-dice)
+- [Store the vault passphrase](#store-the-vault-passphrase)
+- [Create the batch file](#create-the-batch-file)
+- [Check the batch file](#check-the-batch-file)
+- [Make the hash for uc-ventoy](#make-the-hash-for-uc-ventoy)
+- [Admit the nodes](#admit-the-nodes)
 - [Set a batch passphrase on an existing node](#set-a-batch-passphrase-on-an-existing-node)
 - [Test become by hand](#test-become-by-hand)
 - [Add, view and retire batches](#add-view-and-retire-batches)
@@ -36,7 +35,9 @@ The design is described in the Secrets section of `en/docs/uc-controller-v0.1.7.
 - [Troubleshooting](#troubleshooting)
 - [Rules](#rules)
 - [If a secret is exposed](#if-a-secret-is-exposed)
+- [Resources](#resources)
 - [References](#references)
+- [Changelog](#changelog)
 
 ## The two secrets
 
@@ -45,7 +46,7 @@ The design is described in the Secrets section of `en/docs/uc-controller-v0.1.7.
 | Vault passphrase, vault ID `batches` | The encrypted batch file | `~/.config/uc-controller/vault/batches` (mode `600`) and the password manager | Ansible, to decrypt the file |
 | Batch passphrase, one per batch | The `initial` user on every node of that batch | Inside the encrypted batch file, and the password manager | Ansible, as the become password |
 
-They are never the same, and they never go into each other's prompts. A vault ID is a label on an encrypted file that tells Ansible which vault password opens it <a id="cite-ansible-c"></a>[(Ansible project contributors, n.d.-c)](#ref-ansible-c). Its first line names it, as in `$ANSIBLE_VAULT;1.2;AES256;batches`.
+They are never the same, and they never go into each other's prompts. A vault ID is a label on an encrypted file that tells Ansible which vault password opens it <a name="apa-ansible-vault-passwords-citation"></a>([Ansible project contributors, n.d.-c](#apa-ansible-vault-passwords-reference)). The file's first line names it, as in `$ANSIBLE_VAULT;1.2;AES256;batches`.
 
 ## Where things are
 
@@ -59,38 +60,37 @@ They are never the same, and they never go into each other's prompts. A vault ID
 
 ## Before you start
 
-- Work from the root of the uc-controller repository, with the Ansible virtual environment active:
+Work from the root of the uc-controller repository, with the Ansible virtual environment active:
 
-  ```bash
-  cd ~/areas/development/uc-controller
-  source ~/.venvs/ansible/current/bin/activate
-  which ansible-vault openssl
-  ```
+```bash
+cd ~/areas/development/uc-controller
+source ~/.venvs/ansible/current/bin/activate
+which ansible-vault openssl
+```
 
-- Batch IDs have the form `raw-YYYY-MM-DD-NN`, such as `raw-2026-11-18-01`.
-- Do not paste any passphrase into a chat or a Claude Code session, and do not run these commands with the `!` prefix in Claude Code: the output would enter the conversation.
+Batch IDs have the form `raw-YYYY-MM-DD-NN`, such as `raw-2026-11-18-01`.
 
-## 1. Make passphrases with dice
+Do not paste any passphrase into a chat or a Claude Code session, and do not run these commands with the `!` prefix in Claude Code: the output would enter the conversation.
+
+## Make passphrases with dice
 
 Make one passphrase for the vault, once, and one for each batch.
 
-1. Use the EFF large wordlist. Roll five dice for each word and look the number up in the list. Six words give about 77 bits of entropy <a id="cite-bonneau-2016"></a>[(Bonneau, 2016)](#ref-bonneau-2016).
+1. Use the EFF large wordlist. Roll five dice for each word and look the number up in the list. Six words give about 77 bits of entropy <a name="apa-bonneau-2016-citation"></a>([Bonneau, 2016](#apa-bonneau-2016-reference)).
 2. Separate the words with single spaces.
-3. Add a number at the end, from one more roll. The privileged access policy asks for privileged passwords that are generated and contain letters and digits (PA-PWD-01) <a id="cite-steel-2026a"></a>[(Steel, 2026a)](#ref-steel-2026a). The contract asks for at least 15 characters (RN-ACC-08), which six words always exceed.
+3. Add a number at the end, from one more roll. The privileged access policy asks for privileged passwords that are generated and contain letters and digits (PA-PWD-01) <a name="apa-steel-privileged-access-citation-2"></a>([Steel, 2026a](#apa-steel-privileged-access-reference)). The contract asks for at least 15 characters (RN-ACC-08), which six words always exceed.
 4. Avoid the characters `"` and `\`. The batch passphrase is written inside double quotes in YAML. EFF words contain only lower-case letters and hyphens.
-5. Save each passphrase in the password manager straight away:
-   - `uc-controller vault batches`
-   - `uc-controller batch raw-2026-11-18-01`
+5. Save each passphrase in the password manager straight away, as `uc-controller vault batches` and `uc-controller batch raw-2026-11-18-01`.
 
-NIST recommends long passphrases over composition rules, and does not require periodic changes <a id="cite-nist-2025"></a>[(National Institute of Standards and Technology [NIST], 2025)](#ref-nist-2025).
+NIST recommends long passphrases over composition rules, and does not require periodic changes <a name="apa-nist-800-63b-citation"></a>([National Institute of Standards and Technology [NIST], 2025](#apa-nist-800-63b-reference)).
 
-Example of the form only. Do not use it:
+An example of the form only. Do not use it:
 
 ```text
 tannery unbiased pebble canopy mullets gutter 4
 ```
 
-## 2. Store the vault passphrase
+## Store the vault passphrase
 
 Once per operator and workstation. The passphrase is read with a hidden prompt, inside a subshell, so it is not left in a shell variable or the history:
 
@@ -108,9 +108,9 @@ Vault passphrase:
 600 /home/initial/.config/uc-controller/vault/batches
 ```
 
-Paste the vault passphrase from the password manager at the prompt. Ansible reads a vault password from a plain file like this one, as long as the file is not executable. An executable file is run as a script instead <a id="cite-ansible-c2"></a>[(Ansible project contributors, n.d.-c)](#ref-ansible-c).
+Paste the vault passphrase from the password manager at the prompt. Ansible reads a vault password from a plain file like this one, as long as the file is not executable. An executable file is run as a script instead <a name="apa-ansible-vault-passwords-citation-2"></a>([Ansible project contributors, n.d.-c](#apa-ansible-vault-passwords-reference)).
 
-## 3. Create the batch file
+## Create the batch file
 
 Only when the repository has no `inventories/raw/group_vars/admitted/vault.yml` yet. Otherwise add the batch to the existing file, as in [Add, view and retire batches](#add-view-and-retire-batches).
 
@@ -118,14 +118,14 @@ Only when the repository has no `inventories/raw/group_vars/admitted/vault.yml` 
 ansible-vault create --encrypt-vault-id batches inventories/raw/group_vars/admitted/vault.yml
 ```
 
-`ansible-vault create` opens your editor (`$EDITOR`, or `vi`) on an empty file <a id="cite-ansible-a"></a>[(Ansible project contributors, n.d.-a)](#ref-ansible-a). Type the following, pasting the batch passphrase from the password manager, then save and quit:
+`ansible-vault create` opens your editor (`$EDITOR`, or `vi`) on an empty file <a name="apa-ansible-vault-cli-citation"></a>([Ansible project contributors, n.d.-a](#apa-ansible-vault-cli-reference)). Type the following, pasting the batch passphrase from the password manager, then save and quit:
 
 ```yaml
 vault_raw_batch_passwords:
   raw-2026-11-18-01: "tannery unbiased pebble canopy mullets gutter 4"
 ```
 
-The file is encrypted as a whole when the editor closes. While it is open, `ansible-vault` keeps the plain text only in a temporary file, which it deletes afterwards. The variable name starts with `vault_` by convention, so it is clear where it comes from <a id="cite-ansible-b"></a>[(Ansible project contributors, n.d.-b)](#ref-ansible-b).
+The file is encrypted as a whole when the editor closes. While it is open, `ansible-vault` keeps the plain text only in a temporary file, which it deletes afterwards. The variable name starts with `vault_` by convention, so it is clear where it comes from <a name="apa-ansible-vault-encrypting-citation"></a>([Ansible project contributors, n.d.-b](#apa-ansible-vault-encrypting-reference)).
 
 Commit the file:
 
@@ -134,7 +134,7 @@ git add inventories/raw/group_vars/admitted/vault.yml
 git commit -m "Add batch raw-2026-11-18-01"
 ```
 
-## 4. Check the batch file
+## Check the batch file
 
 ```bash
 head -1 inventories/raw/group_vars/admitted/vault.yml
@@ -158,13 +158,13 @@ Output:
 raw-2026-11-18-01
 ```
 
-## 5. Make the hash for uc-ventoy
+## Make the hash for uc-ventoy
 
 ```bash
 openssl passwd -6
 ```
 
-It asks for the password without echoing it. Paste the batch passphrase. It prints a SHA-512 crypt hash <a id="cite-openssl-nd"></a>[(OpenSSL Project, n.d.)](#ref-openssl-nd):
+It asks for the password without echoing it. Paste the batch passphrase. It prints a SHA-512 crypt hash <a name="apa-openssl-passwd-citation"></a>([OpenSSL Project, n.d.](#apa-openssl-passwd-reference)):
 
 ```text
 Password:
@@ -182,24 +182,16 @@ uc-ventoy writes `password_batch` on each node as `RAW_NODE_PASSWORD_BATCH` in `
 
 Do not use `openssl passwd -6 -stdin` for this: it hashes every line it reads, so a password entered twice gives two hashes. Every run gives a new salt and a different hash. All of them are valid for the same passphrase.
 
-## 6. Admit the nodes
+## Admit the nodes
 
-Name the batch the nodes were built with. There is no default:
+Admission is described in `en/docs/admitting-a-raw-node.md`. In short, the operator reads each node's address and host key fingerprint at its console, lists them in a candidates file, and names the batch the nodes were built with:
 
 ```bash
 ansible-playbook -i inventories/raw -i inventories/onboard/dev \
-  ingress/playbooks/05_admit.yml -e admit_batch_id=raw-2026-11-18-01 \
-  -e admit_addresses=192.168.1.109 \
-  -e admit_expected_fingerprint=SHA256:...      # read at the node's console
+  ingress/playbooks/05_admit.yml -e admit_batch_id=raw-2026-11-18-01 -e @candidates.yml
 ```
 
-Admission does the following:
-- It refuses a batch that is not in the batch file.
-- It reports RN-ACC-08 as not met when the batch passphrase is under 15 characters.
-- It records the batch on the node's inventory entry as `raw_node_batch`.
-- It confirms a become with the batch passphrase before it keeps the node.
-
-From then on, Ansible uses that batch's passphrase as the node's become password.
+Admission refuses a batch that is not in the batch file, reports RN-ACC-08 as not met when the batch passphrase is under 15 characters, and records the batch on each node's inventory entry as `raw_node_batch`. From then on, Ansible uses that batch's passphrase as the node's become password.
 
 ## Set a batch passphrase on an existing node
 
@@ -212,8 +204,7 @@ sudo -k && sudo -v
 exit
 ```
 
-- At `passwd`, give the node's current password, then paste the batch passphrase twice.
-- At `sudo -v`, paste the batch passphrase again. It must be accepted.
+At `passwd`, give the node's current password, then paste the batch passphrase twice. At `sudo -v`, paste the batch passphrase again. It must be accepted.
 
 Run `clear` afterwards, and clear the clipboard if your password manager does not.
 
@@ -241,7 +232,9 @@ Output:
 
 ## Add, view and retire batches
 
-**Add a batch.** Make its passphrase with dice, then add one line:
+### Add a batch
+
+Make its passphrase with dice, then add one line with `ansible-vault edit` and commit:
 
 ```bash
 ansible-vault edit inventories/raw/group_vars/admitted/vault.yml
@@ -253,13 +246,17 @@ vault_raw_batch_passwords:
   raw-2026-12-02-01: "..."
 ```
 
-**View the file.** `ansible-vault view` prints every passphrase in plain text. Run `clear` afterwards.
+### View the file
+
+`ansible-vault view` prints every passphrase in plain text. Run `clear` afterwards.
 
 ```bash
 ansible-vault view inventories/raw/group_vars/admitted/vault.yml
 ```
 
-**Retire a batch.** First check that no host still uses it, then delete its line with `ansible-vault edit` and commit:
+### Retire a batch
+
+First check that no host still uses it, then delete its line with `ansible-vault edit` and commit:
 
 ```bash
 grep -rn 'raw_node_batch: *raw-2026-11-18-01' inventories/
@@ -271,15 +268,15 @@ No output means no host names it. Nothing enforces this check, so run it every t
 
 Do this on a schedule you choose, and at once if the vault passphrase was exposed.
 
-1. Make a new passphrase with dice, and save it in the password manager as a new entry. Keep the old entry until step 4 passes.
-2. Re-encrypt the file. The old passphrase comes from its file, through `ansible.cfg`, and the new one from a prompt <a id="cite-ansible-a2"></a>[(Ansible project contributors, n.d.-a)](#ref-ansible-a):
+1. Make a new passphrase with dice, and save it in the password manager as a new entry. Keep the old entry until the file opens with the new one.
+2. Re-encrypt the file. The old passphrase comes from its file, through `ansible.cfg`, and the new one from a prompt <a name="apa-ansible-vault-cli-citation-2"></a>([Ansible project contributors, n.d.-a](#apa-ansible-vault-cli-reference)):
 
    ```bash
    ansible-vault rekey --new-vault-id batches@prompt inventories/raw/group_vars/admitted/vault.yml
    ```
 
-3. Replace the passphrase file, as in [step 2](#2-store-the-vault-passphrase). Remove the old file first with `rm ~/.config/uc-controller/vault/batches`.
-4. List the batch IDs, as in [step 4](#4-check-the-batch-file), to prove the file opens.
+3. Replace the passphrase file: remove the old one with `rm ~/.config/uc-controller/vault/batches`, then [store the vault passphrase](#store-the-vault-passphrase) again.
+4. List the batch IDs, as in [Check the batch file](#check-the-batch-file), to prove the file opens.
 5. Commit the file, then delete the old entry from the password manager.
 
 Older commits still hold the file encrypted with the old passphrase. That is acceptable only because the old passphrase is never used again.
@@ -292,9 +289,9 @@ Secrets of one node, such as the password onboarding will give each node in plac
 
 | Message | Cause | Fix |
 | --- | --- | --- |
-| `The vault password file ... batches was not found`, on any Ansible run | No vault passphrase file on this workstation | [Store the vault passphrase](#2-store-the-vault-passphrase) |
+| `The vault password file ... batches was not found`, on any Ansible run | No vault passphrase file on this workstation | [Store the vault passphrase](#store-the-vault-passphrase) |
 | `Decryption failed` | The passphrase file does not match the one the batch file was encrypted with | Check it against the password manager entry `uc-controller vault batches` |
-| `Batch ... is not in inventories/raw/group_vars/admitted/vault.yml` | The `admit_batch_id` given is not in the batch file | Check the ID with [step 4](#4-check-the-batch-file), or add the batch |
+| `Batch ... is not in inventories/raw/group_vars/admitted/vault.yml` | The `admit_batch_id` given is not in the batch file | [Check the batch file](#check-the-batch-file), or add the batch |
 | `Incorrect sudo password` | The passphrase on the node is not the batch's | [Set it on the node](#set-a-batch-passphrase-on-an-existing-node), or admit with the right batch |
 | `Permission denied (publickey)` | Wrong key or user | Use `~/.ssh/gradus-raw-initial-id_ed25519` and `initial` |
 
@@ -312,36 +309,53 @@ Secrets of one node, such as the password onboarding will give each node in plac
 | A batch passphrase | Make a new batch, set its passphrase on every node of the old batch, change their `raw_node_batch`, then retire the old batch |
 | The vault passphrase | [Change it](#change-the-vault-passphrase), then treat every batch passphrase as exposed |
 
+## Resources
+
+### Contracts and policy
+
+- [Raw node contract](#apa-steel-raw-node-contract-reference)
+- [Privileged access policy](#apa-steel-privileged-access-reference)
+
+### Ansible Vault
+
+- [ansible-vault command](#apa-ansible-vault-cli-reference)
+- [Encrypting content with Ansible Vault](#apa-ansible-vault-encrypting-reference)
+- [Managing vault passwords](#apa-ansible-vault-passwords-reference)
+
+### Passphrases and hashes
+
+- [EFF wordlists for random passphrases](#apa-bonneau-2016-reference)
+- [NIST SP 800-63B-4](#apa-nist-800-63b-reference)
+- [openssl-passwd](#apa-openssl-passwd-reference)
+
 ## References
 
-<a id="ref-ansible-a"></a>
-Ansible project contributors. (n.d.-a). *ansible-vault*. Ansible Community Documentation. Retrieved November 18, 2026, from https://docs.ansible.com/projects/ansible/latest/cli/ansible-vault.html
-[Return to first citation](#cite-ansible-a) · [Return to second citation](#cite-ansible-a2)
+<a name="apa-ansible-vault-cli-reference"></a>Ansible project contributors. (n.d.-a). *ansible-vault*. Ansible Community Documentation. Retrieved November 18, 2026, from https://docs.ansible.com/projects/ansible/latest/cli/ansible-vault.html
+[Return to citation](#apa-ansible-vault-cli-citation)
 
-<a id="ref-ansible-b"></a>
-Ansible project contributors. (n.d.-b). *Encrypting content with Ansible Vault*. Ansible Community Documentation. Retrieved November 18, 2026, from https://docs.ansible.com/projects/ansible/latest/vault_guide/vault_encrypting_content.html
-[Return to citation](#cite-ansible-b)
+<a name="apa-ansible-vault-encrypting-reference"></a>Ansible project contributors. (n.d.-b). *Encrypting content with Ansible Vault*. Ansible Community Documentation. Retrieved November 18, 2026, from https://docs.ansible.com/projects/ansible/latest/vault_guide/vault_encrypting_content.html
+[Return to citation](#apa-ansible-vault-encrypting-citation)
 
-<a id="ref-ansible-c"></a>
-Ansible project contributors. (n.d.-c). *Managing vault passwords*. Ansible Community Documentation. Retrieved November 18, 2026, from https://docs.ansible.com/projects/ansible/latest/vault_guide/vault_managing_passwords.html
-[Return to first citation](#cite-ansible-c) · [Return to second citation](#cite-ansible-c2)
+<a name="apa-ansible-vault-passwords-reference"></a>Ansible project contributors. (n.d.-c). *Managing vault passwords*. Ansible Community Documentation. Retrieved November 18, 2026, from https://docs.ansible.com/projects/ansible/latest/vault_guide/vault_managing_passwords.html
+[Return to citation](#apa-ansible-vault-passwords-citation)
 
-<a id="ref-bonneau-2016"></a>
-Bonneau, J. (2016, July 19). *Deep dive: EFF's new wordlists for random passphrases*. Electronic Frontier Foundation. https://www.eff.org/deeplinks/2016/07/new-wordlists-random-passphrases
-[Return to citation](#cite-bonneau-2016)
+<a name="apa-bonneau-2016-reference"></a>Bonneau, J. (2016, July 19). *Deep dive: EFF's new wordlists for random passphrases*. Electronic Frontier Foundation. https://www.eff.org/deeplinks/2016/07/new-wordlists-random-passphrases
+[Return to citation](#apa-bonneau-2016-citation)
 
-<a id="ref-nist-2025"></a>
-National Institute of Standards and Technology. (2025). *Digital identity guidelines: Authentication and authenticator management* (NIST Special Publication 800-63B-4). https://pages.nist.gov/800-63-4/sp800-63b/authenticators
-[Return to citation](#cite-nist-2025)
+<a name="apa-nist-800-63b-reference"></a>National Institute of Standards and Technology. (2025). *Digital identity guidelines: Authentication and authenticator management* (NIST Special Publication 800-63B-4). https://pages.nist.gov/800-63-4/sp800-63b/authenticators
+[Return to citation](#apa-nist-800-63b-citation)
 
-<a id="ref-openssl-nd"></a>
-OpenSSL Project. (n.d.). *openssl-passwd* (OpenSSL 3.0 manual). Retrieved November 18, 2026, from https://docs.openssl.org/3.0/man1/openssl-passwd/
-[Return to citation](#cite-openssl-nd)
+<a name="apa-openssl-passwd-reference"></a>OpenSSL Project. (n.d.). *openssl-passwd* (OpenSSL 3.0 manual). Retrieved November 18, 2026, from https://docs.openssl.org/3.0/man1/openssl-passwd/
+[Return to citation](#apa-openssl-passwd-citation)
 
-<a id="ref-steel-2026a"></a>
-Steel, C. (2026a). *Privileged access policy* (Version 0.1.0) [Draft]. uc-contracts. https://github.com/steelcj/uc-contracts/blob/main/en/docs/node-policies/privileged-access/uc-privileged-access-policy.md
-[Return to citation](#cite-steel-2026a)
+<a name="apa-steel-privileged-access-reference"></a>Steel, C. (2026a). *Privileged access policy* (Version 0.1.0) [Draft]. uc-contracts. https://github.com/steelcj/uc-contracts/blob/main/en/docs/node-policies/privileged-access/uc-privileged-access-policy.md
+[Return to citation](#apa-steel-privileged-access-citation)
 
-<a id="ref-steel-2026b"></a>
-Steel, C. (2026b). *Raw node contract* (Version 0.3.1) [Draft]. uc-contracts. https://github.com/steelcj/uc-contracts/blob/main/en/docs/node-onboarding-pipeline/1-raw-node-egress/uc-raw-node-contract.md
-[Return to citation](#cite-steel-2026b)
+<a name="apa-steel-raw-node-contract-reference"></a>Steel, C. (2026b). *Raw node contract* (Version 0.3.1) [Draft]. uc-contracts. https://github.com/steelcj/uc-contracts/blob/main/en/docs/node-onboarding-pipeline/1-raw-node-egress/uc-raw-node-contract.md
+[Return to citation](#apa-steel-raw-node-contract-citation)
+
+## Changelog
+
+| Date | Notes |
+| --- | --- |
+| 2026-11-18 | Rewritten for plain Ansible Vault, replacing the guide to `vault-client.py` and `new_raw_batch.py`, which were removed. House style applied: no heading numbers, Citation Anchor Pairs, Abstract, Sources and acknowledgements, Resources and Changelog. Admission points to `admitting-a-raw-node.md` and the candidates file |
