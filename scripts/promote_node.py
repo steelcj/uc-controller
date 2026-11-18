@@ -63,7 +63,7 @@ HEADERS = {
         "# which adds each raw node it admits and keeps the ones already here.\n"
         "# promote_node.py removes a host from it when promoting that host. Not\n"
         "# committed. Do not edit by hand. Connection settings come from\n"
-        "# group_vars/admitted.yml; host keys are in ssh/known_hosts.\n",
+        "# group_vars/admitted/; host keys are in ssh/known_hosts.\n",
 }
 
 # How an onboarded node is reached: SSH as the initial user, offering only
@@ -199,7 +199,7 @@ def add_host(data: dict, group: str, host: str, host_vars) -> None:
 
 # Settings that make a host's SSH connection check host keys strictly. A
 # host promoted out of raw keeps them when it already has them, from its own
-# vars or from its source's group_vars (group_vars/admitted.yml sets them for
+# vars or from its source's group_vars (group_vars/admitted/main.yml sets them for
 # every admitted raw contract node); the connection contract would otherwise
 # replace ansible_ssh_common_args and drop them.
 STRICT_KEYS = ("ansible_host_key_checking", "ansible_ssh_host_key_checking",

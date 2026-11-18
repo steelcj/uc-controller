@@ -25,6 +25,8 @@
       message: ""
       findings: []
     admit_keys_file: "{{ admit_tmp.path }}/{{ candidate | regex_replace('[^A-Za-z0-9.-]', '_') }}.keys"
+    # The fingerprint read at this node's console, or none.
+    admit_expected: "{{ (admit_expected_by_address | default({})).get(candidate, '') }}"
 
 # 1. Host keys, into a temporary file only.
 - name: "{{ candidate }}: fetch the SSH host keys"
@@ -169,12 +171,12 @@
   ansible.builtin.set_fact:
     admit_one: >-
       {{ admit_one | combine({'outcome': 'refused', 'message':
-         'the console fingerprint ' ~ admit_expected_fingerprint ~ ' is not among the host keys '
+         'the console fingerprint ' ~ admit_expected ~ ' is not among the host keys '
          ~ (admit_scanned | join(', '))}) }}
   when:
     - admit_one.outcome == 'pending'
-    - admit_expected_fingerprint is defined
-    - admit_expected_fingerprint not in admit_scanned
+    - admit_expected | length > 0
+    - admit_expected not in admit_scanned
 
 # 5. Identity. Another candidate of this run may be the same node at
 # another address, before anything is written.
@@ -258,9 +260,9 @@
     admit_one: >-
       {{ admit_one | combine({'findings': admit_one.findings + [{
            'severity': 'warning', 'clause': 'PA-HOST-01', 'field': 'ssh_host_keys',
-           'message': 'host key trusted on first use: no admit_expected_fingerprint was '
-                      'given to compare with the console'}]}) }}
-  when: admit_one.outcome == 'pending' and admit_expected_fingerprint is not defined
+           'message': 'host key trusted on first use: no fingerprint read at the '
+                      'console was given for this address'}]}) }}
+  when: admit_one.outcome == 'pending' and admit_expected | length == 0
 
 # 6, first half: what admission writes. The play writes it for all
 # candidates at once.

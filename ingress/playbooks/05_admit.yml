@@ -10,8 +10,8 @@
 #      not a contract node: it is reported and skipped;
 #   3. check the confirmation with scripts/check_raw_confirmation.py;
 #   4. admit only when the confirmation's ssh_host_keys equal the scanned
-#      keys, and, with -e admit_expected_fingerprint=SHA256:..., when that
-#      fingerprint (read at the node's console) is one of them;
+#      keys, and, when a fingerprint read at the node's console is given for
+#      the address, when it is one of them;
 #   5. match its identity against every stage inventory with
 #      scripts/match_raw_identity.py: known, reinstalled, a name collision,
 #      known under another name, or new;
@@ -32,11 +32,17 @@
 #
 #   ansible-playbook -i inventories/raw -i inventories/onboard/dev \
 #     ingress/playbooks/05_admit.yml -e admit_batch_id=raw-2026-11-18-01 \
-#     -e admit_addresses=192.168.1.109
-#   ... -e admit_from_discovered=true      every host in raw/discovered.yml
+#     -e @candidates.yml
+#
+# Candidates come from exactly one of:
+#   admit_candidates            a list of {address, fingerprint}, usually from
+#                               a file given with -e @candidates.yml; each
+#                               fingerprint is read at that node's console
+#   admit_addresses             ADDRESS[,ADDRESS...], with
+#                               admit_expected_fingerprint for one address only
+#   admit_from_discovered=true  every host in raw/discovered.yml
 #
 # Options:
-#   admit_expected_fingerprint  SHA256 fingerprint from the console; one candidate only
 #   admit_batch_id              batch the nodes were built with (required); its
 #                               passphrase must be in group_vars/admitted/vault.yml
 #   admit_ssh_port              expected ssh_port (default 22)
@@ -73,17 +79,19 @@
           # which adds each raw node it admits and keeps the ones already here.
           # promote_node.py removes a host from it when promoting that host. Not
           # committed. Do not edit by hand. Connection settings come from
-          # group_vars/admitted.yml; host keys are in ssh/known_hosts.
+          # group_vars/admitted/; host keys are in ssh/known_hosts.
 
     - name: Require the controller key and one way of choosing candidates
       ansible.builtin.assert:
         that:
           - onboard_ssh_private_key_file is defined
-          - (admit_addresses is defined) != (admit_from_discovered | default(false) | bool)
+          - ([admit_candidates is defined, admit_addresses is defined,
+              admit_from_discovered | default(false) | bool] | select | list | length) == 1
         fail_msg: >-
           Load the onboard inventory (-i inventories/onboard/dev) for
-          onboard_ssh_private_key_file, and give either
-          -e admit_addresses=ADDRESS[,ADDRESS...] or -e admit_from_discovered=true.
+          onboard_ssh_private_key_file, and give exactly one of
+          -e @candidates.yml (admit_candidates), -e admit_addresses=ADDRESS[,ADDRESS...]
+          or -e admit_from_discovered=true.
         quiet: true
 
     # No default: the batch is named on every run.
@@ -122,9 +130,33 @@
         admit_batch_short: "{{ vault_raw_batch_passwords[admit_batch_id] | length < 15 }}"
       no_log: true
 
+    - name: Require every entry of admit_candidates to have an address and a console fingerprint
+      ansible.builtin.assert:
+        that:
+          - admit_candidates is sequence and admit_candidates is not string
+          - admit_candidates | length > 0
+          - admit_candidates | rejectattr('address', 'defined') | list | length == 0
+          - admit_candidates | rejectattr('fingerprint', 'defined') | list | length == 0
+          - admit_candidates | map(attribute='address') | map('string') | map('trim') | select | list | length == admit_candidates | length
+          - admit_candidates | map(attribute='fingerprint') | map('string') | reject('match', '^SHA256:[A-Za-z0-9+/]{43}$') | list | length == 0
+          - admit_candidates | map(attribute='address') | unique | list | length == admit_candidates | length
+        fail_msg: >-
+          admit_candidates must be a list of entries, each with an address and the
+          SHA256 fingerprint read at that node's console (ssh-keygen -lf
+          /etc/ssh/ssh_host_ed25519_key.pub), with no address twice.
+        quiet: true
+      when: admit_candidates is defined
+
+    - name: Take candidates from admit_candidates
+      ansible.builtin.set_fact:
+        admit_targets: "{{ admit_candidates | map(attribute='address') | map('trim') | list }}"
+        admit_expected_by_address: >-
+          {{ admit_candidates | items2dict(key_name='address', value_name='fingerprint') }}
+      when: admit_candidates is defined
+
     - name: Take candidates from admit_addresses
       ansible.builtin.set_fact:
-        admit_candidates: >-
+        admit_targets: >-
           {{ ((admit_addresses.split(',') if admit_addresses is string else admit_addresses)
               | map('trim') | select | unique | list) }}
       when: admit_addresses is defined
@@ -140,21 +172,28 @@
 
         - name: List every discovered address
           ansible.builtin.set_fact:
-            admit_candidates: >-
+            admit_targets: >-
               {{ ((lookup('ansible.builtin.file', admit_raw_dir ~ '/discovered.yml') | from_yaml).discovered.hosts
                   | default({}, true)) | dict2items | map(attribute='value.ansible_host')
                   | select | unique | list }}
 
-    - name: Require at least one candidate, and a console fingerprint for one only
+    - name: Require at least one candidate, and a console fingerprint for one address only
       ansible.builtin.assert:
         that:
-          - admit_candidates | length > 0
-          - admit_expected_fingerprint is not defined or admit_candidates | length == 1
+          - admit_targets | length > 0
+          - admit_expected_fingerprint is not defined or (admit_addresses is defined and admit_targets | length == 1)
           - admit_expected_fingerprint is not defined or admit_expected_fingerprint is match('^SHA256:[A-Za-z0-9+/]{43}$')
         fail_msg: >-
-          No candidates, or admit_expected_fingerprint was given for more than one
-          candidate or is not a SHA256 fingerprint as ssh-keygen -l prints it.
+          No candidates, or admit_expected_fingerprint was given other than with
+          one address in admit_addresses, or is not a SHA256 fingerprint as
+          ssh-keygen -l prints it. For several nodes, use admit_candidates.
         quiet: true
+
+    # Which console fingerprint, if any, each address must present.
+    - name: Pair the single console fingerprint with its address
+      ansible.builtin.set_fact:
+        admit_expected_by_address: "{{ {admit_targets[0]: admit_expected_fingerprint} }}"
+      when: admit_expected_fingerprint is defined
 
     - name: Read the nodes already admitted
       ansible.builtin.set_fact:
@@ -176,7 +215,7 @@
 
         - name: Check one candidate
           ansible.builtin.include_tasks: tasks/admit_candidate.yml
-          loop: "{{ admit_candidates }}"
+          loop: "{{ admit_targets }}"
           loop_control:
             loop_var: candidate
 

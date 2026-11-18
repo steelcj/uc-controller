@@ -442,5 +442,65 @@ class AdmitPlaybook(unittest.TestCase):
         self.assertIn("Refused or stopped: 203.0.113.70 stopped", stopped.stdout)
         self.assertEqual((self.admitted(), self.known_hosts()), before)
 
+    def fingerprint(self, address, kind="ed25519"):
+        pub = next(k for k in self.nodes[address]["keys"] if f"_{kind}." in k)
+        return subprocess.run(["ssh-keygen", "-l", "-E", "sha256", "-f", pub],
+                              capture_output=True, text=True, check=True).stdout.split()[1]
+
+    def candidates(self, entries, name="candidates") -> str:
+        path = self.repo / f"{name}.yml"
+        path.write_text(yaml.safe_dump({"admit_candidates": entries}))
+        return f"@{path}"
+
+    def test_y_candidates_file(self):
+        self.add_node("203.0.113.80", "test-vt-0008", "08", mac="52:54:00:00:00:80")
+        self.add_node("203.0.113.81", "test-vt-0009", "09", mac="52:54:00:00:00:81")
+        self.add_node("203.0.113.82", "test-vt-0010", "10", mac="52:54:00:00:00:82")
+        self.save_nodes()
+
+        # Each node with the fingerprint read at its own console: admitted,
+        # with no trust-on-first-use warning.
+        good = self.admit("-e", self.candidates([
+            {"address": "203.0.113.80", "fingerprint": self.fingerprint("203.0.113.80")},
+            {"address": "203.0.113.81", "fingerprint": self.fingerprint("203.0.113.81", "ecdsa")}]))
+        self.assertEqual(good.returncode, 0, good.stdout[-2000:])
+        self.assertIn("203.0.113.80: admitted test-vt-0008", good.stdout)
+        self.assertIn("203.0.113.81: admitted test-vt-0009", good.stdout)
+        self.assertNotIn("PA-HOST-01", good.stdout)
+
+        # A fingerprint that does not belong to the node: refused, exit 2;
+        # the other entry is still handled.
+        before = (self.admitted(), self.known_hosts())
+        wrong = self.admit("-e", self.candidates([
+            {"address": "203.0.113.80", "fingerprint": self.fingerprint("203.0.113.80")},
+            {"address": "203.0.113.82", "fingerprint": self.fingerprint("203.0.113.80")}]))
+        self.assertEqual(wrong.returncode, 2, wrong.stdout[-2000:])
+        self.assertIn("203.0.113.80: known test-vt-0008", wrong.stdout)
+        self.assertIn("203.0.113.82: refused test-vt-0010 - the console fingerprint", wrong.stdout)
+        self.assertEqual((self.admitted(), self.known_hosts()), before)
+
+        # Rejected before anything is contacted.
+        fp = self.fingerprint("203.0.113.82")
+        for name, args in {
+            "missing fingerprint": ["-e", self.candidates(
+                [{"address": "203.0.113.82"}], "c-missing")],
+            "malformed fingerprint": ["-e", self.candidates(
+                [{"address": "203.0.113.82", "fingerprint": "MD5:00:11"}], "c-malformed")],
+            "address twice": ["-e", self.candidates(
+                [{"address": "203.0.113.82", "fingerprint": fp},
+                 {"address": "203.0.113.82", "fingerprint": fp}], "c-twice")],
+            "two candidate sources": ["-e", self.candidates(
+                [{"address": "203.0.113.82", "fingerprint": fp}], "c-two-sources"),
+                "-e", "admit_addresses=203.0.113.82"],
+            "one console fingerprint for two addresses": [
+                "-e", "admit_addresses=203.0.113.80,203.0.113.82",
+                "-e", f"admit_expected_fingerprint={fp}"],
+        }.items():
+            with self.subTest(case=name):
+                result = self.admit(*args)
+                self.assertEqual(result.returncode, 2, result.stdout[-1500:])
+                self.assertNotIn("fetch the SSH host keys", result.stdout)
+        self.assertNotIn("test-vt-0010", self.admitted())
+
 if __name__ == "__main__":
     unittest.main()
