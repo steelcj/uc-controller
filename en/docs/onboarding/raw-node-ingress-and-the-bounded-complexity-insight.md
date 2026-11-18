@@ -1,4 +1,4 @@
-# Controller Raw Node Ingress - The Bounded Complexity Insight
+# raw-node-ingress-and-the-bounded-complexity-insight
 
 ## The Bounded Complexity Insight
 
@@ -26,8 +26,6 @@ This means the complexity is contained. You don't need conditional connection lo
 | Bare metal (PXE)      | Manual or DHCP            | SSH (after provisioning)        | Python, SSH, user         | Not needed (already SSH)     | hostname or MAC-derived  |
 | CMDB                  | API query                 | SSH (usually)                   | Varies                    | Not needed (usually SSH)     | asset tag or hostname    |
 | Manual                | Direct entry              | SSH                             | Varies                    | Not needed (already SSH)     | operator-chosen          |
-
-10 rows
 
 
 

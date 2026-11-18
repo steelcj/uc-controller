@@ -1,4 +1,3 @@
-~~~markdown
 # UC-Controller Option A: Single Repo, Two Concerns
 
 ## Overview
@@ -499,13 +498,10 @@ Option A gives you 90% of the separation at 10% of the cost. The boundary is con
 
 ## Tradeoffs
 
-| Aspect | Assessment |
-|--------|------------|
+| Aspect               | Assessment                                                   |
+| -------------------- | ------------------------------------------------------------ |
 | Boundary enforcement | Directory-level, not git-level. A determined developer can cross it, but it is visible in review. |
-| Familiarity | Unconventional. Dual `playbooks/` and `roles/` directories are not a standard Ansible layout. Self-documenting once you see it. |
-| Inventory coupling | Shared. Both concerns read the same inventory tree. This is a feature: the handoff is data, not code. |
-| Path complexity | Low. Single repo, single `ansible.cfg`, relative paths work as expected. |
-| Reversibility | High. If ingress grows to the point of needing its own repo, the split is a `git mv` away. |
-~~~
-
-Ready to fold this into v0.1.4 of the controller document, or do you want to iterate on the structure first?
+| Familiarity          | Unconventional. Dual `playbooks/` and `roles/` directories are not a standard Ansible layout. Self-documenting once you see it. |
+| Inventory coupling   | Shared. Both concerns read the same inventory tree. This is a feature: the handoff is data, not code. |
+| Path complexity      | Low. Single repo, single `ansible.cfg`, relative paths work as expected. |
+| Reversibility        | High. If ingress grows to the point of needing its own repo, the split is a `git mv` away. |
