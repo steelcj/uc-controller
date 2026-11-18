@@ -24,12 +24,12 @@
     # it. If the initial user already exists, the node has been onboarded:
     # say so and end the play for that host only. raw needs no Python, and an
     # unreachable node is left to the readiness probe below.
-    - name: check whether the node is already onboarded
-      ansible.builtin.raw: id initial
-      register: onboarded_probe
-      failed_when: false
-      changed_when: false
-      ignore_unreachable: true
+#    - name: check whether the node is already onboarded
+#      ansible.builtin.raw: id initial
+#      register: onboarded_probe
+#      failed_when: false
+#      changed_when: false
+#      ignore_unreachable: true
 
     - name: report a node that is already onboarded
       ansible.builtin.debug:
