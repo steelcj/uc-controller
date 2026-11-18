@@ -4,7 +4,7 @@ An Ansible controller configuration that moves nodes through a four stage lifecy
 
 ## Changelog
 
-### v0.1.6 → v0.1.7 (in progress: raw node admission)
+### v0.1.6 → v0.1.7
 
 | Change | Description |
 |--------|-------------|
@@ -12,6 +12,9 @@ An Ansible controller configuration that moves nodes through a four stage lifecy
 | Batch scripts withdrawn | `vault-client.py`, `new_raw_batch.py`, `sha512_crypt.py` and the `secrets/raw-batches/` store, written earlier in this work, were removed after review in favour of plain Ansible Vault: they cost more to understand than they protected, for one operator |
 | The `admitted` raw source | A third source under `raw`, for raw nodes that meet the raw node contract. Its hosts are in `inventories/raw/admitted.yml`, which only `05_admit.yml` writes. They are reached over SSH as `initial` with the controller's key alone, with strict host key checking against `ssh/known_hosts` and their batch passphrase for sudo. See Admission |
 | `05_admit.yml` | New ingress playbook. It admits candidate addresses after checking the confirmation, the host keys and the node's identity, then confirms a connection and a become over the strict connection. It changes nothing on the node, and running it again reports the node as known |
+| Candidates file | `admit_candidates`, usually given with `-e @candidates.yml`, lists each node's address with the host key fingerprint read at its console, so several nodes can be admitted without trusting any on first use. It is the main way to name candidates |
+| Known nodes rechecked | A node found to be known must present exactly the keys recorded in `ssh/known_hosts` under its inventory hostname, or it is refused. Found missing during verification, when a node with an altered recorded key was still reported known |
+| Exit status | Admission exits 2 after its report when any candidate was refused or stopped, or an admission could not be confirmed, and 0 otherwise, including for hosts that are not contract nodes |
 | Known hosts file | New `ssh/known_hosts`, committed, keyed by inventory hostname through `HostKeyAlias` |
 | `match_raw_identity.py`, `inventory_hosts.py` | New scripts: the identity decision for admission, and the host walker it uses |
 | `promote_node.py`, `reset_inventories.py` | Both handle `admitted.yml` as they handle `discovered.yml`. `promote_node.py` keeps a host's strict host key settings when it already has them |
@@ -119,6 +122,20 @@ Verified on `rky9`, and only there:
 - **The firewalld path of `uc_firewall`.** After normalize the `public` zone has `22/tcp` open to all and a rich rule accepting `9100/tcp` from `10.0.0.0/24`; port 80 is refused from the controller. After specialize a rich rule accepts `80/tcp`, the earlier rules are still there and SSH still works.
 - **The `webserver` role.** `curl` from the controller returns `rky9` with SELinux enforcing. The packaged `/usr/share/nginx/html/index.html` is a symlink to `../../testpage/index.html`; the role replaces the link with a regular file, labelled `httpd_sys_content_t`, and leaves the test page itself alone.
 - **Time sync.** `robertdebock.ntp`, in onboarding, installs chrony on Rocky 9; `chronyd` is active, enabled and synchronised.
+
+### Raw Node Admission
+
+`05_admit.yml` was run against `deb13-vt-55b1`, a uc-ventoy metal node at 192.168.1.109, built to raw node contract 0.3.0 with baseline 0.4.0, with batch `raw-2026-11-18-01`.
+
+| Check | Result |
+|-------|--------|
+| Admission | `admitted`, exit 0. Confirmation passed, keys equal to the confirmation's, identity new. Connection as `initial`, become with the batch passphrase and Ansible `ping` confirmed over the strict connection. `admitted.yml` holds every field; three host keys added to `ssh/known_hosts`. Trusted on first use, then the ED25519 fingerprint was confirmed at the console |
+| Rerun | `known`, exit 0. `admitted.yml` and `ssh/known_hosts` unchanged, by checksum and modification time |
+| Effective SSH options | `ssh -G` with Ansible's own arguments: `StrictHostKeyChecking` on, `HostKeyAlias deb13-vt-55b1`, `UserKnownHostsFile` the repository's `ssh/known_hosts` only, `GlobalKnownHostsFile /dev/null` |
+| One character of the recorded ED25519 key changed | The strict connection refused the node (`REMOTE HOST IDENTIFICATION HAS CHANGED`). Before the fix, admission still reported it `known`. After the fix, admission refused it, naming the differing key, exit 2. Restored by checksum both times, and the connection worked again |
+| Discovery | `00_discover.yml` on `192.168.1.109/32` found nothing until the scan probed the SSH port. With `-PS22` it listed only 192.168.1.109, and `admit_from_discovered=true` reported the node `known`, exit 0 |
+
+The candidates file and the exit status rule were tested offline only, against stand-in nodes in `tests/test_admit_playbook.py`.
 
 Not verified:
 
@@ -1707,15 +1724,20 @@ python scripts/demote_node.py \
 
 Raw node contract 0.3.0 describes a node that neither existing source can reach: it refuses root over SSH, its sudo asks for a password, and it reports itself in `/var/lib/raw-node/confirmation.yml`. `ingress/playbooks/05_admit.yml` takes such nodes into raw, as the `admitted` source.
 
+```yaml
+# ~/uc-candidates.yml: each address with the fingerprint read at that node's console
+admit_candidates:
+  - address: 192.168.1.109
+    fingerprint: SHA256:HqHMMtM3O24uFujNDULW4A+N8E5LZomUmycBhbnRnxE
+```
+
 ```bash
 ansible-playbook -i inventories/raw -i inventories/onboard/dev \
   ingress/playbooks/05_admit.yml -e admit_batch_id=raw-2026-11-18-01 \
-  -e admit_addresses=192.168.1.109 \
-  -e admit_expected_fingerprint=SHA256:...      # from the node's console
-ansible-playbook -i inventories/raw -i inventories/onboard/dev \
-  ingress/playbooks/05_admit.yml -e admit_batch_id=raw-2026-11-18-01 \
-  -e admit_from_discovered=true
+  -e @$HOME/uc-candidates.yml
 ```
+
+Candidates come from exactly one of `admit_candidates`, `admit_addresses` (with `admit_expected_fingerprint` for a single address), or `admit_from_discovered=true` after a scan. The operator's procedure is in `en/docs/admitting-a-raw-node.md`.
 
 The onboard inventory is loaded for `onboard_ssh_private_key_file`, the controller's key for `initial`, as `10_onboard.yml` requires. `admit_batch_id` names the batch the candidates were built with, and is required: there is no current batch to fall back on. Its passphrase must be in `group_vars/admitted/vault.yml`.
 
@@ -1728,8 +1750,8 @@ For each candidate, on the controller:
 | 1 | `ssh-keyscan` on the contract port, into a temporary file only | `not-contract`: no SSH server |
 | 2 | `ssh -F /dev/null` as `initial` with the controller key alone, trusting only the scanned keys, runs `cat /var/lib/raw-node/confirmation.yml` (Python is reported, not promised) | `not-contract`: the key or the file is refused |
 | 3 | `check_raw_confirmation.py` on what was read | `refused`, with each failing clause |
-| 4 | The confirmation's `ssh_host_keys` must equal the fingerprints of the scanned keys. With `admit_expected_fingerprint`, read at the console, that fingerprint must be one of them | `refused`: keys differ |
-| 5 | `match_raw_identity.py` against every stage inventory. For a node found to be `known`, the presented keys must also equal the keys recorded in `ssh/known_hosts` under its inventory hostname, the name the strict connection uses as `HostKeyAlias`. Keys are compared as type and SHA256 fingerprint, so a type present on one side only is a difference, and no recorded keys is a refusal. A node about to be admitted without `admit_expected_fingerprint` gets a warning that its key was trusted on first use (PA-HOST-01) | `known`; `refused` when a known node's keys differ from `ssh/known_hosts`; or `stopped` for a reinstall, a name collision, or a node known under another name |
+| 4 | The confirmation's `ssh_host_keys` must equal the fingerprints of the scanned keys. When a fingerprint read at the console is given for the address, in `admit_candidates` or as `admit_expected_fingerprint`, it must be one of them | `refused`: keys differ |
+| 5 | `match_raw_identity.py` against every stage inventory. For a node found to be `known`, the presented keys must also equal the keys recorded in `ssh/known_hosts` under its inventory hostname, the name the strict connection uses as `HostKeyAlias`. Keys are compared as type and SHA256 fingerprint, so a type present on one side only is a difference, and no recorded keys is a refusal. A node about to be admitted with no console fingerprint gets a warning that its key was trusted on first use (PA-HOST-01) | `known`; `refused` when a known node's keys differ from `ssh/known_hosts`; or `stopped` for a reinstall, a name collision, or a node known under another name |
 | 6 | Write the node into `admitted.yml` under its confirmed hostname, add its keys to `ssh/known_hosts`, then confirm `raw: true` as `initial` and `raw: id -u` with become, over the strict connection, and Ansible's `ping` where Python is reported | Admission undone: the entry and the keys are removed, and the run fails |
 
 A node that is not a contract node is reported and does not fail the run, so a whole subnet scan can be offered with `admit_from_discovered=true`.
