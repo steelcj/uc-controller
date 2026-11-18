@@ -27,7 +27,8 @@ Usage:
 
     new_raw_batch.py --set-current ID     make an existing batch current
     new_raw_batch.py --hash ID            print a fresh hash of a batch's password
-    new_raw_batch.py --retire ID          delete a batch's password
+    new_raw_batch.py --retire ID          delete a batch's password; refused
+                                          while a host's raw_node_batch names it
     new_raw_batch.py --list               list batches and check the store
 
 Earlier batches stay in the store until retired, so a node built before the
@@ -72,7 +73,7 @@ BATCH_ID_RE = re.compile(r"^raw-(\d{4}-\d{2}-\d{2})-([a-z0-9][a-z0-9-]{0,39})$")
 
 ALPHABET = string.ascii_letters + string.digits
 GENERATED_MIN_LENGTH = 24   # what this script generates
-IMPORT_MIN_LENGTH = 15      # raw node contract RN-ACC-08
+MIN_LENGTH = 15             # raw node contract RN-ACC-08
 
 INDEX_HEADER = (
     "# secrets/raw-batches/index.yml\n"
@@ -228,17 +229,24 @@ def generate_password(length: int) -> str:
 
 
 def read_import_password() -> str:
+    """Read the password of an existing batch. Letters and digits only.
+
+    A password under MIN_LENGTH is accepted, because nodes may already be
+    built with it, and the caller records meets_min_length: false.
+    """
     if sys.stdin.isatty():
         value = getpass.getpass("Batch password: ")
         if getpass.getpass("Again: ") != value:
             raise SystemExit("error: the two entries differ")
     else:
         value = sys.stdin.readline().rstrip("\r\n")
-    if len(value) < IMPORT_MIN_LENGTH or any(c not in ALPHABET for c in value):
-        raise SystemExit(
-            f"error: a batch password is at least {IMPORT_MIN_LENGTH} characters, "
-            "letters and digits only"
-        )
+    if not value or any(c not in ALPHABET for c in value):
+        raise SystemExit("error: a batch password is made of letters and digits only")
+    if len(value) < MIN_LENGTH:
+        print(f"warning: the password has {len(value)} characters, under the "
+              f"{MIN_LENGTH} that the raw node contract requires (RN-ACC-08). Stored, "
+              "and recorded as meets_min_length: false; admission reports the clause "
+              "as failed for every node of this batch.", file=sys.stderr)
     if not (any(c.isdigit() for c in value) and any(c.isalpha() for c in value)):
         print("warning: the password lacks either letters or digits; the privileged "
               "access policy (PA-PWD-01) asks for both. Stored anyway, because a "
@@ -262,7 +270,8 @@ def create(store: Path, batch_id: str | None, length: int, show: bool) -> int:
         raise SystemExit(f"error: {batch_id} has been used before; batch IDs are never reused")
     password = generate_password(length)
     encrypt(password, vault_file(store, batch_id))
-    index["batches"][batch_id] = {"created": now(), "origin": "generated", "status": "active"}
+    index["batches"][batch_id] = {"created": now(), "origin": "generated",
+                                  "status": "active", "meets_min_length": True}
     index["current"] = batch_id
     save_index(store, index)
     print_for_producer(batch_id, password)
@@ -280,7 +289,8 @@ def import_batch(store: Path, batch_id: str, make_current: bool) -> int:
         raise SystemExit(f"error: {batch_id} has been used before; batch IDs are never reused")
     password = read_import_password()
     encrypt(password, vault_file(store, batch_id))
-    index["batches"][batch_id] = {"created": now(), "origin": "imported", "status": "active"}
+    index["batches"][batch_id] = {"created": now(), "origin": "imported", "status": "active",
+                                  "meets_min_length": len(password) >= MIN_LENGTH}
     if make_current:
         index["current"] = batch_id
     save_index(store, index)
@@ -316,15 +326,47 @@ def rehash(store: Path, batch_id: str) -> int:
     return 0
 
 
-def references(batch_id: str) -> list[Path]:
-    """Inventory files that mention the batch, such as admitted hosts."""
+def hosts_in(data, host_vars_file: Path | None = None):
+    """Yield (host, vars) for every host in an inventory file's data.
+
+    For a host_vars file, the whole mapping is the vars of the host the
+    file is named after.
+    """
+    if host_vars_file is not None:
+        if isinstance(data, dict):
+            yield host_vars_file.stem, data
+        return
+    if not isinstance(data, dict) or "plugin" in data:
+        return  # a dynamic plugin config lists no hosts itself
+    for group in data.values():
+        if not isinstance(group, dict):
+            continue
+        hosts = group.get("hosts")
+        if isinstance(hosts, dict):
+            for host, host_vars in hosts.items():
+                yield host, host_vars if isinstance(host_vars, dict) else {}
+        yield from hosts_in(group.get("children"))
+
+
+def hosts_using(batch_id: str) -> list[tuple[Path, str]]:
+    """(file, host) for every host whose raw_node_batch is batch_id.
+
+    Looks at every stage inventory: the raw source files, such as
+    admitted.yml, each stage's hosts.yml, and every host_vars file.
+    """
     found = []
     for path in sorted(INVENTORIES.rglob("*.y*ml")):
-        try:
-            if batch_id in path.read_text(encoding="utf-8"):
-                found.append(path)
-        except (OSError, UnicodeDecodeError):
+        if "group_vars" in path.parts:
             continue
+        try:
+            with path.open(encoding="utf-8") as handle:
+                data = yaml.safe_load(handle)
+        except (OSError, UnicodeDecodeError, yaml.YAMLError):
+            continue
+        host_vars_file = path if path.parent.name == "host_vars" else None
+        for host, host_vars in hosts_in(data, host_vars_file):
+            if str(host_vars.get("raw_node_batch", "")) == batch_id:
+                found.append((path, host))
     return found
 
 
@@ -333,13 +375,16 @@ def retire(store: Path, batch_id: str, force: bool) -> int:
     entry = active(index, batch_id)
     if index["current"] == batch_id:
         raise SystemExit(f"error: {batch_id} is current; make another batch current first")
-    used = references(batch_id)
+    used = hosts_using(batch_id)
     if used and not force:
-        listed = "\n  ".join(str(p.relative_to(REPO)) for p in used)
+        listed = "\n  ".join(f"{host} in {shown(path)}" for path, host in used)
         raise SystemExit(
-            f"error: {batch_id} is still named in:\n  {listed}\n"
-            "Nodes there may still need its password. Use --force to retire it anyway."
+            f"error: these hosts have raw_node_batch: {batch_id}:\n  {listed}\n"
+            "They may still need its password. Use --force to retire it anyway."
         )
+    for path, host in used:
+        print(f"warning: retiring {batch_id} although {host} in {shown(path)} names it",
+              file=sys.stderr)
     vault_file(store, batch_id).unlink(missing_ok=True)
     entry["status"] = "retired"
     entry["retired"] = now()
@@ -355,8 +400,9 @@ def list_batches(store: Path) -> int:
     width = max((len(b) for b in index["batches"]), default=0)
     for batch_id, entry in index["batches"].items():
         mark = "*" if batch_id == index["current"] else " "
+        short = "  under 15 characters (RN-ACC-08)" if entry.get("meets_min_length") is False else ""
         print(f"{mark} {batch_id:{width}}  {entry.get('status', '?'):8}  {entry.get('origin', '?'):9}  "
-              f"{entry.get('created', '')}")
+              f"{entry.get('created', '')}{short}")
         exists = vault_file(store, batch_id).exists()
         if entry.get("status") == "active" and not exists:
             problems.append(f"{batch_id} is active but has no {batch_id}.vault")
@@ -394,7 +440,8 @@ def main() -> int:
                         help="print a new SHA-512 crypt hash of an active batch's password")
     action.add_argument("--retire", metavar="ID",
                         help="delete a batch's password; refused for the current batch "
-                             "and, without --force, for one an inventory still names")
+                             "and, without --force, while any host in any stage inventory "
+                             "has raw_node_batch equal to it")
     action.add_argument("--list", action="store_true", help="list batches and check the store")
     parser.add_argument("--batch-id", metavar="ID",
                         help="ID for a new batch (default raw-<today>-NN)")
@@ -403,7 +450,8 @@ def main() -> int:
     parser.add_argument("--current", action="store_true",
                         help="with --import: make the imported batch current")
     parser.add_argument("--force", action="store_true",
-                        help="with --retire: retire a batch an inventory still names")
+                        help="with --retire: retire the batch even though hosts still "
+                             "have raw_node_batch equal to it")
     parser.add_argument("--show-password", action="store_true",
                         help="when creating a batch, also print its password once, on "
                              "standard error, for an operator who needs it at a console. "

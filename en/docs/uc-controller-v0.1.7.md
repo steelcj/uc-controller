@@ -1755,11 +1755,13 @@ Once per operator and workstation:
 |---------|------|
 | `new_raw_batch.py` | Generates a password of 24 letters and digits (at least one of each) with `secrets`, stores it under a new batch ID, `raw-<date>-NN`, and makes that batch current. Prints only two lines, for uc-ventoy's `raw-node-input.yml`: `password_batch` and `initial_password_hash` |
 | `new_raw_batch.py --show-password` | As above, and also prints the password once, on standard error, for an operator who needs it at a console |
-| `new_raw_batch.py --import raw-2026-11-17-manual [--current]` | Stores a batch made by hand before the script existed. Reads the password from standard input or a prompt, and requires at least 15 letters and digits (RN-ACC-08). It only warns when either letters or digits are missing, because a node may already be built with that password |
+| `new_raw_batch.py --import raw-2026-11-17-manual [--current]` | Stores a batch made by hand before the script existed. Reads the password from standard input or a prompt, and requires letters and digits only. A node may already be built with that password, so a password under 15 characters is still stored. The batch is then recorded as `meets_min_length: false`, and admission reports RN-ACC-08 as failed for every node of the batch. Missing letters or digits only produce a warning, for the same reason |
 | `new_raw_batch.py --set-current ID` | Makes an active batch current |
 | `new_raw_batch.py --hash ID` | Prints a fresh hash of an active batch's password, for building more nodes of that batch |
-| `new_raw_batch.py --retire ID [--force]` | Deletes the batch's encrypted file and marks it retired. Refused for the current batch, and, without `--force`, for a batch any file under `inventories/` still names |
-| `new_raw_batch.py --list` | Lists batches, marks the current one, and checks the store |
+| `new_raw_batch.py --retire ID [--force]` | Deletes the batch's encrypted file and marks it retired. Refused for the current batch, and, without `--force`, while any host in any stage inventory has `raw_node_batch` equal to it. That covers the raw source files, each stage's `hosts.yml` and every `host_vars` file |
+| `new_raw_batch.py --list` | Lists batches, marks the current one and any batch under 15 characters, and checks the store |
+
+Every batch in `index.yml` carries `meets_min_length`. An entry without it was written before the field existed, when `--import` still refused short passwords, so it meets the length.
 
 Batch IDs are `raw-YYYY-MM-DD-<suffix>`, with a suffix of lower-case letters, digits and hyphens. That is a subset of what uc-ventoy accepts as `password_batch`. An ID is never reused, even after its batch is retired. Earlier batches stay active until retired, so a node built before the current batch can still be admitted.
 

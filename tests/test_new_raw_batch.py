@@ -9,6 +9,7 @@ operator's own.
 """
 from __future__ import annotations
 
+import io
 import os
 import shutil
 import subprocess
@@ -16,6 +17,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import yaml
 
@@ -59,6 +61,70 @@ class Passwords(unittest.TestCase):
             self.assertTrue(value.isalnum() and value.isascii())
             self.assertTrue(any(c.isdigit() for c in value))
             self.assertTrue(any(c.isalpha() for c in value))
+
+
+class RetireChecksHosts(unittest.TestCase):
+    """--retire looks at raw_node_batch on hosts in every stage inventory."""
+
+    BATCH = "raw-2026-11-17-01"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        root = Path(self.tmp.name)
+        self.inventories = root / "inventories"
+        self.store = root / "store"
+        self.store.mkdir()
+        (self.store / f"{self.BATCH}.vault").write_text(new_raw_batch.VAULT_HEADER + "\n")
+        new_raw_batch.save_index(self.store, {
+            "current": "raw-2026-11-17-02",
+            "batches": {
+                self.BATCH: {"status": "active", "origin": "generated", "meets_min_length": True},
+                "raw-2026-11-17-02": {"status": "active", "origin": "generated", "meets_min_length": True},
+            },
+        })
+        patcher = mock.patch.object(new_raw_batch, "INVENTORIES", self.inventories)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        quiet = mock.patch("sys.stdout", new_callable=io.StringIO)
+        quiet.start()
+        self.addCleanup(quiet.stop)
+        self.addCleanup(self.tmp.cleanup)
+
+    def write(self, relative: str, data) -> None:
+        path = self.inventories / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(yaml.safe_dump(data))
+
+    def test_hosts_found_in_every_kind_of_file(self):
+        self.write("raw/admitted.yml", {"admitted": {"hosts": {"a1": {"raw_node_batch": self.BATCH}}}})
+        self.write("raw/incus.yml", {"plugin": "community.general.incus"})
+        self.write("onboard/dev/hosts.yml", {"onboarded": {"hosts": {
+            "o1": {"raw_node_batch": self.BATCH}, "o2": {"raw_node_batch": "raw-2026-11-17-02"}}}})
+        self.write("normalized/dev/host_vars/n1.yml", {"raw_node_batch": self.BATCH})
+        self.write("normalized/dev/group_vars/all.yml", {"raw_node_batch": self.BATCH})
+        self.write("normalized/dev/hosts.yml", {"normalized": {"children": {
+            "web": {"hosts": {"n2": None}}}}})
+        found = sorted(host for _, host in new_raw_batch.hosts_using(self.BATCH))
+        self.assertEqual(found, ["a1", "n1", "o1"])
+
+    def test_mention_without_raw_node_batch_does_not_block(self):
+        self.write("onboard/dev/hosts.yml", {"onboarded": {"hosts": {
+            "o1": {"note": f"was built with {self.BATCH}"}}}})
+        self.assertEqual(new_raw_batch.retire(self.store, self.BATCH, False), 0)
+
+    def test_refused_while_a_host_uses_it(self):
+        self.write("onboard/dev/hosts.yml", {"onboarded": {"hosts": {"o1": {"raw_node_batch": self.BATCH}}}})
+        with self.assertRaises(SystemExit) as raised:
+            new_raw_batch.retire(self.store, self.BATCH, False)
+        self.assertIn("o1", str(raised.exception))
+        self.assertTrue((self.store / f"{self.BATCH}.vault").exists())
+
+    def test_force(self):
+        self.write("onboard/dev/hosts.yml", {"onboarded": {"hosts": {"o1": {"raw_node_batch": self.BATCH}}}})
+        with mock.patch("sys.stderr"):
+            self.assertEqual(new_raw_batch.retire(self.store, self.BATCH, True), 0)
+        self.assertFalse((self.store / f"{self.BATCH}.vault").exists())
+        self.assertEqual(new_raw_batch.load_index(self.store)["batches"][self.BATCH]["status"], "retired")
 
 
 @unittest.skipUnless(shutil.which("ansible-vault"), "ansible-vault not on PATH")
@@ -129,12 +195,28 @@ class EndToEnd(unittest.TestCase):
         salt = value.split("$")[2]
         self.assertEqual(sha512_crypt(PASSWORD, salt), value)
 
-    def test_import_rejects_weak_password(self):
+    def test_import_rejects_other_characters(self):
         self.init_vault()
-        for weak in ("abc123", "abcdefghijklmn!op", "a" * 14):
-            with self.subTest(weak=weak):
-                result = self.run_script("--import", "raw-2026-11-17-weak", stdin=weak + "\n")
+        for bad in ("abcdefghijklmn!op", "abc def 123456789", ""):
+            with self.subTest(bad=bad):
+                result = self.run_script("--import", "raw-2026-11-17-bad", stdin=bad + "\n")
                 self.assertEqual(result.returncode, 1)
+
+    def test_import_short_password_recorded(self):
+        self.init_vault()
+        result = self.run_script("--import", "raw-2026-11-17-short", stdin="abc123\n")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("RN-ACC-08", result.stderr)
+        self.assertIs(self.index()["batches"]["raw-2026-11-17-short"]["meets_min_length"], False)
+        self.assertIn("under 15 characters", self.run_script("--list").stdout)
+        self.run_script("--import", "raw-2026-11-17-long", stdin=PASSWORD + "\n")
+        self.assertIs(self.index()["batches"]["raw-2026-11-17-long"]["meets_min_length"], True)
+
+    def test_created_batch_meets_min_length(self):
+        self.init_vault()
+        self.run_script()
+        entry = next(iter(self.index()["batches"].values()))
+        self.assertIs(entry["meets_min_length"], True)
 
     def test_ids_never_reused_and_retire_rules(self):
         self.init_vault()
