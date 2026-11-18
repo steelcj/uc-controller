@@ -141,6 +141,9 @@ class PromoteAndReset(TempRepo):
                        "GlobalKnownHostsFile=/dev/null"):
             self.assertIn(option, args)
         self.assertIn("keeps its strict host key settings", result.stdout)
+        # group_vars/admitted/vault.yml is encrypted: passed over, with a warning.
+        self.assertIn("warning: ", result.stderr)
+        self.assertIn("group_vars/admitted/vault.yml is encrypted and was not read", result.stderr)
 
     def promote(self, host):
         result = self.run_script(

@@ -227,14 +227,22 @@ def strict_settings(inventory: Path, groups: list[str], host: str, host_vars) ->
     checking is on.
     """
     merged: dict = {}
-    # An ansible-vault encrypted file reads as a string, not a mapping, and is
-    # skipped: host key settings are never secret.
+    # An ansible-vault encrypted file reads as a string, not a mapping. It is
+    # passed over with a warning: host key settings belong in plain files,
+    # and any inside an encrypted file are not carried over.
     for path in [p for group in ["all", "raw", *groups]
                  for p in vars_files(inventory / "group_vars", group)] \
             + vars_files(inventory / "host_vars", host):
         data = load(path)
         if isinstance(data, dict):
             merged.update(data)
+        elif isinstance(data, str) and data.startswith("$ANSIBLE_VAULT"):
+            print(f"warning: {path} is encrypted and was not read; host key settings "
+                  "in it, if any, are not carried over to the promoted host",
+                  file=sys.stderr)
+        else:
+            print(f"warning: {path} is not a mapping of variables and was not read",
+                  file=sys.stderr)
     merged.update(host_vars or {})
     if not any(is_true(merged.get(key)) for key in STRICT_KEYS[:2]):
         return {}
