@@ -58,6 +58,7 @@ from pathlib import Path
 
 import yaml
 
+from inventory_hosts import inventory_hosts
 from sha512_crypt import sha512_crypt
 
 REPO = Path(__file__).resolve().parent.parent
@@ -329,48 +330,14 @@ def rehash(store: Path, batch_id: str) -> int:
     return 0
 
 
-def hosts_in(data, host_vars_file: Path | None = None):
-    """Yield (host, vars) for every host in an inventory file's data.
-
-    For a host_vars file, the whole mapping is the vars of the host the
-    file is named after.
-    """
-    if host_vars_file is not None:
-        if isinstance(data, dict):
-            yield host_vars_file.stem, data
-        return
-    if not isinstance(data, dict) or "plugin" in data:
-        return  # a dynamic plugin config lists no hosts itself
-    for group in data.values():
-        if not isinstance(group, dict):
-            continue
-        hosts = group.get("hosts")
-        if isinstance(hosts, dict):
-            for host, host_vars in hosts.items():
-                yield host, host_vars if isinstance(host_vars, dict) else {}
-        yield from hosts_in(group.get("children"))
-
-
 def hosts_using(batch_id: str) -> list[tuple[Path, str]]:
     """(file, host) for every host whose raw_node_batch is batch_id.
 
     Looks at every stage inventory: the raw source files, such as
     admitted.yml, each stage's hosts.yml, and every host_vars file.
     """
-    found = []
-    for path in sorted(INVENTORIES.rglob("*.y*ml")):
-        if "group_vars" in path.parts:
-            continue
-        try:
-            with path.open(encoding="utf-8") as handle:
-                data = yaml.safe_load(handle)
-        except (OSError, UnicodeDecodeError, yaml.YAMLError):
-            continue
-        host_vars_file = path if path.parent.name == "host_vars" else None
-        for host, host_vars in hosts_in(data, host_vars_file):
-            if str(host_vars.get("raw_node_batch", "")) == batch_id:
-                found.append((path, host))
-    return found
+    return [(path, host) for path, host, host_vars in inventory_hosts(INVENTORIES)
+            if str(host_vars.get("raw_node_batch", "")) == batch_id]
 
 
 def retire(store: Path, batch_id: str, force: bool) -> int:
