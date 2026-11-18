@@ -2,7 +2,7 @@
 """Move a host entry between inventory stages.
 
 Removes the host from whichever static inventory file in the source
-inventory directory holds it (hosts.yml, discovered.yml, and so on; dynamic
+inventory directory holds it (hosts.yml, discovered.yml, admitted.yml; dynamic
 plugin configs are skipped), adds it to the destination stage's hosts.yml
 under that stage's group, then commits the changed files to git.
 
@@ -13,15 +13,17 @@ inventories/raw/:
   uc_origin: plugin.
 - A host listed by hand in raw/hosts.yml is copied, not moved, and marked
   uc_origin: static. Scripts never write raw/hosts.yml.
-- A scanned host is removed from raw/discovered.yml when promoted, so it is
-  not listed in two stages until the next scan. This is the only case where
-  a script changes a raw file.
+- A scanned host is removed from raw/discovered.yml when promoted, and an
+  admitted host from raw/admitted.yml, so it is not listed in two stages.
+  These are the only cases where a script changes a raw file. An admitted
+  host's keys stay in ssh/known_hosts.
 - Between onboard and normalized, in either direction, the host keeps its
   connection settings and every group it was in other than the stage group.
 - Demotion to raw removes the host's entry from the source stage and writes
   nothing. The node reappears in raw through its source: the plugin lists a
-  running instance, a hand-entered host never left hosts.yml, and a scanned
-  host is found by the next scan. Demotion is inventory bookkeeping that
+  running instance, a hand-entered host never left hosts.yml, a scanned
+  host is found by the next scan, and an admitted host by the next run of
+  05_admit.yml. Demotion is inventory bookkeeping that
   lets the inventory follow a node after a snapshot restore.
 
 A host promoted into the onboard stage carries the connection contract at
@@ -54,6 +56,14 @@ HEADERS = {
         "# overwritten on every subnet scan. promote_node.py removes a host from it\n"
         "# when promoting that host. Not committed. Do not edit by hand.\n"
         "# Names are provisional (disc-<ip>) until onboarding.\n",
+    # The same header ingress/playbooks/05_admit.yml writes.
+    ("raw", "admitted.yml"):
+        "# inventories/raw/admitted.yml\n#\n"
+        "# Generated inventory, written only by ingress/playbooks/05_admit.yml,\n"
+        "# which adds each raw node it admits and keeps the ones already here.\n"
+        "# promote_node.py removes a host from it when promoting that host. Not\n"
+        "# committed. Do not edit by hand. Connection settings come from\n"
+        "# group_vars/admitted.yml; host keys are in ssh/known_hosts.\n",
 }
 
 # How an onboarded node is reached: SSH as the initial user, offering only
@@ -67,7 +77,8 @@ CONTRACT = {
 # Records where a promoted host came from, for the operator:
 #   plugin: created from --address; a dynamic inventory plugin supplies it
 #   static: listed by hand in raw/hosts.yml, which scripts never write
-# A scanned host carries no marker; it came from raw/discovered.yml.
+# A scanned or admitted host carries no marker; it came from
+# raw/discovered.yml or raw/admitted.yml.
 ORIGIN_KEY, ORIGIN_PLUGIN, ORIGIN_STATIC = "uc_origin", "plugin", "static"
 
 # Hand-maintained files that scripts read but never write.

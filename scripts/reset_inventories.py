@@ -2,11 +2,14 @@
 """Clear node entries so the lifecycle can be rerun from scratch.
 
 A development helper. Rewrites each onboard/<env> and normalized/<env>
-hosts.yml back to an empty group, empties the generated raw inventory
-(inventories/raw/discovered.yml) if it exists, and empties the Ansible fact
+hosts.yml back to an empty group, empties the generated raw inventories
+(inventories/raw/discovered.yml and admitted.yml) if they exist, and empties
+the Ansible fact
 cache so a recreated node is not reached at a stale cached address.
 inventories/raw/hosts.yml is hand-maintained and never touched. group_vars,
-host_vars and plugin configs such as inventories/raw/incus.yml are left alone.
+host_vars and plugin configs such as inventories/raw/incus.yml are left alone,
+and so is ssh/known_hosts, which is committed: the keys of nodes cleared from
+admitted.yml stay there until removed with ssh-keygen -R.
 
 Nothing on the nodes themselves is touched; reset or delete those separately
 (for Incus, restore the snapshot or delete the instance).
@@ -35,7 +38,7 @@ STAGES = {
 
 # Generated raw inventories, reset only if present: (file, group it holds).
 # inventories/raw/hosts.yml is static and hand-maintained, so it is not here.
-RAW_GENERATED = [("discovered.yml", "discovered")]
+RAW_GENERATED = [("discovered.yml", "discovered"), ("admitted.yml", "admitted")]
 
 
 def hosts_files(envs: list[str] | None) -> list[tuple[Path, str, str]]:
@@ -124,6 +127,9 @@ def main() -> int:
         detail = ", ".join(names) if names else "already empty"
         shown = f"{label}/{hosts_file.name}" if label == "raw" else label
         print(f"{verb} {shown}: {detail}")
+        if hosts_file.name == "admitted.yml" and names:
+            print("  ssh/known_hosts keeps their keys; forget one with "
+                  "ssh-keygen -R <host> -f ssh/known_hosts")
 
     if not args.keep_facts:
         cache = fact_cache_dir()
