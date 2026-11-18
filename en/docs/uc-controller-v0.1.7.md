@@ -8,16 +8,16 @@ An Ansible controller configuration that moves nodes through a four stage lifecy
 
 | Change | Description |
 |--------|-------------|
-| Secrets pattern | Proposed and implemented for raw build batch passwords: files encrypted with `ansible-vault` under `secrets/`, one vault ID per kind of secret, vault passwords read from `~/.config/uc-controller/vault/` by `scripts/vault-client.py`, which `ansible.cfg` names. See Secrets |
-| Batch passwords | New `scripts/new_raw_batch.py` creates, imports, lists and retires the password of a raw node build batch, and prints the batch ID and a SHA-512 crypt hash for the producer. New `scripts/sha512_crypt.py` makes the hash without the `crypt` module, which Python 3.13 removed |
-| The `admitted` raw source | A third source under `raw`, for raw nodes that meet the raw node contract. Its hosts are in `inventories/raw/admitted.yml`, which only `05_admit.yml` writes. They are reached over SSH as `initial` with the controller's key alone, with strict host key checking against `ssh/known_hosts` and the batch password for sudo. See Admission |
+| Secrets | Raw node batch passphrases are kept with plain Ansible Vault: one encrypted file, `inventories/raw/group_vars/admitted/vault.yml`, under the vault ID `batches`, whose passphrase file `ansible.cfg` names. Passphrases are made with dice by the operator. See Secrets |
+| Batch scripts withdrawn | `vault-client.py`, `new_raw_batch.py`, `sha512_crypt.py` and the `secrets/raw-batches/` store, written earlier in this work, were removed after review in favour of plain Ansible Vault: they cost more to understand than they protected, for one operator |
+| The `admitted` raw source | A third source under `raw`, for raw nodes that meet the raw node contract. Its hosts are in `inventories/raw/admitted.yml`, which only `05_admit.yml` writes. They are reached over SSH as `initial` with the controller's key alone, with strict host key checking against `ssh/known_hosts` and their batch passphrase for sudo. See Admission |
 | `05_admit.yml` | New ingress playbook. It admits candidate addresses after checking the confirmation, the host keys and the node's identity, then confirms a connection and a become over the strict connection. It changes nothing on the node, and running it again reports the node as known |
 | Known hosts file | New `ssh/known_hosts`, committed, keyed by inventory hostname through `HostKeyAlias` |
-| `match_raw_identity.py`, `inventory_hosts.py` | New scripts: the identity decision for admission, and the host walker it shares with `new_raw_batch.py` |
+| `match_raw_identity.py`, `inventory_hosts.py` | New scripts: the identity decision for admission, and the host walker it uses |
 | `promote_node.py`, `reset_inventories.py` | Both handle `admitted.yml` as they handle `discovered.yml`. `promote_node.py` keeps a host's strict host key settings when it already has them |
 | `10_onboard.yml` | Targets `raw:!admitted`, and says in one line that onboarding contract nodes comes in a later kickoff |
 | Confirmation checker | New `scripts/check_raw_confirmation.py` checks a raw node's `confirmation.yml` against raw node contract 0.3.0 and 0.3.1 and prints JSON for the admission play. See Checking a Confirmation |
-| Tests | New `tests/`, run with `python3 tests/run_tests.py`: the confirmation checker against the fixtures in `tests/fixtures/raw-confirmations/`, and the hash against its specification's seven SHA-512 test vectors and `openssl passwd -6`, and the batch script end to end against a temporary vault |
+| Tests | New `tests/`, run with `python3 tests/run_tests.py`: the confirmation checker against the fixtures in `tests/fixtures/raw-confirmations/`, the identity decisions, promotion and reset, and `05_admit.yml` end to end against stand-in nodes and a vault of its own |
 
 ### v0.1.5 → v0.1.6
 
@@ -213,7 +213,9 @@ uc-controller/
 │   │   │   ├── all.yml           # shared raw defaults
 │   │   │   ├── incus.yml         # Incus connection as root
 │   │   │   ├── discovered.yml    # plain SSH as root
-│   │   │   └── admitted.yml      # SSH as initial, strict host keys, batch password
+│   │   │   └── admitted/
+│   │   │       ├── main.yml      # SSH as initial, strict host keys, batch passphrase
+│   │   │       └── vault.yml     # batch passphrases, encrypted (vault ID batches)
 │   │   └── host_vars/
 │   │
 │   ├── onboard/
@@ -250,11 +252,6 @@ uc-controller/
 ├── ssh/
 │   └── known_hosts               # host keys of admitted nodes, committed
 │
-├── secrets/                      # ansible-vault encrypted; see Secrets
-│   └── raw-batches/
-│       ├── index.yml             # batch IDs and the current batch, no secret
-│       └── <batch-id>.vault      # one batch password, encrypted
-│
 ├── scripts/
 │   ├── promote_node.py
 │   ├── demote_node.py
@@ -262,10 +259,7 @@ uc-controller/
 │   ├── check_converge_boundary.py
 │   ├── check_raw_confirmation.py # a raw node's confirmation against the contract
 │   ├── match_raw_identity.py     # a raw node's identity against every stage inventory
-│   ├── inventory_hosts.py        # every host in the static inventory files
-│   ├── new_raw_batch.py          # raw build batch passwords
-│   ├── sha512_crypt.py           # $6$ hashes for new_raw_batch.py
-│   └── vault-client.py           # vault passwords for ansible-vault
+│   └── inventory_hosts.py        # every host in the static inventory files
 │
 └── tests/                        # python3 tests/run_tests.py
     └── fixtures/
@@ -1709,13 +1703,15 @@ Raw node contract 0.3.0 describes a node that neither existing source can reach:
 
 ```bash
 ansible-playbook -i inventories/raw -i inventories/onboard/dev \
-  ingress/playbooks/05_admit.yml -e admit_addresses=192.168.1.109 \
+  ingress/playbooks/05_admit.yml -e admit_batch_id=raw-2026-11-18-01 \
+  -e admit_addresses=192.168.1.109 \
   -e admit_expected_fingerprint=SHA256:...      # from the node's console
 ansible-playbook -i inventories/raw -i inventories/onboard/dev \
-  ingress/playbooks/05_admit.yml -e admit_from_discovered=true
+  ingress/playbooks/05_admit.yml -e admit_batch_id=raw-2026-11-18-01 \
+  -e admit_from_discovered=true
 ```
 
-The onboard inventory is loaded for `onboard_ssh_private_key_file`, the controller's key for `initial`, as `10_onboard.yml` requires.
+The onboard inventory is loaded for `onboard_ssh_private_key_file`, the controller's key for `initial`, as `10_onboard.yml` requires. `admit_batch_id` names the batch the candidates were built with, and is required: there is no current batch to fall back on. Its passphrase must be in `group_vars/admitted/vault.yml`.
 
 ### The Flow
 
@@ -1730,7 +1726,7 @@ For each candidate, on the controller:
 | 5 | `match_raw_identity.py` against every stage inventory | `known`, or `stopped` for a reinstall, a name collision, or a node known under another name |
 | 6 | Write the node into `admitted.yml` under its confirmed hostname, add its keys to `ssh/known_hosts`, then confirm `raw: true` as `initial` and `raw: id -u` with become, over the strict connection, and Ansible's `ping` where Python is reported | Admission undone: the entry and the keys are removed, and the run fails |
 
-A node that is not a contract node is reported and does not fail the run, so a whole subnet scan can be offered with `admit_from_discovered=true`. A batch recorded with `meets_min_length: false` is reported as a warning against RN-ACC-08 for every node of the batch. The node is still admitted, because it was built with that password. A batch without `meets_min_length` stops the run. The play changes nothing on a node, and may be run any number of times.
+A node that is not a contract node is reported and does not fail the run, so a whole subnet scan can be offered with `admit_from_discovered=true`. The play measures the batch passphrase on the controller, without logging it. A passphrase under 15 characters is reported as a warning against RN-ACC-08 for every node of the batch. The node is still admitted, because it was built with that passphrase. A batch that is not in `vault.yml` stops the run. The play changes nothing on a node, and may be run any number of times.
 
 ### Identity
 
@@ -1764,7 +1760,7 @@ admitted:
 
 `group_vars/admitted.yml` supplies the rest:
 - SSH as `initial`, with `onboard_ssh_private_key_file` offered alone.
-- `ansible_become_password`, read from `secrets/raw-batches/<raw_node_batch>.vault` only when a task needs it. Each node uses the batch it was built with, not the current one, so a node of an earlier batch keeps working after a new batch becomes current. A host without `raw_node_batch` fails; there is no default.
+- `ansible_become_password: "{{ vault_raw_batch_passwords[raw_node_batch] }}"`, from `group_vars/admitted/vault.yml`. Each node uses the batch recorded at its admission, so a node of an earlier batch keeps working after later batches are added. A host without `raw_node_batch`, or with a batch the file does not hold, fails; there is no default.
 
 ### Host Keys
 
@@ -1788,7 +1784,7 @@ A promoted admitted node, reached with the onboard inventory alone, still refuse
 
 ### Testing Without a Node
 
-`tests/test_admit_playbook.py` runs the play end to end on a temporary copy of the repository, with its own vault and batch. Stand-in `ssh` and `ssh-keyscan` programs play nodes with real generated host keys, so nothing on the network is touched. The stand-in `ssh` enforces strict host key checking as ssh does.
+`tests/test_admit_playbook.py` runs the play end to end on a temporary copy of the repository. It has its own vault passphrase, named through `ANSIBLE_VAULT_IDENTITY_LIST`, and its own encrypted `vault.yml`, so the operator's are never read. Stand-in `ssh` and `ssh-keyscan` programs play nodes with real generated host keys, so nothing on the network is touched. The stand-in `ssh` enforces strict host key checking as ssh does.
 
 It covers:
 - an admission;
@@ -1802,8 +1798,10 @@ It covers:
 - a failed confirmation that is undone;
 - a console fingerprint, wrong and right;
 - `admit_from_discovered`;
-- a short batch password reported against RN-ACC-08;
-- a batch without `meets_min_length`.
+- a short batch passphrase reported against RN-ACC-08;
+- a batch that is not in `vault.yml`;
+- a run at `-vvv` that never prints a passphrase;
+- a promoted node that keeps strict host key checking.
 
 The real node is verified in Phase 4.
 
@@ -1876,101 +1874,52 @@ Each fixture states its expected exit status and findings in its header comments
 
 ## Secrets
 
-Proposed with the raw node admission work, and implemented so far for raw build batch passwords only.
+Raw node contract 0.3.0 gives the controller its first secret: `initial_password`, the password of `initial` on every node of a build batch. The producer receives only its hash. The privileged access policy calls where the controller keeps it "the controller's secret store". In this repository that store is plain Ansible Vault.
 
-Raw node contract 0.3.0 gives the controller its first secret: `initial_password`, the password of `initial` on every node of a build batch. The producer receives only its hash. The privileged access policy calls where the controller keeps such secrets "the controller's secret store". In this repository that store is a set of files encrypted with `ansible-vault`, together with the vault passwords that open them. `ansible-vault` ships with Ansible, so this adds no dependency. Code and comments say "vault", not the policy's term.
+The operator's procedure is in `en/docs/guides/vault-guide.md`.
 
-### Where Encrypted Files Live
+### The Pieces
 
-| Path | Holds | Vault ID | Committed |
-|------|-------|----------|-----------|
-| `secrets/raw-batches/index.yml` | Batch IDs, their status, the current batch. No secret. | None | Yes |
-| `secrets/raw-batches/<batch-id>.vault` | One batch password, the whole file encrypted | `raw_batch` | Yes |
-| `secrets/nodes/<hostname>.vault` | Reserved: secrets of one node, such as the password that onboarding gives `initial` (OE-ACC-03) | `node` | Yes, once it exists |
-
-Secrets live outside `inventories/`, for two reasons:
-- A node's entry moves between stage inventories on promotion and demotion, and its secrets should not have to move with it.
-- A vaulted file under `group_vars` or `host_vars` is decrypted for every play that loads the inventory.
-
-Instead, a playbook reads a secret where it needs it, with the `unvault` lookup:
+| Piece | Where | Committed |
+|-------|-------|-----------|
+| Batch passphrases, one per batch ID, as `vault_raw_batch_passwords` | `inventories/raw/group_vars/admitted/vault.yml`, encrypted as a whole with the vault ID `batches` | Yes |
+| The `batches` vault passphrase | `~/.config/uc-controller/vault/batches`, mode 600, and the operator's password manager | Never |
+| Where Ansible finds it | `vault_identity_list = batches@~/.config/uc-controller/vault/batches` in `ansible.cfg` | Yes |
 
 ```yaml
-ansible_become_password: >-
-  {{ lookup('ansible.builtin.unvault', 'secrets/raw-batches/' ~ raw_node_batch ~ '.vault') | trim }}
+# vault.yml, as ansible-vault edit shows it
+vault_raw_batch_passwords:
+  raw-2026-11-18-01: "six dice words and a digit"
 ```
 
-The admission work settles the exact form for the `admitted` source.
+`group_vars/admitted/main.yml` sets `ansible_become_password: "{{ vault_raw_batch_passwords[raw_node_batch] }}"`. The file sits with the `admitted` group's variables, so Ansible decrypts it when it loads that group's variables. `05_admit.yml` runs on localhost, so it loads the file itself, with `no_log`.
 
-### Vault IDs
+### Passphrases
 
-Each kind of secret has its own vault ID, and so its own vault password. Every encrypted file names its vault ID in its first line (`$ANSIBLE_VAULT;1.2;AES256;raw_batch`), so `ansible-vault` tries only the matching password.
+The operator makes each passphrase with dice: six words from the EFF large wordlist and a digit, about 77 bits. That is far beyond the contract's 15 characters (RN-ACC-08). It meets the policy's "generated" and "letters and digits" (PA-PWD-01). The vault passphrase and every batch passphrase are distinct, and never pass through each other's prompts.
 
-| Vault ID | Encrypts | Lifetime of a secret |
-|----------|----------|----------------------|
-| `raw_batch` | Raw node build batch passwords | From batch creation until no node needs it, then retired |
-| `node` | Secrets of one managed node | From onboarding for as long as the node is managed. Not used yet, and not listed in `ansible.cfg` until it is |
+For uc-ventoy, `openssl passwd -6` makes the SHA-512 crypt hash. It asks for the passphrase without echoing it. `-stdin` must not be used, because it hashes every line it reads.
 
-Keeping them apart means the password for `raw_batch` can be given to someone who builds raw nodes without opening any node's own secrets. It also means each vault password can be replaced (`ansible-vault rekey`) without touching the other.
+### Consequences
 
-### The Vault Password
+- **Every operator needs the passphrase file.** Every Ansible run loads every vault ID in `vault_identity_list`, so a workstation without the file gets an error on every run, even on one that decrypts nothing.
+- **Nothing records a current batch.** Admission takes the batch from `-e admit_batch_id`.
+- **Retiring is by hand.** Retiring a batch is deleting its line with `ansible-vault edit`, after `grep -rn 'raw_node_batch: *<id>' inventories/` finds no host. Nothing enforces it.
+- **The editor sees the plain text.** `ansible-vault edit` and `view` show passphrases in plain text. While the editor is open, the text sits in a temporary file, which is deleted afterwards.
+- **Changing the vault passphrase** is `ansible-vault rekey --vault-id batches@<old file> --new-vault-id batches@prompt <file>`. Git history keeps copies encrypted with the old passphrase, which is acceptable only because that passphrase is never used again.
 
-`ansible.cfg` names one client script per vault ID:
+### Node Secrets
 
-```ini
-vault_identity_list = raw_batch@scripts/vault-client.py
-```
+Secrets of single nodes, such as the password onboarding gives each node in place of the batch passphrase (OE-ACC-03), will follow the same pattern. They get their own vault ID, `node`, and their own passphrase file, so that the batch passphrase file opens nothing of a node's own. The onboarding kickoff decides where the file lives. Until then, `ansible.cfg` names only `batches`.
 
-`scripts/vault-client.py` prints the vault password for the vault ID that Ansible asks for. It reads the password from `~/.config/uc-controller/vault/<vault-id>`, outside the repository. The file must have mode 600; the client refuses it otherwise. `UC_VAULT_DIR` replaces the directory, which the tests use. No vault password is ever read from a file in the repository.
+### What Came Before
 
-Three behaviours of Ansible, found while building this, shape the client:
+Earlier in this work, batch passwords were kept by three scripts and a store:
+- `scripts/new_raw_batch.py`: one encrypted file per batch, an index with the current batch and `meets_min_length`, and retirement checks;
+- `scripts/vault-client.py`: a vault password client;
+- `scripts/sha512_crypt.py`: pure-Python hashing.
 
-- **Every run loads every vault ID, and a failing client stops the run**, even a run that decrypts nothing, such as onboarding an Incus instance. So when no password file exists, the client prints a random placeholder and exits 0. Runs that decrypt nothing are unaffected. A run that needs the vault fails with "Decryption failed (no vault secrets were found that could decrypt)".
-- **A password file is run only if it is executable. Otherwise Ansible uses the file's text as the vault password.** A checkout that lost the executable bit would encrypt with the client's own source code, which is public. `new_raw_batch.py` refuses to run in that case. The bit is committed (git mode `100755`), and must stay.
-- **The client path is relative to the directory Ansible is started from**, not to `ansible.cfg`. Playbooks are run from the repository root, as `raw_inventory` in `00_discover.yml` already assumes. `new_raw_batch.py` passes the client's absolute path, so it runs from anywhere.
-
-### Setting Up an Operator
-
-Once per operator and workstation:
-
-1. The first operator, before anything is encrypted: `python3 scripts/vault-client.py --init --vault-id raw_batch`. This generates a 40-character vault password into the file and prints nothing secret. Copy the file's contents into the password manager. Without it, no batch password can be read again.
-2. Every other operator takes the vault password from the password manager and runs `python3 scripts/vault-client.py --set --vault-id raw_batch`. The password is read from a prompt or standard input, never from the command line.
-3. Check with `python3 scripts/vault-client.py --status --vault-id raw_batch` and `python3 scripts/new_raw_batch.py --list`.
-
-### What Git Excludes
-
-`.gitignore` uses an allowlist under `secrets/`: only `raw-batches/index.yml` and `raw-batches/*.vault` can be committed, so a decrypted copy left there by hand stays out of git. The allowlist cannot tell an encrypted `.vault` file from a plain one. `new_raw_batch.py --list` checks that each starts with the vault header and exits 1 if one does not. Vault passwords never enter the repository, so no rule is needed for them.
-
-### Batch Passwords
-
-`scripts/new_raw_batch.py` manages the `raw_batch` secrets. It reads and writes the store only through `ansible-vault`, which takes the password on standard input and writes the encrypted file directly, so no plain password is ever written to disk. After encrypting, it decrypts the file again and compares, and removes the file if they differ.
-
-| Command | Does |
-|---------|------|
-| `new_raw_batch.py` | Generates a password of 24 letters and digits (at least one of each) with `secrets`, stores it under a new batch ID, `raw-<date>-NN`, and makes that batch current. Prints only two lines, for uc-ventoy's `raw-node-input.yml`: `password_batch` and `initial_password_hash` |
-| `new_raw_batch.py --show-password` | As above, and also prints the password once, on standard error, for an operator who needs it at a console |
-| `new_raw_batch.py --import raw-2026-11-17-manual [--current]` | Stores a batch made by hand before the script existed. Reads the password from standard input or a prompt, and requires letters and digits only. A node may already be built with that password, so a password under 15 characters is still stored. The batch is then recorded as `meets_min_length: false`, and admission reports RN-ACC-08 as failed for every node of the batch. Missing letters or digits only produce a warning, for the same reason |
-| `new_raw_batch.py --set-current ID` | Makes an active batch current |
-| `new_raw_batch.py --hash ID` | Prints a fresh hash of an active batch's password, for building more nodes of that batch |
-| `new_raw_batch.py --retire ID [--force]` | Deletes the batch's encrypted file and marks it retired. Refused for the current batch, and, without `--force`, while any host in any stage inventory has `raw_node_batch` equal to it. That covers the raw source files, each stage's `hosts.yml` and every `host_vars` file |
-| `new_raw_batch.py --list` | Lists batches, marks the current one and any batch under 15 characters, and checks the store |
-
-Every batch in `index.yml` carries `meets_min_length`, `true` or `false`. A missing value is an error, not a default. `--list` reports it as a problem, and `--set-current`, `--hash` and `--retire` refuse the batch. Admission refuses it too. The one entry written before the field existed, `raw-2026-11-17-manual`, was imported under the old 15-character check and was given `meets_min_length: true` by hand.
-
-Batch IDs are `raw-YYYY-MM-DD-<suffix>`, with a suffix of lower-case letters, digits and hyphens. That is a subset of what uc-ventoy accepts as `password_batch`. An ID is never reused, even after its batch is retired. Earlier batches stay active until retired, so a node built before the current batch can still be admitted.
-
-The hash is SHA-512 crypt (`$6$`), with a random 16-character salt and the default 5000 rounds. This is the format Debian's preseed and Ubuntu's autoinstall accept. Python 3.13 has no `crypt` module. `openssl passwd -6` would work on most Linux systems, but it is not part of Windows, and macOS's LibreSSL may lack `-6`. So `scripts/sha512_crypt.py` implements the algorithm with `hashlib`, about a hundred lines that run everywhere. `tests/test_sha512_crypt.py` checks it against the seven SHA-512 test vectors in Drepper's specification, which include five custom round counts and a count below the minimum that is raised to 1000, and against `openssl passwd -6` where available. Salts come from the `secrets` module, which a test confirms.
-
-The script does not commit. It prints a reminder to commit `secrets/raw-batches/`. Retiring a batch deletes its file, but git history keeps the encrypted copy. That copy can still be read by anyone who has both the history and the `raw_batch` vault password, until the vault password is replaced.
-
-### Platforms
-
-The scripts are plain Python and run on Linux, macOS and Windows. `new_raw_batch.py` also needs `ansible-vault`, and Ansible does not support Windows as a controller. On Windows, batches are made under WSL. `vault-client.py --init`, `--set` and `--status` run natively there.
-
-### Not Decided Here
-
-- Replacing a vault password (`ansible-vault rekey --new-vault-id`) and retiring old copies from history. Write the procedure the first time it is needed.
-- The layout of per-node secrets. It is reserved above, and the onboarding kickoff decides it.
-- A git hook that refuses to commit an unencrypted file under `secrets/`. `--list` does the check today, by hand.
+After review they were removed. For one operator and a handful of batches, they cost more to understand than they protected. A batch imported through them came to hold a vault password, which showed the cost. The batch they held, `raw-2026-11-17-manual`, was retired with them. git history keeps them.
 
 ## Ansible Configuration
 
@@ -1996,11 +1945,11 @@ stdout_callback = default
 callback_result_format = yaml
 # Per-task timings at the end of every run.
 callbacks_enabled = ansible.posix.profile_tasks
-# Vault passwords come from scripts/vault-client.py, which reads them from
-# ~/.config/uc-controller/vault/<id>, outside the repository. The path is
-# relative to the directory ansible is started from: the repository root.
-# raw_batch: raw node build batch passwords, in secrets/raw-batches/.
-vault_identity_list = raw_batch@scripts/vault-client.py
+# Vault passwords are plain files outside the repository, one per vault ID,
+# mode 600. batches: the raw node batch passphrases in
+# inventories/raw/group_vars/admitted/vault.yml. Every run reads the file,
+# so every operator needs it; see en/docs/guides/vault-guide.md.
+vault_identity_list = batches@~/.config/uc-controller/vault/batches
 
 [privilege_escalation]
 become = True
