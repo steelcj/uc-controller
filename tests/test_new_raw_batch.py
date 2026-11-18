@@ -230,6 +230,20 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual(again.returncode, 1)
         self.assertEqual(self.run_script("--list").returncode, 0)
 
+    def test_missing_meets_min_length_is_an_error(self):
+        self.init_vault()
+        self.run_script()
+        index = self.index()
+        batch_id = index["current"]
+        del index["batches"][batch_id]["meets_min_length"]
+        new_raw_batch.save_index(self.store, index)
+        listed = self.run_script("--list")
+        self.assertEqual(listed.returncode, 1)
+        self.assertIn("no meets_min_length", listed.stderr)
+        for args in (["--set-current", batch_id], ["--hash", batch_id]):
+            with self.subTest(args=args):
+                self.assertEqual(self.run_script(*args).returncode, 1)
+
     def test_list_flags_unencrypted_file(self):
         self.init_vault()
         self.run_script()

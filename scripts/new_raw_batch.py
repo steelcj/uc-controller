@@ -307,6 +307,9 @@ def active(index: dict, batch_id: str) -> dict:
         raise SystemExit(f"error: no batch {batch_id}")
     if entry.get("status") != "active":
         raise SystemExit(f"error: {batch_id} is {entry.get('status')}")
+    if not isinstance(entry.get("meets_min_length"), bool):
+        raise SystemExit(f"error: {batch_id} has no meets_min_length in index.yml; "
+                         "every batch must record whether its password meets RN-ACC-08")
     return entry
 
 
@@ -408,6 +411,8 @@ def list_batches(store: Path) -> int:
             problems.append(f"{batch_id} is active but has no {batch_id}.vault")
         if entry.get("status") == "retired" and exists:
             problems.append(f"{batch_id} is retired but {batch_id}.vault is still there")
+        if not isinstance(entry.get("meets_min_length"), bool):
+            problems.append(f"{batch_id} has no meets_min_length (true or false)")
     if index["current"] and index["current"] not in index["batches"]:
         problems.append(f"current batch {index['current']} is not in the index")
     if store.is_dir():

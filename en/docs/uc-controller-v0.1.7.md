@@ -1725,7 +1725,9 @@ The YAML is read with PyYAML's `BaseLoader`, so every scalar stays a string, as 
 | `firewall_active` is true | Firewall | warning |
 | A field the supported versions do not define | RN-REP-01 | note |
 
-A warning or a note does not fail the check. `firewall_active` is a warning because admission's checks, as agreed, do not include it. A field the checker does not know is a note, because a later minor version may add fields.
+A warning or a note does not fail the check. A field the checker does not know is a note, because a later minor version may add fields. That is fine while the contract is at 0.3.x.
+
+`firewall_active` is a warning only because admission's agreed checks do not include it. The firewall is a security baseline, so whether an inactive firewall manager should fail admission is a decision for the raw node contract, to be made on purpose. It is not settled here. It is listed as open in the final report of this work.
 
 ### Values for Admission
 
@@ -1830,7 +1832,7 @@ Once per operator and workstation:
 | `new_raw_batch.py --retire ID [--force]` | Deletes the batch's encrypted file and marks it retired. Refused for the current batch, and, without `--force`, while any host in any stage inventory has `raw_node_batch` equal to it. That covers the raw source files, each stage's `hosts.yml` and every `host_vars` file |
 | `new_raw_batch.py --list` | Lists batches, marks the current one and any batch under 15 characters, and checks the store |
 
-Every batch in `index.yml` carries `meets_min_length`. An entry without it was written before the field existed, when `--import` still refused short passwords, so it meets the length.
+Every batch in `index.yml` carries `meets_min_length`, `true` or `false`. A missing value is an error, not a default. `--list` reports it as a problem, and `--set-current`, `--hash` and `--retire` refuse the batch. Admission refuses it too. The one entry written before the field existed, `raw-2026-11-17-manual`, was imported under the old 15-character check and was given `meets_min_length: true` by hand.
 
 Batch IDs are `raw-YYYY-MM-DD-<suffix>`, with a suffix of lower-case letters, digits and hyphens. That is a subset of what uc-ventoy accepts as `password_batch`. An ID is never reused, even after its batch is retired. Earlier batches stay active until retired, so a node built before the current batch can still be admitted.
 
