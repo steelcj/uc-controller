@@ -39,8 +39,17 @@ Written this way, an alphabetical listing of the directory is also in order of t
 
 After the timestamp comes one hyphen and a description in lower case, with words separated by hyphens:
 
-- `session` for the record of a working session.
+- `session` for the record of a working session, optionally followed by `-<what the session was for>`, as in `session-raw-node-admission`.
 - `kickoff-<what the session is for>` for the note that starts a session.
+- `final-report-<what the kickoff was for>` for the report that closes a kickoff, using the same words as the kickoff's own name, as in `final-report-raw-node-admission` for `kickoff-raw-node-admission`.
+
+For example, the raw node admission kickoff produced:
+
+```text
+2026-11-16--23-55-01-kickoff-raw-node-admission.md
+2026-11-18--17-13-54-session-raw-node-admission.md
+2026-11-18--17-13-55-final-report-raw-node-admission.md
+```
 
 ## Generating the timestamp
 

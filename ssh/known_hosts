@@ -1,0 +1,17 @@
+# ssh/known_hosts
+#
+# The controller's known hosts for raw nodes admitted by
+# ingress/playbooks/05_admit.yml. Committed: host keys are public, and git
+# history records when a node's keys were first trusted or changed
+# (privileged access policy PA-HOST-02).
+#
+# Entries are keyed by inventory hostname, not address: the admitted group
+# connects with HostKeyAlias=<inventory_hostname>, so a node keeps its keys
+# when its DHCP address changes. Each node's keys sit in a block that
+# 05_admit.yml writes. To forget a node, for example before re-admitting a
+# reinstalled one: ssh-keygen -R <hostname> -f ssh/known_hosts
+# BEGIN deb13-vt-55b1, admitted by 05_admit.yml
+deb13-vt-55b1 ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQCjJJF0WdS6+KWT444J3cdbuI6oe7vYX8P1TXLSNCSzGnNFXEEOD4nCUMmoCL1t7Md3a888WNjzCIf1H4k/3v5iguHQPlFKkzP6fuqjVyRQjAP4giUlfViKRNF7aYlh8jbhDbgnfeuoi2PVwT30rOQKGyBqqn6lfiDRamJ7Bef2fStfdIpVfbD7nb8LHdC0/1uYPyFhzrPBDmmSzPGgeEgdA5YVp+yBN3DDq77tgJofbOqU+iURXkw78mcLFd9t5mxLg+Q7QyWKY2UX4kmoEevlzwlRk+mHr+VMX2vHorILLCvvRdqudLfnbIzvIIjWmP3yNn5BA+q+cgwok8y7o1QWFfWtG6gD7biABbO3JtkZUx/GTO0KEwYLU+RmpOTm/6nKgNDtabq6VvHr1+MrsZsUx9QuJt+rJtP9VKO/sd5hnxqhiqDUZlwl7Hpzj36zWJFfyx/MxhnYfoqzukQH4ibh1TRbhIV5qZLAOl9g8A29PI4vGwPNe95ZIRhUGpXosm0=
+deb13-vt-55b1 ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBM/l6C9Y841Yq++xms86GMlkwluxuBQy/sa8wuvPP2a7cq07NCJiVonI4ciZQUuytoYmI24qIrZL6HGzksVuk8c=
+deb13-vt-55b1 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMYZQrirgaRLtlKcokwhaN2IEQwZycpI4Uvwq3WRxol+
+# END deb13-vt-55b1, admitted by 05_admit.yml

@@ -2,7 +2,7 @@
 """Move a host entry between inventory stages.
 
 Removes the host from whichever static inventory file in the source
-inventory directory holds it (hosts.yml, discovered.yml, and so on; dynamic
+inventory directory holds it (hosts.yml, discovered.yml, admitted.yml; dynamic
 plugin configs are skipped), adds it to the destination stage's hosts.yml
 under that stage's group, then commits the changed files to git.
 
@@ -13,15 +13,17 @@ inventories/raw/:
   uc_origin: plugin.
 - A host listed by hand in raw/hosts.yml is copied, not moved, and marked
   uc_origin: static. Scripts never write raw/hosts.yml.
-- A scanned host is removed from raw/discovered.yml when promoted, so it is
-  not listed in two stages until the next scan. This is the only case where
-  a script changes a raw file.
+- A scanned host is removed from raw/discovered.yml when promoted, and an
+  admitted host from raw/admitted.yml, so it is not listed in two stages.
+  These are the only cases where a script changes a raw file. An admitted
+  host's keys stay in ssh/known_hosts.
 - Between onboard and normalized, in either direction, the host keeps its
   connection settings and every group it was in other than the stage group.
 - Demotion to raw removes the host's entry from the source stage and writes
   nothing. The node reappears in raw through its source: the plugin lists a
-  running instance, a hand-entered host never left hosts.yml, and a scanned
-  host is found by the next scan. Demotion is inventory bookkeeping that
+  running instance, a hand-entered host never left hosts.yml, a scanned
+  host is found by the next scan, and an admitted host by the next run of
+  05_admit.yml. Demotion is inventory bookkeeping that
   lets the inventory follow a node after a snapshot restore.
 
 A host promoted into the onboard stage carries the connection contract at
@@ -54,6 +56,14 @@ HEADERS = {
         "# overwritten on every subnet scan. promote_node.py removes a host from it\n"
         "# when promoting that host. Not committed. Do not edit by hand.\n"
         "# Names are provisional (disc-<ip>) until onboarding.\n",
+    # The same header ingress/playbooks/05_admit.yml writes.
+    ("raw", "admitted.yml"):
+        "# inventories/raw/admitted.yml\n#\n"
+        "# Generated inventory, written only by ingress/playbooks/05_admit.yml,\n"
+        "# which adds each raw node it admits and keeps the ones already here.\n"
+        "# promote_node.py removes a host from it when promoting that host. Not\n"
+        "# committed. Do not edit by hand. Connection settings come from\n"
+        "# group_vars/admitted/; host keys are in ssh/known_hosts.\n",
 }
 
 # How an onboarded node is reached: SSH as the initial user, offering only
@@ -67,7 +77,8 @@ CONTRACT = {
 # Records where a promoted host came from, for the operator:
 #   plugin: created from --address; a dynamic inventory plugin supplies it
 #   static: listed by hand in raw/hosts.yml, which scripts never write
-# A scanned host carries no marker; it came from raw/discovered.yml.
+# A scanned or admitted host carries no marker; it came from
+# raw/discovered.yml or raw/admitted.yml.
 ORIGIN_KEY, ORIGIN_PLUGIN, ORIGIN_STATIC = "uc_origin", "plugin", "static"
 
 # Hand-maintained files that scripts read but never write.
@@ -186,9 +197,70 @@ def add_host(data: dict, group: str, host: str, host_vars) -> None:
     hosts[host] = host_vars
 
 
+# Settings that make a host's SSH connection check host keys strictly. A
+# host promoted out of raw keeps them when it already has them, from its own
+# vars or from its source's group_vars (group_vars/admitted/main.yml sets them for
+# every admitted raw contract node); the connection contract would otherwise
+# replace ansible_ssh_common_args and drop them.
+STRICT_KEYS = ("ansible_host_key_checking", "ansible_ssh_host_key_checking",
+               "ansible_ssh_common_args")
+
+
+def is_true(value) -> bool:
+    return value is True or str(value).strip().lower() in ("true", "yes", "on", "1")
+
+
+def vars_files(directory: Path, name: str) -> list[Path]:
+    """<name>.yml or .yaml in directory, or every YAML file in <name>/."""
+    files = [directory / f"{name}{suffix}" for suffix in (".yml", ".yaml")]
+    folder = directory / name
+    if folder.is_dir():
+        files += sorted(p for p in folder.iterdir() if p.suffix in (".yml", ".yaml"))
+    return [f for f in files if f.is_file()]
+
+
+def strict_settings(inventory: Path, groups: list[str], host: str, host_vars) -> dict:
+    """The host's strict host key settings, as Ansible would resolve them.
+
+    Merges group_vars for all, raw and the groups that list the host, then
+    host_vars/<host>, then the host's own entry. Returns {} unless host key
+    checking is on.
+    """
+    merged: dict = {}
+    # An ansible-vault encrypted file reads as a string, not a mapping. It is
+    # passed over with a warning: host key settings belong in plain files,
+    # and any inside an encrypted file are not carried over.
+    for path in [p for group in ["all", "raw", *groups]
+                 for p in vars_files(inventory / "group_vars", group)] \
+            + vars_files(inventory / "host_vars", host):
+        data = load(path)
+        if isinstance(data, dict):
+            merged.update(data)
+        elif isinstance(data, str) and data.startswith("$ANSIBLE_VAULT"):
+            print(f"warning: {path} is encrypted and was not read; host key settings "
+                  "in it, if any, are not carried over to the promoted host",
+                  file=sys.stderr)
+        else:
+            print(f"warning: {path} is not a mapping of variables and was not read",
+                  file=sys.stderr)
+    merged.update(host_vars or {})
+    if not any(is_true(merged.get(key)) for key in STRICT_KEYS[:2]):
+        return {}
+    strict = {key: merged[key] for key in STRICT_KEYS if key in merged}
+    args = str(strict.get("ansible_ssh_common_args", ""))
+    if "IdentitiesOnly=yes" not in args:
+        args = f"{CONTRACT['ansible_ssh_common_args']} {args}".strip()
+    strict["ansible_ssh_common_args"] = args
+    return strict
+
+
 def with_contract(host_vars, address: str | None, key_file: str | None,
-                  host: str) -> dict:
-    """Return host_vars with the onboard connection contract applied."""
+                  host: str, strict: dict | None = None) -> dict:
+    """Return host_vars with the onboard connection contract applied.
+
+    strict, from strict_settings(), is applied over the contract, so a host
+    that checked host keys strictly keeps doing so.
+    """
     host_vars = dict(host_vars or {})
     address = address or host_vars.get("ansible_host")
     key_file = key_file or host_vars.get("ansible_ssh_private_key_file")
@@ -197,6 +269,7 @@ def with_contract(host_vars, address: str | None, key_file: str | None,
     if not key_file:
         raise SystemExit(f"error: no key file for {host}; pass --key-file")
     host_vars.update(CONTRACT)
+    host_vars.update(strict or {})
     host_vars["ansible_host"] = address
     host_vars["ansible_ssh_private_key_file"] = key_file
     return host_vars
@@ -274,7 +347,12 @@ def main(direction: str = "promote") -> int:
     # The connection contract is written once, on promotion out of raw. Moves
     # between onboard and normalized carry the entry over unchanged.
     if from_stage == "raw":
-        host_vars = with_contract(host_vars, args.address, args.key_file, args.host)
+        strict = (strict_settings(args.source, source_groups, args.host, host_vars)
+                  if found else {})
+        host_vars = with_contract(host_vars, args.address, args.key_file, args.host, strict)
+        if strict:
+            print(f"note: {args.host} keeps its strict host key settings "
+                  f"({', '.join(sorted(strict))})")
 
     # pop_host clears every existing entry for the host, so a repeat
     # promotion replaces the entry instead of adding a second one.

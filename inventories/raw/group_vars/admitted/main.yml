@@ -1,0 +1,44 @@
+---
+# inventories/raw/group_vars/admitted/main.yml
+#
+# Maintained by hand.
+# Raw nodes that meet the raw node contract, admitted by
+# ingress/playbooks/05_admit.yml into inventories/raw/admitted.yml. They are
+# reached as the contract says: SSH as initial with the controller's key,
+# offered alone; sudo asks for the passphrase of the batch the node was
+# built with, kept encrypted in vault.yml beside this file.
+# ansible_host, ansible_port and raw_node_batch are set per host by the
+# generated inventory.
+#
+# Load the onboard inventory too (-i inventories/onboard/dev), which defines
+# onboard_ssh_private_key_file, as 10_onboard.yml requires.
+
+ansible_connection: ssh
+ansible_user: initial
+ansible_ssh_private_key_file: "{{ onboard_ssh_private_key_file }}"
+
+# Strict host key checking for this group only. ansible.cfg turns checking
+# off for the other sources, whose test nodes are rebuilt often; this
+# variable overrides it per host, so Ansible no longer adds
+# StrictHostKeyChecking=no. Keys are checked against ssh/known_hosts alone,
+# under the inventory hostname (HostKeyAlias), never ~/.ssh/known_hosts.
+#
+# The repository is found from the ansible.cfg in use, not from this
+# inventory's directory, so the two host key settings mean the same at any
+# stage: promote_node.py copies them onto a host it promotes out of raw.
+ansible_ssh_host_key_checking: true
+ansible_ssh_common_args: >-
+  -o IdentitiesOnly=yes
+  -o StrictHostKeyChecking=yes
+  -o HostKeyAlias={{ inventory_hostname }}
+  -o UserKnownHostsFile={{ ansible_config_file | dirname }}/ssh/known_hosts
+  -o GlobalKnownHostsFile=/dev/null
+  -o PasswordAuthentication=no
+  -o KbdInteractiveAuthentication=no
+
+# The become password is the passphrase of the batch the node was built
+# with, from vault.yml beside this file (encrypted with the vault ID
+# batches; see en/docs/guides/vault-guide.md). A host without
+# raw_node_batch, or with a batch that vault.yml does not hold, fails here;
+# there is no default.
+ansible_become_password: "{{ vault_raw_batch_passwords[raw_node_batch] }}"

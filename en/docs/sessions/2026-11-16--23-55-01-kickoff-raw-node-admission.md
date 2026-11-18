@@ -116,7 +116,10 @@ Branch: `feat/raw-node-admission`
 #### Host Keys
 
 - Admitted nodes are checked against a known hosts file kept by the controller, not against `~/.ssh/known_hosts`. Propose where it lives and whether it is committed. Host keys are public, so committing is acceptable.
+  - response: inventory?
 - `host_key_checking = False` stays for the other sources, because Incus test nodes are rebuilt often. Strict checking applies to the `admitted` group through its own settings. If that cannot be done per group, stop and ask.
+  - response: raw node creation should take place outside of the main controller so raw-node-creation -> main configuration controller
+    - Ansible may provide libraries (incus...) but this should happen in a raw node node creation controller. This will provide for a clear handoff for all raw nodes.
 
 #### The Admission Playbook
 

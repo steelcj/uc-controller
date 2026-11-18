@@ -1,305 +1,408 @@
+---
+title: "uc-controller Vault Guide"
+date: 2026-11-18
+author: "Christopher Steel"
+status: "Guide"
+description: "How to keep raw node batch passphrases in one Ansible Vault file, with passphrases made with dice: setting up, adding batches, building and admitting nodes, retiring batches and changing the vault passphrase."
+---
+
 # uc-controller Vault Guide
 
-Last updated: 2026-11-18
+## Abstract
 
-This guide is for operators of uc-controller. It follows the order you work in: set up the vault passwords, create a batch, build and admit nodes with it, then view, retire and rekey as needed.
+A raw node is built with a batch passphrase: the password of the `initial` user, shared by every node of one build batch. uc-controller keeps these passphrases with standard Ansible Vault and nothing else: one encrypted variables file, one vault passphrase in a file outside the repository, and passphrases the operator makes with dice. This guide covers setting up the vault passphrase, adding a batch, making the hash for uc-ventoy, admitting nodes, viewing, retiring and changing passphrases, and what to do when a secret is exposed. The design is described in the Secrets section of `en/docs/uc-controller-v0.1.7.md`.
 
-## Three kinds of secret
+## Sources and acknowledgements
 
-uc-controller uses three kinds of secret. They must never be the same, and they never pass through the same prompt.
+The raw node contract makes the controller hold the batch passphrase and gives the producer only its hash <a name="apa-steel-raw-node-contract-citation"></a>([Steel, 2026b](#apa-steel-raw-node-contract-reference)). The privileged access policy sets the rules for generating it <a name="apa-steel-privileged-access-citation"></a>([Steel, 2026a](#apa-steel-privileged-access-reference)). The Ansible commands follow the Ansible Vault documentation, and the passphrase method follows the EFF wordlists and NIST SP 800-63B-4, each cited where it is used.
 
-| Secret | What it protects | Where it lives | Who types it |
+## Contents
+
+- [The two secrets](#the-two-secrets)
+- [Where things are](#where-things-are)
+- [Before you start](#before-you-start)
+- [Make passphrases with dice](#make-passphrases-with-dice)
+- [Store the vault passphrase](#store-the-vault-passphrase)
+- [Create the batch file](#create-the-batch-file)
+- [Check the batch file](#check-the-batch-file)
+- [Make the hash for uc-ventoy](#make-the-hash-for-uc-ventoy)
+- [Admit the nodes](#admit-the-nodes)
+- [Check a batch against the vault passphrases](#check-a-batch-against-the-vault-passphrases)
+- [Set a batch passphrase on an existing node](#set-a-batch-passphrase-on-an-existing-node)
+- [Test become by hand](#test-become-by-hand)
+- [Add, view and retire batches](#add-view-and-retire-batches)
+- [Change the vault passphrase](#change-the-vault-passphrase)
+- [Node secrets, later](#node-secrets-later)
+- [Troubleshooting](#troubleshooting)
+- [Rules](#rules)
+- [If a secret is exposed](#if-a-secret-is-exposed)
+- [Open items](#open-items)
+- [Resources](#resources)
+- [References](#references)
+- [Changelog](#changelog)
+
+## The two secrets
+
+| Secret | Protects | Lives in | Used by |
 | --- | --- | --- | --- |
-| `raw_batch` vault password | The batch store, `secrets/raw-batches/` | `~/.config/uc-controller/vault/raw_batch` and the operator's password manager | The operator, once, during setup |
-| `node` vault password | Secrets of single nodes, encrypted with the `node` vault ID. None exist yet; see The node vault | `~/.config/uc-controller/vault/node` and the operator's password manager | The operator, once, during setup |
-| Batch password | The `initial` user on raw nodes built from one batch | Encrypted inside the batch store | Nobody, normally. Ansible uses it as the become password |
+| Vault passphrase, vault ID `batches` | The encrypted batch file | `~/.config/uc-controller/vault/batches` (mode `600`) and the password manager | Ansible, to decrypt the file |
+| Batch passphrase, one per batch | The `initial` user on every node of that batch | Inside the encrypted batch file, and the password manager | Ansible, as the become password |
 
-The `raw_batch` vault password is the lock on the batch store. It is not a batch password, despite the name. Confusing the two is how batch `raw-2026-11-17-manual` came to hold a vault password.
+They are never the same, and they never go into each other's prompts. A vault ID is a label on an encrypted file that tells Ansible which vault password opens it <a name="apa-ansible-vault-passwords-citation"></a>([Ansible project contributors, n.d.-c](#apa-ansible-vault-passwords-reference)). The file's first line names it, as in `$ANSIBLE_VAULT;1.2;AES256;batches`.
 
 ## Where things are
 
 | Item | Location | Notes |
 | --- | --- | --- |
-| Vault password client | `scripts/vault-client.py` | Ansible calls it to read vault passwords. It must stay executable: if it is not, Ansible uses the script's text as the vault password, and `new_raw_batch.py` refuses to run |
-| Vault password files | `~/.config/uc-controller/vault/<vault-id>` | Must be mode `600`, or the client refuses to read them |
-| Vault IDs Ansible loads | `vault_identity_list` in `ansible.cfg` | Only `raw_batch` today. `node` is added when the first node secret exists |
-| Batch tool | `scripts/new_raw_batch.py` | Creates, imports, lists, rehashes and retires batches |
-| Batch store | `secrets/raw-batches/` | `index.yml` plus one `<batch-id>.vault` per active batch, such as `raw-2026-11-18-01.vault` |
-| Batch index | `secrets/raw-batches/index.yml` | Not encrypted. Lists batches, the current batch, and `meets_min_length` for each |
+| Batch file | `inventories/raw/group_vars/admitted/vault.yml` | Encrypted as a whole, committed. Holds `vault_raw_batch_passwords`, one entry per batch ID |
+| Vault passphrase file | `~/.config/uc-controller/vault/batches` | Mode `600`, never in the repository |
+| Where Ansible finds it | `vault_identity_list = batches@~/.config/uc-controller/vault/batches` in `ansible.cfg` | Every Ansible run reads it, so every operator needs the file |
+| Become password | `inventories/raw/group_vars/admitted/main.yml` | `ansible_become_password: "{{ vault_raw_batch_passwords[raw_node_batch] }}"` |
 | Trusted host keys | `ssh/known_hosts` | Public keys, committed, keyed by hostname |
 
-The batch store exists only on branches that include it. If `ls secrets/raw-batches/` finds nothing, you are on a branch without it.
+## Before you start
 
-## Set up the vault passwords
-
-This is done once per operator, for each vault ID. Run it from the root of the repository with the Ansible venv active.
-
-### The first operator
-
-#### Create the raw_batch vault password
+Work from the root of the uc-controller repository, with the Ansible virtual environment active:
 
 ```bash
-python3 scripts/vault-client.py --init --vault-id raw_batch
+cd ~/areas/development/uc-controller
+source ~/.venvs/ansible/current/bin/activate
+which ansible-vault openssl
+```
+
+Batch IDs have the form `raw-YYYY-MM-DD-NN`, such as `raw-2026-11-18-01`.
+
+Do not paste any passphrase into a chat or a Claude Code session, and do not run these commands with the `!` prefix in Claude Code: the output would enter the conversation.
+
+## Make passphrases with dice
+
+Make one passphrase for the vault, once, and one for each batch.
+
+1. Use the EFF large wordlist. Roll five dice for each word and look the number up in the list. Six words give about 77 bits of entropy <a name="apa-bonneau-2016-citation"></a>([Bonneau, 2016](#apa-bonneau-2016-reference)).
+2. Separate the words with single spaces.
+3. Add a number at the end, from one more roll. The privileged access policy asks for privileged passwords that are generated and contain letters and digits (PA-PWD-01) <a name="apa-steel-privileged-access-citation-2"></a>([Steel, 2026a](#apa-steel-privileged-access-reference)). The contract asks for at least 15 characters (RN-ACC-08), which six words always exceed.
+4. Avoid the characters `"` and `\`. The batch passphrase is written inside double quotes in YAML. EFF words contain only lower-case letters and hyphens.
+5. Save each passphrase in the password manager straight away, as `dev vault batches` and `dev batch raw-2026-11-18-01`. The prefix names the environment the passphrase belongs to, `dev` here, so that `stage` and `prod` passphrases, when they exist, are never confused with these.
+
+NIST recommends long passphrases over composition rules, and does not require periodic changes <a name="apa-nist-800-63b-citation"></a>([National Institute of Standards and Technology [NIST], 2025](#apa-nist-800-63b-reference)).
+
+An example of the form only. Do not use it:
+
+```text
+tannery unbiased pebble canopy mullets gutter 4
+```
+
+## Store the vault passphrase
+
+Once per operator and workstation. The passphrase is read with a hidden prompt, inside a subshell, so it is not left in a shell variable or the history:
+
+```bash
+mkdir -p ~/.config/uc-controller/vault
+chmod 700 ~/.config/uc-controller/vault
+(umask 077; read -rsp 'Vault passphrase: ' p && printf '%s\n' "$p" > ~/.config/uc-controller/vault/batches; echo)
+stat -c '%a %n' ~/.config/uc-controller/vault/batches
 ```
 
 Output:
 
 ```text
-Wrote a new vault password for raw_batch to /home/initial/.config/uc-controller/vault/raw_batch
-Copy it into the password manager; it is not shown here.
+Vault passphrase:
+600 /home/initial/.config/uc-controller/vault/batches
 ```
 
-If the file already exists, `--init` refuses and changes nothing:
+Paste the vault passphrase from the password manager at the prompt. The hidden prompt keeps the passphrase out of the shell history. If you ever write the file another way, with the passphrase on the command line, start the command with a space. Bash then leaves it out of the history, but only when `echo $HISTCONTROL` shows `ignorespace` or `ignoreboth`. Check with `history` afterwards that the command is not there.
 
-```text
-error: /home/initial/.config/uc-controller/vault/raw_batch already exists; remove it first to replace it
-```
+Ansible reads a vault password from a plain file like this one, as long as the file is not executable. An executable file is run as a script instead <a name="apa-ansible-vault-passwords-citation-2"></a>([Ansible project contributors, n.d.-c](#apa-ansible-vault-passwords-reference)).
 
-Removing it is only right when nothing is encrypted with it yet. Otherwise follow Change a vault password.
+## Create the batch file
 
-#### Create the node vault password
+Only when the repository has no `inventories/raw/group_vars/admitted/vault.yml` yet. Otherwise add the batch to the existing file, as in [Add, view and retire batches](#add-view-and-retire-batches).
 
 ```bash
-python3 scripts/vault-client.py --init --vault-id node
+ansible-vault create --encrypt-vault-id batches inventories/raw/group_vars/admitted/vault.yml
+```
+
+`ansible-vault create` opens your editor (`$EDITOR`, or `vi`) on an empty file <a name="apa-ansible-vault-cli-citation"></a>([Ansible project contributors, n.d.-a](#apa-ansible-vault-cli-reference)). Type the following, pasting the batch passphrase from the password manager, then save and quit:
+
+```yaml
+vault_raw_batch_passwords:
+  raw-2026-11-18-01: "tannery unbiased pebble canopy mullets gutter 4"
+```
+
+The file is encrypted as a whole when the editor closes. While it is open, `ansible-vault` keeps the plain text only in a temporary file, which it deletes afterwards. The variable name starts with `vault_` by convention, so it is clear where it comes from <a name="apa-ansible-vault-encrypting-citation"></a>([Ansible project contributors, n.d.-b](#apa-ansible-vault-encrypting-reference)).
+
+Commit the file:
+
+```bash
+git add inventories/raw/group_vars/admitted/vault.yml
+git commit -m "Add batch raw-2026-11-18-01"
+```
+
+## Check the batch file
+
+```bash
+head -1 inventories/raw/group_vars/admitted/vault.yml
 ```
 
 Output:
 
 ```text
-Wrote a new vault password for node to /home/initial/.config/uc-controller/vault/node
-Copy it into the password manager; it is not shown here.
+$ANSIBLE_VAULT;1.2;AES256;batches
 ```
 
-Each command writes a new random 40-character password to `~/.config/uc-controller/vault/<vault-id>` and does not print it. Copy each one into the password manager as its own entry, named after its vault ID.
-
-To copy without showing the password on screen:
+To list the batch IDs without showing any passphrase:
 
 ```bash
-xclip -selection clipboard < ~/.config/uc-controller/vault/raw_batch
+ansible-vault view inventories/raw/group_vars/admitted/vault.yml | sed -n 's/^  \([^:]*\):.*/\1/p'
 ```
 
-If you use `cat` instead, start the command with a space so bash leaves it out of history. That works only when `echo $HISTCONTROL` shows `ignorespace` or `ignoreboth`.
+Output:
 
-```bash
-echo $HISTCONTROL
+```text
+raw-2026-11-18-01
 ```
 
-With a space before the command:
+## Make the hash for uc-ventoy
 
 ```bash
- cat ~/.config/uc-controller/vault/raw_batch
+openssl passwd -6
 ```
 
-Then run `history` to confirm the command is not there, and `clear` to empty the screen.
+It asks for the password without echoing it. Paste the batch passphrase. It prints a SHA-512 crypt hash <a name="apa-openssl-passwd-citation"></a>([OpenSSL Project, n.d.](#apa-openssl-passwd-reference)):
 
-### Every other operator
-
-```bash
-python3 scripts/vault-client.py --set --vault-id raw_batch
-python3 scripts/vault-client.py --set --vault-id node
+```text
+Password:
+$6$<salt>$<hash>
 ```
 
-Each asks for that vault ID's password twice. Paste it from the password manager. The client never takes a password on the command line, and refuses one shorter than 20 characters.
+Put it, with the batch ID, into uc-ventoy's `raw-node-input.yml`, then build the nodes:
 
-### Check the setup
+```yaml
+initial_password_hash: "$6$<salt>$<hash>"
+password_batch: "raw-2026-11-18-01"
+```
 
-`--status` checks one vault ID at a time. Without `--vault-id` it checks `raw_batch`.
+uc-ventoy writes `password_batch` on each node as `RAW_NODE_PASSWORD_BATCH` in `/etc/raw-node/raw-node.conf`, so you can tell at the console which batch a node has.
+
+Do not use `openssl passwd -6 -stdin` for this: it hashes every line it reads, so a password entered twice gives two hashes. Every run gives a new salt and a different hash. All of them are valid for the same passphrase.
+
+## Admit the nodes
+
+Admission is described in `en/docs/admitting-a-raw-node.md`. In short, the operator reads each node's address and host key fingerprint at its console, lists them in a candidates file, and names the batch the nodes were built with:
 
 ```bash
-python3 scripts/vault-client.py --status --vault-id raw_batch
-python3 scripts/vault-client.py --status --vault-id node
+ansible-playbook -i inventories/raw -i inventories/onboard/dev \
+  ingress/playbooks/05_admit.yml -e admit_batch_id=raw-2026-11-18-01 -e @candidates.yml
+```
+
+Admission refuses a batch that is not in the batch file, reports RN-ACC-08 as not met when the batch passphrase is under 15 characters, and records the batch on each node's inventory entry as `raw_node_batch`. From then on, Ansible uses that batch's passphrase as the node's become password.
+
+## Check a batch against the vault passphrases
+
+A batch passphrase must never be a vault passphrase. This compares every batch passphrase in the batch file with every vault passphrase file in `~/.config/uc-controller/vault/`, and prints only batch IDs and vault IDs, never a passphrase:
+
+```bash
+ansible-vault view inventories/raw/group_vars/admitted/vault.yml | python3 -c '
+import pathlib, sys, yaml
+batches = yaml.safe_load(sys.stdin)["vault_raw_batch_passwords"]
+vaults = {p.name: p.read_text().strip() for p in pathlib.Path.home().joinpath(".config/uc-controller/vault").iterdir()}
+for batch, passphrase in batches.items():
+    same = [name for name, value in vaults.items() if value == passphrase]
+    print(batch, ("SAME as the vault passphrase for: " + ", ".join(same)) if same else "differs from every vault passphrase")
+'
 ```
 
 Output example:
 
 ```text
-raw_batch: set up (/home/initial/.config/uc-controller/vault/raw_batch)
-node: set up (/home/initial/.config/uc-controller/vault/node)
+raw-2026-11-18-01 differs from every vault passphrase
 ```
 
-It prints no secret, and exits 1 for a vault ID that is not set up.
+A batch reported `SAME` must be replaced: see [If a secret is exposed](#if-a-secret-is-exposed). Run the check after adding a batch, and before setting a batch passphrase on a node.
 
-## Create a batch
+## Set a batch passphrase on an existing node
 
-A batch password is made by `new_raw_batch.py`, never by hand and never copied from the password manager. The script generates a random password, encrypts it into the batch store with the `raw_batch` vault password, and gives you the hash to build nodes with.
+For a node built with another password. First [check the batch against the vault passphrases](#check-a-batch-against-the-vault-passphrases), and stop if it reports `SAME`. The node's SSH accepts keys only, so log in with the controller key:
 
 ```bash
-python3 scripts/new_raw_batch.py
-python3 scripts/new_raw_batch.py --list
+ssh -i ~/.ssh/gradus-raw-initial-id_ed25519 -o IdentitiesOnly=yes initial@192.168.1.109
+passwd
+sudo -k && sudo -v
+exit
 ```
 
-With no action option, `new_raw_batch.py` creates a batch:
-- It generates a password of 24 letters and digits.
-- It stores the password as `secrets/raw-batches/raw-<today>-NN.vault`, with `NN` the first number not used before that day, and records the batch in `index.yml` with `meets_min_length: true`.
-- It makes the new batch current.
-- It prints two lines, ready for uc-ventoy's `raw-node-input.yml`, and nothing else on standard output:
+At `passwd`, give the node's current password, then paste the batch passphrase twice. At `sudo -v`, paste the batch passphrase again. It must be accepted.
 
-```text
-password_batch: "raw-2026-11-18-01"
-initial_password_hash: "$6$<salt>$<hash>"
-```
+Run `clear` afterwards, and clear the clipboard if your password manager does not.
 
-Optional:
-- `--batch-id ID` names the batch.
-- `--length N` makes a longer password (at least 24).
-- `--show-password` also prints the password once, on standard error, for someone who needs it at a console.
+## Test become by hand
 
-`--list` should show the new batch with a `*`, as current. Commit `secrets/raw-batches/` afterwards.
-
-### Build nodes with the batch
-
-1. Copy the two printed lines into uc-ventoy's `raw-node-input.yml`. uc-ventoy uses `initial_password_hash` for the `initial` user, and writes `password_batch` on the node as `RAW_NODE_PASSWORD_BATCH` in `/etc/raw-node/raw-node.conf`, so you can tell at the console which batch a node has.
-2. Build nodes from that stick.
-3. Admit them with `ingress/playbooks/05_admit.yml`. Admission records the batch on each node's inventory entry as `raw_node_batch`: the current batch, or the one given with `-e admit_batch_id=...`. From then on Ansible reads that node's become password from that batch, even after another batch becomes current.
-
-To build more nodes of an existing batch later, print a fresh hash of the same password with `python3 scripts/new_raw_batch.py --hash <batch-id>`. Every hash gets a new salt, and all of them are valid.
-
-### Importing an existing password
-
-Use `--import` only when a node was already built with a password that is not in the store.
+This checks a batch passphrase against a node without admitting it. Ansible decrypts the file, picks the batch's passphrase, connects as `initial`, and becomes root. Activate the Ansible virtual environment first, if this shell has not:
 
 ```bash
-python3 scripts/new_raw_batch.py --import <batch-id> --current
-```
-
-- A password under 15 characters is stored with a warning and recorded as `meets_min_length: false`. Admission then reports RN-ACC-08 as not met for every node of that batch.
-- A password with characters other than letters and digits is refused.
-- At the import prompt, paste the node's own password and nothing else. Never paste a vault password there.
-
-## View a batch password
-
-You rarely need to. The main reason is setting a password on a node by hand.
-
-```bash
-cat secrets/raw-batches/index.yml
-ls secrets/raw-batches/
-ansible-vault view secrets/raw-batches/<batch-id>.vault
-```
-
-Run it from the root of the repository: `ansible-vault` finds the vault client through `ansible.cfg` there. The batch password is printed in plain text. Run `clear` afterwards, and never paste it into a chat or a Claude Code session.
-
-## Check a batch against the vault passwords
-
-This shows whether a batch password is the same as a vault password, without printing either one:
-
-```bash
-batch=secrets/raw-batches/<batch-id>.vault
-for id in raw_batch node; do
-  if [ "$(ansible-vault decrypt --output - "$batch")" = "$(cat ~/.config/uc-controller/vault/$id)" ]; then
-    echo "SAME as the $id vault password: retire this batch"
-  else
-    echo "different from the $id vault password"
-  fi
-done
-```
-
-## Set a batch password on a node
-
-Do this only when a node's password does not match its batch.
-
-1. Check the batch with the command above. If it matches either vault password, stop: retire the batch and create a new one.
-2. Log into the node as `initial`.
-3. Run `passwd`, enter the old password, then paste the batch password twice.
-4. Check it with `sudo -k && sudo -v`.
-5. Run `clear` on your own machine.
-
-## Retire a batch
-
-```bash
-python3 scripts/new_raw_batch.py --retire <batch-id>
-```
-
-`--retire` refuses in two cases:
-- The batch is current. Make another batch current first, with `--set-current`.
-- Any host in a stage inventory still has `raw_node_batch` set to the batch. It names those hosts. Move those nodes to a newer batch first, or pass `--force` when the batch is compromised and must go regardless.
-
-Retiring deletes the batch's encrypted file and marks it retired in `index.yml`. The ID is never used again. Git history still holds the encrypted file.
-
-## The node vault
-
-The `node` vault ID is for secrets of single nodes, such as the password onboarding will give each node's `initial` user in place of the batch password (OE-ACC-03). The vault password can be set up now, as above, but nothing uses it yet:
-
-- No script creates node secrets. The onboarding kickoff decides their layout and adds the tool. The place reserved for them is `secrets/nodes/<hostname>.vault`.
-- `ansible.cfg` names only `raw_batch` in `vault_identity_list`, so playbooks cannot decrypt a `node` file yet.
-- `.gitignore` allows only `secrets/raw-batches/index.yml` and `secrets/raw-batches/*.vault` under `secrets/`, so a file in `secrets/nodes/` would not be committed.
-
-Wait for the onboarding kickoff rather than making node files by hand. If you need one before then, the first two changes are:
-
-```ini
-# ansible.cfg, [defaults]
-vault_identity_list = raw_batch@scripts/vault-client.py, node@scripts/vault-client.py
-```
-
-```gitignore
-# .gitignore, after the secrets/raw-batches lines
-!/secrets/nodes/
-/secrets/nodes/*
-!/secrets/nodes/*.vault
-```
-
-Then make the file with a generated password, piped straight into `ansible-vault`. The password is never on screen, in the shell history or in a plain file:
-
-```bash
-mkdir -p secrets/nodes
-python3 -c "import secrets, string; a = string.ascii_letters + string.digits; print(''.join(secrets.choice(a) for _ in range(24)))" \
-  | ansible-vault encrypt --vault-id node@scripts/vault-client.py --encrypt-vault-id node \
-      --output secrets/nodes/<hostname>.vault -
-head -1 secrets/nodes/<hostname>.vault
+. ~/.venvs/ansible/current/bin/activate
+ansible all -i 192.168.1.109, -u initial \
+  --private-key ~/.ssh/gradus-raw-initial-id_ed25519 \
+  --ssh-common-args='-o IdentitiesOnly=yes' \
+  -e @inventories/raw/group_vars/admitted/vault.yml \
+  -e 'ansible_become_password={{ vault_raw_batch_passwords["raw-2026-11-18-01"] }}' \
+  --become -m ansible.builtin.raw -a 'id -u'
 ```
 
 Output:
 
 ```text
-$ANSIBLE_VAULT;1.2;AES256;node
+192.168.1.109 | CHANGED | rc=0 >>
+
+0
+Shared connection to 192.168.1.109 closed.
 ```
 
-The first line must name `node`. If it names `raw_batch`, the file is locked with the wrong vault password. A playbook reads the file with `lookup('ansible.builtin.unvault', 'secrets/nodes/<hostname>.vault') | trim`.
+`0` is root's user ID, so become worked. The last line comes from SSH and is harmless.
 
-## Change a vault password
+## Add, view and retire batches
 
-Change a vault password on a schedule you choose, and at once if it was ever exposed, typed in the wrong place or stored anywhere but your password manager and its vault file.
+### Add a batch
 
-1. Generate a new password for that vault ID and save it in your password manager as a new entry. Keep the old entry until step 5 passes. For example, without showing it: `python3 -c "import secrets, string; a = string.ascii_letters + string.digits; print(''.join(secrets.choice(a) for _ in range(40)))" | xclip -selection clipboard`, then paste it into the password manager.
-2. List everything encrypted on the branch, both whole files and inline `!vault` values, and keep the files whose first line names that vault ID:
+Make its passphrase with dice, then add one line with `ansible-vault edit` and commit:
+
+```bash
+ansible-vault edit inventories/raw/group_vars/admitted/vault.yml
+```
+
+```yaml
+vault_raw_batch_passwords:
+  raw-2026-11-18-01: "..."
+  raw-2026-12-02-01: "..."
+```
+
+### View the file
+
+`ansible-vault view` prints every passphrase in plain text. Run `clear` afterwards.
+
+```bash
+ansible-vault view inventories/raw/group_vars/admitted/vault.yml
+```
+
+### Retire a batch
+
+First check that no host still uses it, then delete its line with `ansible-vault edit` and commit:
+
+```bash
+grep -rn 'raw_node_batch: *raw-2026-11-18-01' inventories/
+```
+
+No output means no host names it. Nothing enforces this check, so run it every time. Git history keeps the old encrypted file, so a retired passphrase is never used again.
+
+## Change the vault passphrase
+
+Do this on a schedule you choose, and at once if the vault passphrase was exposed.
+
+1. Make a new passphrase with dice, and save it in the password manager as a new entry. Keep the old entry until the file opens with the new one.
+2. Re-encrypt the file. The old passphrase comes from its file, through `ansible.cfg`, and the new one from a prompt <a name="apa-ansible-vault-cli-citation-2"></a>([Ansible project contributors, n.d.-a](#apa-ansible-vault-cli-reference)):
+
    ```bash
-   grep -rl '^\$ANSIBLE_VAULT;1.2;AES256;<vault-id>' --exclude-dir=.git .
-   grep -rn '!vault' --include='*.yml' --exclude-dir=.git .
+   ansible-vault rekey --new-vault-id batches@prompt inventories/raw/group_vars/admitted/vault.yml
    ```
-3. Rekey them. The old password comes from the vault client, and the new one from a prompt, where you paste it from the password manager:
-   ```bash
-   ansible-vault rekey --vault-id <vault-id>@scripts/vault-client.py \
-     --new-vault-id <vault-id>@prompt <file> ...
-   ```
-   Inline `!vault` values are not handled by `rekey`: decrypt and re-encrypt each with `ansible-vault encrypt_string`.
-4. Replace the vault password file. `--set` refuses while the old file exists, so remove it first:
-   ```bash
-   rm ~/.config/uc-controller/vault/<vault-id>
-   python3 scripts/vault-client.py --set --vault-id <vault-id>
-   ```
-5. View one rekeyed file to prove it opens with the new password, and for `raw_batch` run `python3 scripts/new_raw_batch.py --list`. `python3 tests/run_tests.py` does not test this: the tests use a temporary vault of their own.
-6. Commit, then delete the old entry from your password manager.
 
-Older commits still hold files encrypted with the old password. That is acceptable only because the old password is retired and never reused.
+3. Replace the passphrase file: remove the old one with `rm ~/.config/uc-controller/vault/batches`, then [store the vault passphrase](#store-the-vault-passphrase) again.
+4. List the batch IDs, as in [Check the batch file](#check-the-batch-file), to prove the file opens.
+5. Commit the file, then delete the old entry from the password manager.
+
+Older commits still hold the file encrypted with the old passphrase. That is acceptable only because the old passphrase is never used again.
+
+Today the batch file is the only file encrypted with `batches`. If more appear, rekey them all in step 2. To find every encrypted file and every inline encrypted value:
+
+```bash
+grep -rl '^\$ANSIBLE_VAULT;1.2;AES256;batches' --exclude-dir=.git .
+grep -rn '!vault' --include='*.yml' --exclude-dir=.git .
+```
+
+`ansible-vault rekey` handles whole files only. An inline `!vault` value must be decrypted and encrypted again with `ansible-vault encrypt_string`.
+
+## Node secrets, later
+
+Secrets of one node, such as the password onboarding will give each node in place of the batch passphrase, will follow the same pattern with their own vault ID, `node`, and their own passphrase file, `~/.config/uc-controller/vault/node`. Nothing needs them yet. The onboarding work will say where their file lives, and will add `node` to `vault_identity_list`.
+
+## Troubleshooting
+
+| Message | Cause | Fix |
+| --- | --- | --- |
+| `The vault password file ... batches was not found`, on any Ansible run | No vault passphrase file on this workstation | [Store the vault passphrase](#store-the-vault-passphrase) |
+| `Decryption failed` | The passphrase file does not match the one the batch file was encrypted with | Check it against the password manager entry `dev vault batches` |
+| `Batch ... is not in inventories/raw/group_vars/admitted/vault.yml` | The `admit_batch_id` given is not in the batch file | [Check the batch file](#check-the-batch-file), or add the batch |
+| `Incorrect sudo password` | The passphrase on the node is not the batch's | [Set it on the node](#set-a-batch-passphrase-on-an-existing-node), or admit with the right batch |
+| `Permission denied (publickey)` | Wrong key or user | Use `~/.ssh/gradus-raw-initial-id_ed25519` and `initial` |
 
 ## Rules
 
-- Vault passwords live in the password manager and their mode `600` vault files only, never in the repo, a shell history, a note or a chat.
-- A batch password is never a vault password, and never a password used anywhere else.
-- Only paste a password into the prompt that asks for that exact password.
-- Never print a password where a Claude Code session or a log can see it. Ask sessions for commands, not values.
-- Run `clear` after viewing any secret.
+- A passphrase is made with dice, never chosen, and never used for anything else.
+- The vault passphrase lives only in the password manager and its mode `600` file. A batch passphrase lives only in the password manager and the encrypted file.
+- Paste a passphrase only into the prompt that asks for that exact passphrase.
+- Never show a passphrase where a Claude Code session or a log can see it. Ask sessions for commands, not values.
+- Run `clear` after viewing a passphrase.
 
 ## If a secret is exposed
 
 | What was exposed | Do this |
 | --- | --- |
-| A batch password | Retire the batch with `--force`, create a new batch, and set the new password on every node in the old batch |
-| The `raw_batch` vault password | Change it as above, then treat every batch as exposed: retire and replace them all |
-| The `node` vault password | Change it as above, and replace every secret it encrypted |
-| A batch holds a vault password | Change that vault password first, then replace the batch |
+| A batch passphrase | Make a new batch, set its passphrase on every node of the old batch, change their `raw_node_batch`, then retire the old batch |
+| The vault passphrase | [Change it](#change-the-vault-passphrase), then treat every batch passphrase as exposed |
+| The `node` vault passphrase, once node secrets exist | Change it the same way, and replace every secret it encrypted |
+| A batch passphrase that is the same as a vault passphrase | Change that vault passphrase first, then replace the batch as for an exposed batch passphrase |
 
 ## Open items
 
-- Decide whether to rename the `raw_batch` vault ID to something that cannot be mistaken for a batch. Vault IDs may use lower-case letters, digits and underscores, so `batch_store` works but `batch-store` does not. Each encrypted file names its vault ID in its first line, so a rename means rekeying every batch file to the new ID, and changing `ansible.cfg`, `vault-client.py` and `new_raw_batch.py`.
-- Record the outcome of the investigation into how batch `raw-2026-11-17-manual` came to hold the vault password.
-- The layout and tool for node secrets, from the onboarding kickoff (see The node vault).
+- Record the outcome of the investigation into how batch `raw-2026-11-17-manual`, from the earlier script-based store, came to hold a vault password. The batch was retired with the store.
+
+## Resources
+
+### Contracts and policy
+
+- [Raw node contract](#apa-steel-raw-node-contract-reference)
+- [Privileged access policy](#apa-steel-privileged-access-reference)
+
+### Ansible Vault
+
+- [ansible-vault command](#apa-ansible-vault-cli-reference)
+- [Encrypting content with Ansible Vault](#apa-ansible-vault-encrypting-reference)
+- [Managing vault passwords](#apa-ansible-vault-passwords-reference)
+
+### Passphrases and hashes
+
+- [EFF wordlists for random passphrases](#apa-bonneau-2016-reference)
+- [NIST SP 800-63B-4](#apa-nist-800-63b-reference)
+- [openssl-passwd](#apa-openssl-passwd-reference)
+
+## References
+
+<a name="apa-ansible-vault-cli-reference"></a>Ansible project contributors. (n.d.-a). *ansible-vault*. Ansible Community Documentation. Retrieved November 18, 2026, from https://docs.ansible.com/projects/ansible/latest/cli/ansible-vault.html
+[Return to citation](#apa-ansible-vault-cli-citation)
+
+<a name="apa-ansible-vault-encrypting-reference"></a>Ansible project contributors. (n.d.-b). *Encrypting content with Ansible Vault*. Ansible Community Documentation. Retrieved November 18, 2026, from https://docs.ansible.com/projects/ansible/latest/vault_guide/vault_encrypting_content.html
+[Return to citation](#apa-ansible-vault-encrypting-citation)
+
+<a name="apa-ansible-vault-passwords-reference"></a>Ansible project contributors. (n.d.-c). *Managing vault passwords*. Ansible Community Documentation. Retrieved November 18, 2026, from https://docs.ansible.com/projects/ansible/latest/vault_guide/vault_managing_passwords.html
+[Return to citation](#apa-ansible-vault-passwords-citation)
+
+<a name="apa-bonneau-2016-reference"></a>Bonneau, J. (2016, July 19). *Deep dive: EFF's new wordlists for random passphrases*. Electronic Frontier Foundation. https://www.eff.org/deeplinks/2016/07/new-wordlists-random-passphrases
+[Return to citation](#apa-bonneau-2016-citation)
+
+<a name="apa-nist-800-63b-reference"></a>National Institute of Standards and Technology. (2025). *Digital identity guidelines: Authentication and authenticator management* (NIST Special Publication 800-63B-4). https://pages.nist.gov/800-63-4/sp800-63b/authenticators
+[Return to citation](#apa-nist-800-63b-citation)
+
+<a name="apa-openssl-passwd-reference"></a>OpenSSL Project. (n.d.). *openssl-passwd* (OpenSSL 3.0 manual). Retrieved November 18, 2026, from https://docs.openssl.org/3.0/man1/openssl-passwd/
+[Return to citation](#apa-openssl-passwd-citation)
+
+<a name="apa-steel-privileged-access-reference"></a>Steel, C. (2026a). *Privileged access policy* (Version 0.1.0) [Draft]. uc-contracts. https://github.com/steelcj/uc-contracts/blob/main/en/docs/node-policies/privileged-access/uc-privileged-access-policy.md
+[Return to citation](#apa-steel-privileged-access-citation)
+
+<a name="apa-steel-raw-node-contract-reference"></a>Steel, C. (2026b). *Raw node contract* (Version 0.3.1) [Draft]. uc-contracts. https://github.com/steelcj/uc-contracts/blob/main/en/docs/node-onboarding-pipeline/1-raw-node-egress/uc-raw-node-contract.md
+[Return to citation](#apa-steel-raw-node-contract-citation)
+
+## Changelog
+
+| Date | Notes |
+| --- | --- |
+| 2026-11-18 | Password manager entries named `dev ...`, the prefix naming the environment. Added: a check that no batch passphrase is a vault passphrase, run before setting one on a node; advice on keeping a passphrase out of the shell history; the venv step and the real output of the become test; finding every encrypted file when changing the vault passphrase; the rule to ask sessions for commands, not values; two rows on exposed secrets; and the open item on `raw-2026-11-17-manual`. From the earlier guide on `main` and the notes in `plain-vault-batch-passwords.md` |
+| 2026-11-18 | Rewritten for plain Ansible Vault, replacing the guide to `vault-client.py` and `new_raw_batch.py`, which were removed. House style applied: no heading numbers, Citation Anchor Pairs, Abstract, Sources and acknowledgements, Resources and Changelog. Admission points to `admitting-a-raw-node.md` and the candidates file |

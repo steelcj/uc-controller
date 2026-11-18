@@ -1,0 +1,42 @@
+# note-unknown-field.yml
+#
+# An extra field a later minor version may add: a note, not a failure.
+#
+# expect-exit: 0
+# expect: note | RN-REP-01 | ssh_listen_addresses
+deb13-vt-a1b2:
+  contract: 0.3.0
+  baseline: 0.4.0
+  timestamp: 2026-11-17T19:35:00-05:00
+  machine_id: 4c1f0a9e2b7d4e8f9a0b1c2d3e4f5a6b
+  user: initial
+  sudo: true
+  sudo_nopasswd: false
+  ssh_port: 22
+  ssh_password_auth: false
+  ssh_host_keys:
+    - type: ssh-ed25519
+      fingerprint: SHA256:ExWprdXOZz1KEXm3fRtwUJkg7e46NzGcyh+EB6N/8Ao
+    - type: ecdsa-sha2-nistp256
+      fingerprint: SHA256:rXx1l8s9oVMd3ekCErWO1PPP48ntGF2RaPyS+Sv8QVY
+  ssh_listen_addresses: [0.0.0.0]
+  firewall: foomuuri
+  firewall_active: true
+  python: /usr/bin/python3
+  interfaces:
+    - name: enp0s31f6
+      type: ethernet
+      mac: 8c:8c:aa:11:22:33
+      state: up
+      default_route4: true
+      default_route6: true
+      ip: [192.0.2.10]
+      ip6: [2001:db8::10]
+    - name: wlp0s20f3
+      type: wireless
+      mac: 70:cf:49:44:55:66
+      state: down
+      default_route4: false
+      default_route6: false
+      ip: []
+      ip6: []

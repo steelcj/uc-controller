@@ -13,8 +13,21 @@
 # ansible_user for the Incus group). This playbook carries those through
 # promotion rather than assuming SSH.
 
+# Raw nodes admitted by 05_admit.yml (the admitted group) meet the raw node
+# contract and are reached as initial with a password for sudo. This
+# playbook still onboards over a root connection, so it leaves them out.
+- name: Leave out admitted raw contract nodes
+  hosts: localhost
+  gather_facts: false
+  become: false
+  tasks:
+    - name: Say that admitted nodes are not onboarded here
+      ansible.builtin.debug:
+        msg: "Skipping admitted nodes ({{ groups['admitted'] | join(', ') }}): onboarding contract nodes comes in a later kickoff."
+      when: groups['admitted'] | default([]) | length > 0
+
 - name: Confirm raw nodes are reachable and promote them
-  hosts: raw
+  hosts: raw:!admitted
   gather_facts: no
   become: no
 

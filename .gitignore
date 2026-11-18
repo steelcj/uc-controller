@@ -1,6 +1,9 @@
 __pycache__/
 
-# Generated raw inventories, rewritten by ingress/playbooks/00_discover.yml.
+# Generated raw inventories, rewritten by 00_discover.yml and 05_admit.yml.
 inventories/raw/discovered.yml
 inventories/raw/cloud.yml
+# Written by ingress/playbooks/05_admit.yml.
+inventories/raw/admitted.yml
 /resume.txt
+
