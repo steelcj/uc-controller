@@ -3,8 +3,9 @@
 
     python3 tests/run_tests.py          from the repository root, or anywhere
 
-The new_raw_batch.py end-to-end tests also need ansible-vault on PATH (the
-controller's Ansible virtual environment) and are skipped without it.
+The admission playbook test also needs ansible-playbook and ansible-vault on
+PATH (the controller's Ansible virtual environment) and is skipped without
+them. It uses a vault passphrase of its own, never the operator's.
 Exit status 0 when every test passes.
 """
 import sys

@@ -27,12 +27,14 @@
 # onboard_ssh_private_key_file:
 #
 #   ansible-playbook -i inventories/raw -i inventories/onboard/dev \
-#     ingress/playbooks/05_admit.yml -e admit_addresses=192.168.1.109
+#     ingress/playbooks/05_admit.yml -e admit_batch_id=raw-2026-11-18-01 \
+#     -e admit_addresses=192.168.1.109
 #   ... -e admit_from_discovered=true      every host in raw/discovered.yml
 #
 # Options:
 #   admit_expected_fingerprint  SHA256 fingerprint from the console; one candidate only
-#   admit_batch_id              batch the nodes were built with (default: current)
+#   admit_batch_id              batch the nodes were built with (required); its
+#                               passphrase must be in group_vars/admitted/vault.yml
 #   admit_ssh_port              expected ssh_port (default 22)
 #   admit_initial_username      expected initial_username (default initial)
 #
@@ -49,7 +51,7 @@
     admit_repo: "{{ admit_raw_dir | dirname | dirname }}"
     admit_admitted_file: "{{ admit_raw_dir }}/admitted.yml"
     admit_known_hosts: "{{ admit_repo }}/ssh/known_hosts"
-    admit_batch_store: "{{ admit_repo }}/secrets/raw-batches"
+    admit_vault_file: "{{ admit_raw_dir }}/group_vars/admitted/vault.yml"
     admit_python: "{{ ansible_playbook_python }}"
     admit_port: "{{ admit_ssh_port | default(22) | int }}"
     admit_user: "{{ admit_initial_username | default('initial') }}"
@@ -80,27 +82,41 @@
           -e admit_addresses=ADDRESS[,ADDRESS...] or -e admit_from_discovered=true.
         quiet: true
 
-    - name: Read the batch index
-      ansible.builtin.set_fact:
-        admit_index: "{{ lookup('ansible.builtin.file', admit_batch_store ~ '/index.yml') | from_yaml }}"
-
-    - name: Choose the batch the candidates were built with
-      ansible.builtin.set_fact:
-        admit_batch: "{{ admit_batch_id | default(admit_index.current) }}"
-
-    # meets_min_length has no default: an entry without it is an error.
-    - name: Require an active batch with a stored password and a recorded length check
+    # No default: the batch is named on every run.
+    - name: Require the batch the candidates were built with, and the batch file
       ansible.builtin.assert:
         that:
-          - admit_batch in admit_index.batches
-          - admit_index.batches[admit_batch].status == 'active'
-          - admit_index.batches[admit_batch].meets_min_length is boolean
-          - (admit_batch_store ~ '/' ~ admit_batch ~ '.vault') is file
+          - admit_batch_id is defined
+          - admit_batch_id | length > 0
+          - admit_vault_file is file
         fail_msg: >-
-          Batch {{ admit_batch }} is not an active batch with a password and a
-          meets_min_length value in secrets/raw-batches/. See
-          python3 scripts/new_raw_batch.py --list.
+          Give the batch the candidates were built with, as
+          -e admit_batch_id=raw-YYYY-MM-DD-NN, and keep its passphrase in
+          inventories/raw/group_vars/admitted/vault.yml.
         quiet: true
+
+    # The passphrases are group variables of admitted, which this play, on
+    # localhost, does not get. Load them here, and never log them.
+    - name: Read the batch passphrases
+      ansible.builtin.include_vars:
+        file: "{{ admit_vault_file }}"
+      no_log: true
+
+    - name: Require the batch in the batch file
+      ansible.builtin.assert:
+        that: admit_batch_id in vault_raw_batch_passwords
+        fail_msg: >-
+          Batch {{ admit_batch_id }} is not in
+          inventories/raw/group_vars/admitted/vault.yml. Add it with ansible-vault edit.
+        quiet: true
+
+    # RN-ACC-08 cannot be measured on the node; the controller measures the
+    # passphrase itself. Only the result is kept.
+    - name: Measure the batch passphrase against RN-ACC-08
+      ansible.builtin.set_fact:
+        admit_batch: "{{ admit_batch_id }}"
+        admit_batch_short: "{{ vault_raw_batch_passwords[admit_batch_id] | length < 15 }}"
+      no_log: true
 
     - name: Take candidates from admit_addresses
       ansible.builtin.set_fact:

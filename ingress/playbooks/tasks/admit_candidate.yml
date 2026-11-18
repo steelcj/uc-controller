@@ -131,16 +131,16 @@
     admit_fails: "{{ admit_report.findings | selectattr('severity', 'eq', 'fail') | list }}"
   when: admit_one.outcome == 'pending' and admit_report.result != 'pass'
 
-# RN-ACC-08 cannot be measured on the node: the controller knows whether the
-# batch password meets the length.
-- name: "{{ candidate }}: report a batch password under 15 characters"
+# RN-ACC-08 cannot be measured on the node: 05_admit.yml measured the batch
+# passphrase on the controller (admit_batch_short).
+- name: "{{ candidate }}: report a batch passphrase under 15 characters"
   ansible.builtin.set_fact:
     admit_one: >-
       {{ admit_one | combine({'findings': admit_one.findings + [{
            'severity': 'warning', 'clause': 'RN-ACC-08', 'field': 'initial_password',
-           'message': 'batch ' ~ admit_batch ~ ' has a password under 15 characters '
-                      '(meets_min_length: false); RN-ACC-08 is not met'}]}) }}
-  when: admit_one.outcome == 'pending' and not admit_index.batches[admit_batch].meets_min_length
+           'message': 'batch ' ~ admit_batch ~ ' has a passphrase under 15 characters; '
+                      'RN-ACC-08 is not met'}]}) }}
+  when: admit_one.outcome == 'pending' and admit_batch_short | bool
 
 # 4. Host keys: the confirmation must list exactly the keys the node presented.
 - name: "{{ candidate }}: fingerprint the scanned keys"

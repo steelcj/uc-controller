@@ -7,12 +7,3 @@ inventories/raw/cloud.yml
 inventories/raw/admitted.yml
 /resume.txt
 
-# Secrets. Only what scripts/new_raw_batch.py writes is committed: the index,
-# which holds no secret, and ansible-vault encrypted .vault files. Anything
-# else under secrets/, such as a decrypted copy, is ignored. Vault passwords
-# live outside the repository, in ~/.config/uc-controller/vault/.
-/secrets/*
-!/secrets/raw-batches/
-/secrets/raw-batches/*
-!/secrets/raw-batches/index.yml
-!/secrets/raw-batches/*.vault

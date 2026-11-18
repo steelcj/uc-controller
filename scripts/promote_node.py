@@ -227,11 +227,14 @@ def strict_settings(inventory: Path, groups: list[str], host: str, host_vars) ->
     checking is on.
     """
     merged: dict = {}
-    for group in ["all", "raw", *groups]:
-        for path in vars_files(inventory / "group_vars", group):
-            merged.update(load(path))
-    for path in vars_files(inventory / "host_vars", host):
-        merged.update(load(path))
+    # An ansible-vault encrypted file reads as a string, not a mapping, and is
+    # skipped: host key settings are never secret.
+    for path in [p for group in ["all", "raw", *groups]
+                 for p in vars_files(inventory / "group_vars", group)] \
+            + vars_files(inventory / "host_vars", host):
+        data = load(path)
+        if isinstance(data, dict):
+            merged.update(data)
     merged.update(host_vars or {})
     if not any(is_true(merged.get(key)) for key in STRICT_KEYS[:2]):
         return {}

@@ -1,7 +1,7 @@
 """Read every host from the static inventory files under inventories/.
 
-Shared by new_raw_batch.py (which batches hosts still use) and
-match_raw_identity.py (which hosts a raw node may already be). Read-only.
+Used by match_raw_identity.py, to find which hosts a raw node may already
+be. Read-only.
 
 Covered: the raw source files that list hosts (admitted.yml,
 discovered.yml, hand entries in hosts.yml), each stage's hosts.yml, and

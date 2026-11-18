@@ -1,7 +1,8 @@
 """End-to-end test of ingress/playbooks/05_admit.yml, offline.
 
 Copies the parts of the repository the play uses into a temporary
-directory, with its own vault password and batch, and puts stand-in ssh and
+directory, with its own vault passphrase file and an encrypted vault.yml of
+test batches, and puts stand-in ssh and
 ssh-keyscan programs first on PATH. They play the part of nodes with real,
 freshly generated host keys, so nothing on the network is contacted. The
 stand-in ssh enforces host key checking as ssh does: with
@@ -145,13 +146,24 @@ class AdmitPlaybook(unittest.TestCase):
             path.chmod(path.stat().st_mode | stat.S_IXUSR)
         cls.client_key = root / "client_key"
         cls.client_key.write_text("not used by the stand-in ssh\n")
-        cls.env = dict(os.environ, UC_VAULT_DIR=str(root / "vault"),
+        # A passphrase file of the test's own, named through the environment,
+        # which takes precedence over ansible.cfg: the operator's own
+        # ~/.config/uc-controller/vault/batches is never read.
+        vault_pass = root / "vault-batches"
+        vault_pass.write_text("test vault passphrase, not used anywhere else\n")
+        vault_pass.chmod(0o600)
+        cls.env = dict(os.environ, ANSIBLE_VAULT_IDENTITY_LIST=f"batches@{vault_pass}",
                        PATH=f"{cls.bin}{os.pathsep}{os.environ['PATH']}",
                        FAKE_NODES=str(root / "nodes.json"), ANSIBLE_NOCOLOR="1")
         cls.env.pop("ANSIBLE_CONFIG", None)
-        cls.run_cmd([sys.executable, "scripts/vault-client.py", "--init"])
-        cls.run_cmd([sys.executable, "scripts/new_raw_batch.py"])
-        cls.batch = yaml.safe_load((cls.repo / "secrets/raw-batches/index.yml").read_text())["current"]
+        cls.batch = "raw-2026-11-18-01"
+        batches = yaml.safe_dump({"vault_raw_batch_passwords": {
+            cls.batch: "tannery unbiased pebble canopy mullets gutter 4",
+            "raw-2026-11-18-short": "abc123"}})
+        vault_file = cls.repo / "inventories/raw/group_vars/admitted/vault.yml"
+        vault_file.unlink(missing_ok=True)
+        cls.run_cmd(["ansible-vault", "encrypt", "--encrypt-vault-id", "batches",
+                     "--output", str(vault_file), "-"], stdin=batches)
 
         cls.root = root
         cls.nodes = {}
@@ -169,9 +181,10 @@ class AdmitPlaybook(unittest.TestCase):
         cls.tmp.cleanup()
 
     @classmethod
-    def run_cmd(cls, argv, check=True, extra_env=None):
+    def run_cmd(cls, argv, check=True, extra_env=None, stdin=None):
         env = dict(cls.env, **(extra_env or {}))
-        result = subprocess.run(argv, cwd=cls.repo, env=env, capture_output=True, text=True)
+        result = subprocess.run(argv, cwd=cls.repo, env=env, capture_output=True, text=True,
+                                input=stdin)
         if check and result.returncode != 0:
             raise AssertionError(f"{argv} failed:\n{result.stdout}\n{result.stderr}")
         return result
@@ -207,7 +220,8 @@ class AdmitPlaybook(unittest.TestCase):
         result = self.run_cmd(
             ["ansible-playbook", "-i", "inventories/raw", "-i", "inventories/onboard/dev",
              "ingress/playbooks/05_admit.yml",
-             "-e", f"onboard_ssh_private_key_file={self.client_key}", *extra],
+             "-e", f"onboard_ssh_private_key_file={self.client_key}",
+             "-e", f"admit_batch_id={self.batch}", *extra],
             check=False, extra_env=extra_env)
         # The YAML callback wraps long report lines; compare on single spaces.
         result.stdout = " ".join(result.stdout.split())
@@ -338,33 +352,28 @@ class AdmitPlaybook(unittest.TestCase):
         self.assertIn("203.0.113.99: not-contract", result.stdout)
 
     def test_5_short_batch_reported_against_rn_acc_08(self):
-        imported = subprocess.run(
-            [sys.executable, "scripts/new_raw_batch.py", "--import", "raw-2026-11-18-short"],
-            input="abc123\n", cwd=self.repo, env=self.env, capture_output=True, text=True)
-        self.assertEqual(imported.returncode, 0, imported.stderr)
         self.add_node("203.0.113.60", "test-vt-0006", "ff", mac="52:54:00:00:00:06")
         self.save_nodes()
         result = self.admit("-e", "admit_addresses=203.0.113.60",
                             "-e", "admit_batch_id=raw-2026-11-18-short")
         self.assertEqual(result.returncode, 0, result.stdout[-2000:])
         self.assertIn("203.0.113.60: admitted test-vt-0006", result.stdout)
-        self.assertIn("warning RN-ACC-08 batch raw-2026-11-18-short has a password under "
+        self.assertIn("warning RN-ACC-08 batch raw-2026-11-18-short has a passphrase under "
                       "15 characters", result.stdout)
         self.assertEqual(self.admitted()["test-vt-0006"]["raw_node_batch"], "raw-2026-11-18-short")
+        self.assertNotIn("abc123", result.stdout + result.stderr)
 
-    def test_6_missing_meets_min_length_is_refused(self):
-        index_path = self.repo / "secrets/raw-batches/index.yml"
-        original = index_path.read_text()
-        index = yaml.safe_load(original)
-        del index["batches"][self.batch]["meets_min_length"]
-        index_path.write_text(yaml.safe_dump(index))
-        try:
-            result = self.admit("-e", "admit_addresses=203.0.113.10")
-        finally:
-            index_path.write_text(original)
+    def test_6_batch_must_be_in_the_file(self):
+        result = self.admit("-e", "admit_addresses=203.0.113.10",
+                            "-e", "admit_batch_id=raw-2099-01-01-01")
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("meets_min_length", result.stdout)
+        self.assertIn("Batch raw-2099-01-01-01 is not in", result.stdout)
 
+    def test_8_passphrases_never_logged(self):
+        result = self.admit("-e", "admit_addresses=203.0.113.10", "-vvv")
+        self.assertEqual(result.returncode, 0, result.stdout[-2000:])
+        for secret in ("tannery unbiased pebble", "abc123"):
+            self.assertNotIn(secret, result.stdout + result.stderr)
 
 if __name__ == "__main__":
     unittest.main()
