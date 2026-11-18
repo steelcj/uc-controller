@@ -1,0 +1,8 @@
+# fail-not-a-mapping.yml
+#
+# The hostname holds a list, not the fields.
+#
+# expect-exit: 1
+# expect: fail | RN-REP-01 | deb13-vt-a1b2
+deb13-vt-a1b2:
+  - contract

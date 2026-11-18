@@ -1,0 +1,39 @@
+# fail-real-deb13-vt-55b1-contract-0.1.0.yml
+#
+# The real confirmation of the uc-ventoy metal node at 192.168.1.109, built
+# to contract 0.1.0 before its rebuild. Fails on its version, and lacks the
+# fields 0.3.0 added.
+#
+# expect-exit: 1
+# expect: fail | Versioning | contract
+# expect: fail | RN-REP-01 | sudo_nopasswd
+# expect: fail | RN-REP-01 | ssh_password_auth
+# expect: fail | RN-REP-01 | ssh_host_keys
+deb13-vt-55b1:
+  contract: 0.1.0
+  baseline: 0.3.0
+  timestamp: 2026-11-16T21:46:45-05:00
+  machine_id: 726cd88f9b6247428eede867b300aeb6
+  user: initial
+  sudo: true
+  ssh_port: 22
+  firewall: foomuuri
+  firewall_active: true
+  python: /usr/bin/python3
+  interfaces:
+    - name: enp2s0
+      type: ethernet
+      mac: 50:b7:c3:6a:55:b1
+      state: up
+      default_route4: true
+      default_route6: false
+      ip: [192.168.1.109]
+      ip6: []
+    - name: wlp1s0
+      type: wireless
+      mac: c4:85:08:c8:c7:1f
+      state: down
+      default_route4: false
+      default_route6: false
+      ip: []
+      ip6: []
