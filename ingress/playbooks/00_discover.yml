@@ -24,7 +24,12 @@
 
   tasks:
     - name: scan subnet for SSH-capable hosts
-      command: "nmap -sn -oG - {{ discover_subnet | default('192.168.1.0/24') }}"
+      # Host discovery by a TCP probe on the SSH port. Run without root, nmap's
+      # default -sn probes only ports 80 and 443, which a raw contract node's
+      # firewall drops (RN-FW-03), so contract nodes looked down. A host whose
+      # port 22 is closed answers with a reset and is listed too; admission
+      # reports it as not a contract node.
+      command: "nmap -sn -PS{{ discover_ssh_port | default(22) }} -oG - {{ discover_subnet | default('192.168.1.0/24') }}"
       register: scan_results
       changed_when: false
       when: (discover_source | default('subnet')) == 'subnet'

@@ -15,6 +15,7 @@ An Ansible controller configuration that moves nodes through a four stage lifecy
 | Known hosts file | New `ssh/known_hosts`, committed, keyed by inventory hostname through `HostKeyAlias` |
 | `match_raw_identity.py`, `inventory_hosts.py` | New scripts: the identity decision for admission, and the host walker it uses |
 | `promote_node.py`, `reset_inventories.py` | Both handle `admitted.yml` as they handle `discovered.yml`. `promote_node.py` keeps a host's strict host key settings when it already has them |
+| `00_discover.yml` scan | `nmap -sn` now probes the SSH port (`-PS22`, `discover_ssh_port`). Without root, its default probes only ports 80 and 443, which a raw contract node's firewall drops, so contract nodes were never found. A host with port 22 closed is listed too, and admission reports it as not a contract node |
 | `10_onboard.yml` | Targets `raw:!admitted`, and says in one line that onboarding contract nodes comes in a later kickoff |
 | Confirmation checker | New `scripts/check_raw_confirmation.py` checks a raw node's `confirmation.yml` against raw node contract 0.3.0 and 0.3.1 and prints JSON for the admission play. See Checking a Confirmation |
 | Tests | New `tests/`, run with `python3 tests/run_tests.py`: the confirmation checker against the fixtures in `tests/fixtures/raw-confirmations/`, the identity decisions, promotion and reset, and `05_admit.yml` end to end against stand-in nodes and a vault of its own |
@@ -485,7 +486,12 @@ Discovered hosts are written into the `discovered` group, which `hosts.yml` decl
 
   tasks:
     - name: scan subnet for SSH-capable hosts
-      command: "nmap -sn -oG - {{ discover_subnet | default('192.168.1.0/24') }}"
+      # Host discovery by a TCP probe on the SSH port. Run without root, nmap's
+      # default -sn probes only ports 80 and 443, which a raw contract node's
+      # firewall drops (RN-FW-03), so contract nodes looked down. A host whose
+      # port 22 is closed answers with a reset and is listed too; admission
+      # reports it as not a contract node.
+      command: "nmap -sn -PS{{ discover_ssh_port | default(22) }} -oG - {{ discover_subnet | default('192.168.1.0/24') }}"
       register: scan_results
       changed_when: false
       when: (discover_source | default('subnet')) == 'subnet'
