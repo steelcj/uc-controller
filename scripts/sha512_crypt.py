@@ -10,8 +10,8 @@ default 5000 rounds.
 Python 3.13 removed the crypt module, and passlib is not a dependency of
 this repository, so the algorithm is written out here with hashlib only. It
 runs on Linux, macOS and Windows. tests/test_sha512_crypt.py checks it
-against the specification's test vectors and, where present, against
-"openssl passwd -6".
+against the specification's seven SHA-512 test vectors and, where
+present, against "openssl passwd -6". Salts come from the secrets module.
 
 Used as a module by new_raw_batch.py. Run directly, it reads a password on
 standard input and prints its hash, for testing only.
@@ -60,25 +60,28 @@ def _encode(digest: bytes) -> str:
 
 
 def new_salt() -> str:
-    """A random 16-character salt from the crypt alphabet."""
+    """A random 16-character salt from the crypt alphabet, from secrets."""
     return "".join(secrets.choice(ALPHABET) for _ in range(SALT_LENGTH))
 
 
 def sha512_crypt(password: str, salt: str | None = None,
-                 rounds: int = DEFAULT_ROUNDS) -> str:
+                 rounds: int | None = None) -> str:
     """Return the $6$ hash of password.
 
-    salt is at most 16 characters from the crypt alphabet; a random one is
-    used when it is None. A rounds value other than 5000 is written into the
-    hash as rounds=N, as the specification requires.
+    salt is at most 16 characters from the crypt alphabet, longer salts are
+    cut; a random one from new_salt() is used when it is None. With rounds
+    None the default 5000 rounds are used and not written into the hash, as
+    openssl passwd -6 and mkpasswd do. A rounds value that is given is
+    written as rounds=N, and, as the specification requires, raised to 1000
+    or lowered to 999999999 when it is outside those bounds.
     """
     if salt is None:
         salt = new_salt()
     salt = salt[:SALT_LENGTH]
     if any(ch not in ALPHABET for ch in salt):
         raise ValueError("salt characters must be from the crypt alphabet")
-    if not 1000 <= rounds <= 999_999_999:
-        raise ValueError("rounds must be between 1000 and 999999999")
+    custom = rounds is not None
+    rounds = DEFAULT_ROUNDS if rounds is None else min(max(rounds, 1000), 999_999_999)
 
     p = password.encode("utf-8")
     s = salt.encode("ascii")
@@ -106,7 +109,7 @@ def sha512_crypt(password: str, salt: str | None = None,
         ctx.update(c if i & 1 else p_seq)
         c = ctx.digest()
 
-    prefix = "$6$" if rounds == DEFAULT_ROUNDS else f"$6$rounds={rounds}$"
+    prefix = f"$6$rounds={rounds}$" if custom else "$6$"
     return f"{prefix}{salt}${_encode(c)}"
 
 

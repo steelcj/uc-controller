@@ -10,7 +10,7 @@ An Ansible controller configuration that moves nodes through a four stage lifecy
 |--------|-------------|
 | Secrets pattern | Proposed and implemented for raw build batch passwords: files encrypted with `ansible-vault` under `secrets/`, one vault ID per kind of secret, vault passwords read from `~/.config/uc-controller/vault/` by `scripts/vault-client.py`, which `ansible.cfg` names. See Secrets |
 | Batch passwords | New `scripts/new_raw_batch.py` creates, imports, lists and retires the password of a raw node build batch, and prints the batch ID and a SHA-512 crypt hash for the producer. New `scripts/sha512_crypt.py` makes the hash without the `crypt` module, which Python 3.13 removed |
-| Tests | New `tests/`, run with `python3 -m unittest discover -s tests`: the hash against its specification's test vectors and `openssl passwd -6`, and the batch script end to end against a temporary vault |
+| Tests | New `tests/`, run with `python3 -m unittest discover -s tests`: the hash against its specification's seven SHA-512 test vectors and `openssl passwd -6`, and the batch script end to end against a temporary vault |
 
 ### v0.1.5 → v0.1.6
 
@@ -1763,7 +1763,7 @@ Once per operator and workstation:
 
 Batch IDs are `raw-YYYY-MM-DD-<suffix>`, with a suffix of lower-case letters, digits and hyphens. That is a subset of what uc-ventoy accepts as `password_batch`. An ID is never reused, even after its batch is retired. Earlier batches stay active until retired, so a node built before the current batch can still be admitted.
 
-The hash is SHA-512 crypt (`$6$`), with a random 16-character salt and the default 5000 rounds. This is the format Debian's preseed and Ubuntu's autoinstall accept. Python 3.13 has no `crypt` module. `openssl passwd -6` would work on most Linux systems, but it is not part of Windows, and macOS's LibreSSL may lack `-6`. So `scripts/sha512_crypt.py` implements the algorithm with `hashlib`, about a hundred lines that run everywhere. `tests/test_sha512_crypt.py` checks it against the six test vectors in Drepper's specification and against `openssl passwd -6` where available.
+The hash is SHA-512 crypt (`$6$`), with a random 16-character salt and the default 5000 rounds. This is the format Debian's preseed and Ubuntu's autoinstall accept. Python 3.13 has no `crypt` module. `openssl passwd -6` would work on most Linux systems, but it is not part of Windows, and macOS's LibreSSL may lack `-6`. So `scripts/sha512_crypt.py` implements the algorithm with `hashlib`, about a hundred lines that run everywhere. `tests/test_sha512_crypt.py` checks it against the seven SHA-512 test vectors in Drepper's specification, which include five custom round counts and a count below the minimum that is raised to 1000, and against `openssl passwd -6` where available. Salts come from the `secrets` module, which a test confirms.
 
 The script does not commit. It prints a reminder to commit `secrets/raw-batches/`. Retiring a batch deletes its file, but git history keeps the encrypted copy. That copy can still be read by anyone who has both the history and the `raw_batch` vault password, until the vault password is replaced.
 
