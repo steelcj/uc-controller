@@ -194,7 +194,7 @@ class AdmitPlaybook(unittest.TestCase):
                  refuse_key=False, sudo_nopasswd="false", wrong_fingerprint=False):
         keys, entries = [], []
         for kind in ("ed25519", "ecdsa"):
-            path = cls.root / f"{hostname}_{kind}"
+            path = cls.root / f"{hostname}_{address}_{kind}"
             subprocess.run(["ssh-keygen", "-q", "-t", kind, "-N", "", "-f", str(path)], check=True)
             pub = Path(f"{path}.pub")
             keys.append(str(pub))
@@ -240,7 +240,10 @@ class AdmitPlaybook(unittest.TestCase):
         result = self.admit("-e", "admit_addresses=203.0.113.10,203.0.113.11,203.0.113.20,"
                                   "203.0.113.30,203.0.113.40,203.0.113.99")
         out = result.stdout
-        self.assertEqual(result.returncode, 0, out[-3000:])
+        # .30 and .40 are refused, so the run exits 2, after the report.
+        self.assertEqual(result.returncode, 2, out[-3000:])
+        self.assertIn("Refused or stopped: 203.0.113.30 refused, 203.0.113.40 refused", out)
+        self.assertLess(out.index("Report every candidate"), out.index("Refused or stopped"))
         self.assertIn("203.0.113.10: admitted test-vt-0001", out)
         self.assertIn("PA-HOST-01 host key trusted on first use", out)
         self.assertIn("203.0.113.11: known test-vt-0001", out)
@@ -301,6 +304,7 @@ class AdmitPlaybook(unittest.TestCase):
         wrong = self.admit("-e", "admit_addresses=203.0.113.50",
                            "-e", "admit_expected_fingerprint=SHA256:" + "B" * 43)
         self.assertIn("203.0.113.50: refused test-vt-0005 - the console fingerprint", wrong.stdout)
+        self.assertEqual(wrong.returncode, 2)
         self.assertNotIn("test-vt-0005", self.admitted())
         pub = self.nodes["203.0.113.50"]["keys"][0]
         right = subprocess.run(["ssh-keygen", "-l", "-E", "sha256", "-f", pub],
@@ -406,7 +410,7 @@ class AdmitPlaybook(unittest.TestCase):
                     path.write_text(text if text.endswith("\n") else text + "\n")
                     written = path.read_text()
                     result = self.admit("-e", "admit_addresses=203.0.113.50")
-                    self.assertEqual(result.returncode, 0, result.stdout[-2000:])
+                    self.assertEqual(result.returncode, 2, result.stdout[-2000:])
                     self.assertIn("203.0.113.50: refused test-vt-0005 - ", result.stdout)
                     expected = ("no host keys are recorded for test-vt-0005"
                                 if name == "no keys recorded"
@@ -419,6 +423,24 @@ class AdmitPlaybook(unittest.TestCase):
             path.write_text(original)
         result = self.admit("-e", "admit_addresses=203.0.113.50")
         self.assertIn("203.0.113.50: known test-vt-0005", result.stdout)
+
+    # Named to sort last: it needs test-vt-0005, admitted in test_3.
+    def test_x_exit_status(self):
+        # Hosts without SSH or that refuse the controller key: exit 0.
+        quiet = self.admit("-e", "admit_addresses=203.0.113.20,203.0.113.99")
+        self.assertEqual(quiet.returncode, 0, quiet.stdout[-2000:])
+        self.assertIn("203.0.113.20: not-contract", quiet.stdout)
+        self.assertIn("203.0.113.99: not-contract", quiet.stdout)
+        # A stopped outcome: another node claims test-vt-0005's name. Exit 2.
+        self.add_node("203.0.113.70", "test-vt-0005", "99", mac="52:54:00:00:00:70")
+        self.save_nodes()
+        before = (self.admitted(), self.known_hosts())
+        stopped = self.admit("-e", "admit_addresses=203.0.113.70,203.0.113.99")
+        self.assertEqual(stopped.returncode, 2, stopped.stdout[-2000:])
+        self.assertIn("203.0.113.70: stopped test-vt-0005", stopped.stdout)
+        self.assertIn("203.0.113.99: not-contract", stopped.stdout)
+        self.assertIn("Refused or stopped: 203.0.113.70 stopped", stopped.stdout)
+        self.assertEqual((self.admitted(), self.known_hosts()), before)
 
 if __name__ == "__main__":
     unittest.main()

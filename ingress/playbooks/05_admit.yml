@@ -23,6 +23,10 @@
 # Nothing on a node is changed. The play may run any number of times: a
 # node already admitted is reported as known and left as it is.
 #
+# Exit status: 0 when every candidate was admitted, is known, or is not a
+# contract node; 2, after the report, when any candidate was refused or
+# stopped, or an admission could not be confirmed.
+#
 # Usage, from the repository root, with the onboard inventory loaded for
 # onboard_ssh_private_key_file:
 #
@@ -302,7 +306,21 @@
       ansible.builtin.debug:
         msg: "{{ admit_results | default([]) | map(attribute='line') | list }}"
 
-    - name: Fail when an admission could not be confirmed
+    # Exit status, after the report: 0 when every candidate was admitted, is
+    # known, or is not a contract node (no SSH, the key or the confirmation
+    # refused), so a subnet scan of ordinary hosts succeeds. 2 when any
+    # candidate was refused or stopped, or an admission could not be
+    # confirmed: those need the operator.
+    - name: Fail when a candidate was refused or stopped, or not confirmed
       ansible.builtin.fail:
-        msg: "Not admitted, confirmation failed: {{ admit_failed | to_json }}"
-      when: admit_failed | length > 0
+        msg: >-
+          {{ (['Not admitted, confirmation failed: ' ~ (admit_failed | to_json)]
+              if admit_failed | length > 0 else [])
+             + (['Refused or stopped: ' ~ (admit_attention | map(attribute='address')
+                 | zip(admit_attention | map(attribute='outcome'))
+                 | map('join', ' ') | join(', '))]
+                if admit_attention | length > 0 else []) }}
+      vars:
+        admit_attention: >-
+          {{ admit_results | default([]) | selectattr('outcome', 'in', ['refused', 'stopped']) | list }}
+      when: admit_failed | length > 0 or admit_attention | length > 0
