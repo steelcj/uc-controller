@@ -10,7 +10,8 @@ An Ansible controller configuration that moves nodes through a four stage lifecy
 |--------|-------------|
 | Secrets pattern | Proposed and implemented for raw build batch passwords: files encrypted with `ansible-vault` under `secrets/`, one vault ID per kind of secret, vault passwords read from `~/.config/uc-controller/vault/` by `scripts/vault-client.py`, which `ansible.cfg` names. See Secrets |
 | Batch passwords | New `scripts/new_raw_batch.py` creates, imports, lists and retires the password of a raw node build batch, and prints the batch ID and a SHA-512 crypt hash for the producer. New `scripts/sha512_crypt.py` makes the hash without the `crypt` module, which Python 3.13 removed |
-| Tests | New `tests/`, run with `python3 -m unittest discover -s tests`: the hash against its specification's seven SHA-512 test vectors and `openssl passwd -6`, and the batch script end to end against a temporary vault |
+| Confirmation checker | New `scripts/check_raw_confirmation.py` checks a raw node's `confirmation.yml` against raw node contract 0.3.0 and 0.3.1 and prints JSON for the admission play. See Checking a Confirmation |
+| Tests | New `tests/`, run with `python3 tests/run_tests.py`: the confirmation checker against the fixtures in `tests/fixtures/raw-confirmations/`, and the hash against its specification's seven SHA-512 test vectors and `openssl passwd -6`, and the batch script end to end against a temporary vault |
 
 ### v0.1.5 → v0.1.6
 
@@ -245,11 +246,14 @@ uc-controller/
 │   ├── demote_node.py
 │   ├── reset_inventories.py
 │   ├── check_converge_boundary.py
+│   ├── check_raw_confirmation.py # a raw node's confirmation against the contract
 │   ├── new_raw_batch.py          # raw build batch passwords
 │   ├── sha512_crypt.py           # $6$ hashes for new_raw_batch.py
 │   └── vault-client.py           # vault passwords for ansible-vault
 │
-└── tests/                        # python3 -m unittest discover -s tests
+└── tests/                        # python3 tests/run_tests.py
+    └── fixtures/
+        └── raw-confirmations/    # one file per pass, failure and edge case
 ```
 
 ### Role Directories
@@ -1680,6 +1684,71 @@ python scripts/demote_node.py \
   --to inventories/onboard/dev \
   --host 192.168.1.10
 ```
+
+## Checking a Confirmation
+
+A raw node reports itself in `/var/lib/raw-node/confirmation.yml` (RN-REP-01). `scripts/check_raw_confirmation.py` checks that report against raw node contract 0.3.0 and 0.3.1. 0.3.1 changed wording only. The script reads the report from a file or from standard input, and prints one JSON document:
+
+```json
+{
+  "result": "fail",
+  "contract_supported": ["0.3.0", "0.3.1"],
+  "findings": [
+    {"severity": "fail", "clause": "Versioning", "field": "contract",
+     "message": "contract 0.1.0 is not supported; supported: 0.3.0, 0.3.1"}
+  ],
+  "values": {"hostname": "deb13-vt-55b1", "machine_id": "726cd88f...", "macs": ["50:b7:c3:6a:55:b1"], "...": "..."}
+}
+```
+
+Exit status 0 means the report passes, 1 that it breaks the contract, and 2 that it could not be read (no file, not UTF-8, or not YAML). `--user` and `--port` give the expected `initial_username` and `ssh_port` (default `initial` and 22). `--installer-default` adds a hostname to refuse.
+
+### Reading
+
+The YAML is read with PyYAML's `BaseLoader`, so every scalar stays a string, as the contract's Value types section requires of a consumer. A safe loader would read the MAC `52:54:00:12:34:56` as a base 60 integer, and an all-digit `machine_id` as an integer. The checker converts the booleans and `ssh_port` itself, accepting the YAML 1.1 forms Ansible accepts. A mapping key that appears twice is a failure, because a YAML loader silently keeps only the last.
+
+### Checks
+
+| Check | Clause | On failure |
+|-------|--------|------------|
+| Exactly one top-level key | RN-REP-01 | fail |
+| The key is a valid hostname, and not an installer or image default (`debian`, `ubuntu-server`, `localhost` and so on, and uc-ventoy's `deb13-vt` before first boot adds the suffix) | RN-NET-01 | fail |
+| Every field of the contract's field table is present, with its shape: versions `x.y.z`, an ISO 8601 `timestamp` with offset, a 32-digit lower-case hexadecimal `machine_id`, MACs, IPv4 and IPv6 addresses, interface `type` and `state` from their lists | RN-REP-01 | fail |
+| `contract` is 0.3.0 or 0.3.1 | Versioning | fail |
+| `user` is the expected `initial_username` | RN-ACC-01 | fail |
+| `sudo` is true | RN-ACC-04 | fail |
+| `sudo_nopasswd` is false | RN-ACC-07 | fail |
+| `ssh_password_auth` is false | RN-SSH-03 | fail |
+| `ssh_port` is the expected port | RN-SSH-01 | fail |
+| At least one host key, each with a type and a `SHA256:` fingerprint of 43 base64 characters | Host keys | fail |
+| At least one interface address | RN-SSH-02 | fail |
+| `firewall_active` is true | Firewall | warning |
+| A field the supported versions do not define | RN-REP-01 | note |
+
+A warning or a note does not fail the check. `firewall_active` is a warning because admission's checks, as agreed, do not include it. A field the checker does not know is a note, because a later minor version may add fields.
+
+### Values for Admission
+
+`values` holds every field the checker could read, normalized: booleans as booleans, `ssh_port` as a number, MACs in lower case. It adds `macs`, the node's MAC addresses, and `addresses`, its IPv4 and IPv6 addresses, for identity matching and for choosing where to connect. A field that could not be read is `null`.
+
+### Fixtures
+
+`tests/fixtures/raw-confirmations/` holds:
+- passing reports for 0.3.0 and for 0.3.1 written with every string quoted;
+- the base 60 MAC and all-digit `machine_id` case;
+- a note case and a warning case;
+- one report per failure;
+- an unreadable file;
+- the real report from the uc-ventoy metal node `deb13-vt-55b1`, contract 0.1.0, which must fail on its version.
+
+Each fixture states its expected exit status and findings in its header comments:
+
+```yaml
+# expect-exit: 1
+# expect: fail | RN-ACC-07 | sudo_nopasswd
+```
+
+`tests/test_check_raw_confirmation.py` runs the script on every fixture and checks those lines, so adding a case needs no code. `python3 tests/run_tests.py` runs every test in `tests/`, with the standard library and PyYAML only.
 
 ## Secrets
 
