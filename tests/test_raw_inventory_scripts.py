@@ -38,8 +38,11 @@ class TempRepo(unittest.TestCase):
         self.repo = Path(self.tmp.name)
         shutil.copytree(REPO / "scripts", self.repo / "scripts",
                         ignore=shutil.ignore_patterns("__pycache__"))
+        # Leave out the generated raw inventories, but not group_vars/admitted.yml.
+        generated = {REPO / "inventories/raw/admitted.yml", REPO / "inventories/raw/discovered.yml"}
         shutil.copytree(REPO / "inventories", self.repo / "inventories",
-                        ignore=shutil.ignore_patterns("admitted.yml", "discovered.yml"))
+                        ignore=lambda folder, names: [n for n in names
+                                                      if Path(folder) / n in generated])
         (self.repo / "ansible.cfg").write_text("[defaults]\n")
         self.write("raw/admitted.yml", {"admitted": {"hosts": {"node-vt-0001": dict(ADMITTED)}}})
 
@@ -128,6 +131,42 @@ class PromoteAndReset(TempRepo):
         self.assertEqual(entry["raw_node_batch"], "raw-2026-11-17-manual")
         self.assertEqual(entry["ansible_user"], "initial")
         self.assertNotIn("uc_origin", entry)
+
+        # The admitted group's strict host key settings move onto the host.
+        self.assertIs(entry["ansible_ssh_host_key_checking"], True)
+        args = entry["ansible_ssh_common_args"]
+        for option in ("IdentitiesOnly=yes", "StrictHostKeyChecking=yes",
+                       "HostKeyAlias={{ inventory_hostname }}",
+                       "UserKnownHostsFile={{ ansible_config_file | dirname }}/ssh/known_hosts",
+                       "GlobalKnownHostsFile=/dev/null"):
+            self.assertIn(option, args)
+        self.assertIn("keeps its strict host key settings", result.stdout)
+
+    def promote(self, host):
+        result = self.run_script(
+            "promote_node.py", "--from", "inventories/raw", "--to", "inventories/onboard/dev",
+            "--host", host, "--key-file", "~/.ssh/key", "--no-commit")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        onboard = yaml.safe_load((self.repo / "inventories/onboard/dev/hosts.yml").read_text())
+        return onboard["onboarded"]["hosts"][host], result
+
+    def test_promote_without_strict_settings_is_unchanged(self):
+        self.write("raw/discovered.yml", {"discovered": {"hosts": {
+            "disc-192-0-2-20": {"ansible_host": "192.0.2.20", "name_provisional": True}}}})
+        entry, result = self.promote("disc-192-0-2-20")
+        self.assertEqual(entry["ansible_ssh_common_args"], "-o IdentitiesOnly=yes")
+        self.assertNotIn("ansible_ssh_host_key_checking", entry)
+        self.assertNotIn("strict", result.stdout)
+
+    def test_promote_keeps_host_level_strict_settings(self):
+        self.write("raw/discovered.yml", {"discovered": {"hosts": {
+            "disc-192-0-2-30": {"ansible_host": "192.0.2.30",
+                                "ansible_host_key_checking": "yes",
+                                "ansible_ssh_common_args": "-o StrictHostKeyChecking=yes"}}}})
+        entry, _ = self.promote("disc-192-0-2-30")
+        self.assertEqual(entry["ansible_host_key_checking"], "yes")
+        self.assertEqual(entry["ansible_ssh_common_args"],
+                         "-o IdentitiesOnly=yes -o StrictHostKeyChecking=yes")
 
     def test_reset_clears_admitted(self):
         dry = self.run_script("reset_inventories.py", "--dry-run", "--keep-facts")

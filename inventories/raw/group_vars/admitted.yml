@@ -21,13 +21,16 @@ ansible_ssh_private_key_file: "{{ onboard_ssh_private_key_file }}"
 # variable overrides it per host, so Ansible no longer adds
 # StrictHostKeyChecking=no. Keys are checked against ssh/known_hosts alone,
 # under the inventory hostname (HostKeyAlias), never ~/.ssh/known_hosts.
+#
+# The repository is found from the ansible.cfg in use, not from this
+# inventory's directory, so these two settings mean the same at any stage:
+# promote_node.py copies them onto a host it promotes out of raw.
 ansible_ssh_host_key_checking: true
-uc_repo_dir: "{{ inventory_dir | dirname | dirname }}"
 ansible_ssh_common_args: >-
   -o IdentitiesOnly=yes
   -o StrictHostKeyChecking=yes
   -o HostKeyAlias={{ inventory_hostname }}
-  -o UserKnownHostsFile={{ uc_repo_dir }}/ssh/known_hosts
+  -o UserKnownHostsFile={{ ansible_config_file | dirname }}/ssh/known_hosts
   -o GlobalKnownHostsFile=/dev/null
   -o PasswordAuthentication=no
   -o KbdInteractiveAuthentication=no
@@ -36,5 +39,5 @@ ansible_ssh_common_args: >-
 # decrypted from secrets/raw-batches/<raw_node_batch>.vault only when a task
 # needs it. A host without raw_node_batch fails here; there is no default.
 ansible_become_password: >-
-  {{ lookup('ansible.builtin.unvault',
-            uc_repo_dir ~ '/secrets/raw-batches/' ~ raw_node_batch ~ '.vault') | trim }}
+  {{ lookup('ansible.builtin.unvault', (ansible_config_file | dirname)
+            ~ '/secrets/raw-batches/' ~ raw_node_batch ~ '.vault') | trim }}

@@ -298,6 +298,29 @@ class AdmitPlaybook(unittest.TestCase):
         self.assertIn("test-vt-0005", self.admitted())
         self.assertIn("test-vt-0001", self.admitted())
 
+    def test_7_promoted_node_keeps_strict_host_key_checking(self):
+        promoted = self.run_cmd(
+            [sys.executable, "scripts/promote_node.py", "--from", "inventories/raw",
+             "--to", "inventories/onboard/dev", "--host", "test-vt-0001",
+             "--key-file", str(self.client_key), "--no-commit"], check=False)
+        self.assertEqual(promoted.returncode, 0, promoted.stderr)
+        self.assertNotIn("test-vt-0001", self.admitted())
+        # Only the onboard inventory: no admitted group_vars apply any more.
+        ping = ["ansible", "-i", "inventories/onboard/dev", "test-vt-0001",
+                "-m", "ansible.builtin.raw", "-a", "true"]
+        self.assertEqual(self.run_cmd(ping, check=False).returncode, 0)
+        path = self.repo / "ssh/known_hosts"
+        original = path.read_text()
+        line = next(l for l in original.splitlines() if l.startswith("test-vt-0001 ssh-ed25519 "))
+        key = line.split()[2]
+        path.write_text(original.replace(key, key[:-6] + ("A" if key[-6] != "A" else "B") + key[-5:]))
+        try:
+            refused = self.run_cmd(ping, check=False)
+        finally:
+            path.write_text(original)
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("Host key verification failed", refused.stdout + refused.stderr)
+
     def test_4_from_discovered(self):
         discovered = self.repo / "inventories/raw/discovered.yml"
         discovered.write_text(yaml.safe_dump({"discovered": {"hosts": {

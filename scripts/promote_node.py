@@ -197,9 +197,59 @@ def add_host(data: dict, group: str, host: str, host_vars) -> None:
     hosts[host] = host_vars
 
 
+# Settings that make a host's SSH connection check host keys strictly. A
+# host promoted out of raw keeps them when it already has them, from its own
+# vars or from its source's group_vars (group_vars/admitted.yml sets them for
+# every admitted raw contract node); the connection contract would otherwise
+# replace ansible_ssh_common_args and drop them.
+STRICT_KEYS = ("ansible_host_key_checking", "ansible_ssh_host_key_checking",
+               "ansible_ssh_common_args")
+
+
+def is_true(value) -> bool:
+    return value is True or str(value).strip().lower() in ("true", "yes", "on", "1")
+
+
+def vars_files(directory: Path, name: str) -> list[Path]:
+    """<name>.yml or .yaml in directory, or every YAML file in <name>/."""
+    files = [directory / f"{name}{suffix}" for suffix in (".yml", ".yaml")]
+    folder = directory / name
+    if folder.is_dir():
+        files += sorted(p for p in folder.iterdir() if p.suffix in (".yml", ".yaml"))
+    return [f for f in files if f.is_file()]
+
+
+def strict_settings(inventory: Path, groups: list[str], host: str, host_vars) -> dict:
+    """The host's strict host key settings, as Ansible would resolve them.
+
+    Merges group_vars for all, raw and the groups that list the host, then
+    host_vars/<host>, then the host's own entry. Returns {} unless host key
+    checking is on.
+    """
+    merged: dict = {}
+    for group in ["all", "raw", *groups]:
+        for path in vars_files(inventory / "group_vars", group):
+            merged.update(load(path))
+    for path in vars_files(inventory / "host_vars", host):
+        merged.update(load(path))
+    merged.update(host_vars or {})
+    if not any(is_true(merged.get(key)) for key in STRICT_KEYS[:2]):
+        return {}
+    strict = {key: merged[key] for key in STRICT_KEYS if key in merged}
+    args = str(strict.get("ansible_ssh_common_args", ""))
+    if "IdentitiesOnly=yes" not in args:
+        args = f"{CONTRACT['ansible_ssh_common_args']} {args}".strip()
+    strict["ansible_ssh_common_args"] = args
+    return strict
+
+
 def with_contract(host_vars, address: str | None, key_file: str | None,
-                  host: str) -> dict:
-    """Return host_vars with the onboard connection contract applied."""
+                  host: str, strict: dict | None = None) -> dict:
+    """Return host_vars with the onboard connection contract applied.
+
+    strict, from strict_settings(), is applied over the contract, so a host
+    that checked host keys strictly keeps doing so.
+    """
     host_vars = dict(host_vars or {})
     address = address or host_vars.get("ansible_host")
     key_file = key_file or host_vars.get("ansible_ssh_private_key_file")
@@ -208,6 +258,7 @@ def with_contract(host_vars, address: str | None, key_file: str | None,
     if not key_file:
         raise SystemExit(f"error: no key file for {host}; pass --key-file")
     host_vars.update(CONTRACT)
+    host_vars.update(strict or {})
     host_vars["ansible_host"] = address
     host_vars["ansible_ssh_private_key_file"] = key_file
     return host_vars
@@ -285,7 +336,12 @@ def main(direction: str = "promote") -> int:
     # The connection contract is written once, on promotion out of raw. Moves
     # between onboard and normalized carry the entry over unchanged.
     if from_stage == "raw":
-        host_vars = with_contract(host_vars, args.address, args.key_file, args.host)
+        strict = (strict_settings(args.source, source_groups, args.host, host_vars)
+                  if found else {})
+        host_vars = with_contract(host_vars, args.address, args.key_file, args.host, strict)
+        if strict:
+            print(f"note: {args.host} keeps its strict host key settings "
+                  f"({', '.join(sorted(strict))})")
 
     # pop_host clears every existing entry for the host, so a repeat
     # promotion replaces the entry instead of adding a second one.

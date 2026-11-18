@@ -14,7 +14,7 @@ An Ansible controller configuration that moves nodes through a four stage lifecy
 | `05_admit.yml` | New ingress playbook. It admits candidate addresses after checking the confirmation, the host keys and the node's identity, then confirms a connection and a become over the strict connection. It changes nothing on the node, and running it again reports the node as known |
 | Known hosts file | New `ssh/known_hosts`, committed, keyed by inventory hostname through `HostKeyAlias` |
 | `match_raw_identity.py`, `inventory_hosts.py` | New scripts: the identity decision for admission, and the host walker it shares with `new_raw_batch.py` |
-| `promote_node.py`, `reset_inventories.py` | Both handle `admitted.yml` as they handle `discovered.yml` |
+| `promote_node.py`, `reset_inventories.py` | Both handle `admitted.yml` as they handle `discovered.yml`. `promote_node.py` keeps a host's strict host key settings when it already has them |
 | `10_onboard.yml` | Targets `raw:!admitted`, and says in one line that onboarding contract nodes comes in a later kickoff |
 | Confirmation checker | New `scripts/check_raw_confirmation.py` checks a raw node's `confirmation.yml` against raw node contract 0.3.0 and 0.3.1 and prints JSON for the admission play. See Checking a Confirmation |
 | Tests | New `tests/`, run with `python3 tests/run_tests.py`: the confirmation checker against the fixtures in `tests/fixtures/raw-confirmations/`, and the hash against its specification's seven SHA-512 test vectors and `openssl passwd -6`, and the batch script end to end against a temporary vault |
@@ -1777,7 +1777,14 @@ Proposed and implemented. Admitted nodes are checked against `ssh/known_hosts`, 
 
 ### Onboarding
 
-`10_onboard.yml` targets `raw:!admitted`. A first play prints one line when admitted nodes exist: onboarding contract nodes comes in a later kickoff. `promote_node.py` can move an admitted host to the onboard stage by hand. It then writes the old connection contract at host level (`-o IdentitiesOnly=yes` only), which drops the strict host key settings. That is for the onboarding kickoff to change.
+`10_onboard.yml` targets `raw:!admitted`. A first play prints one line when admitted nodes exist: onboarding contract nodes comes in a later kickoff.
+
+`promote_node.py` can move an admitted host to the onboard stage by hand. It keeps the host's strict host key settings when the host already has them, from its own vars or from its source's group_vars, and writes them at host level over the connection contract.
+- The settings are `ansible_ssh_host_key_checking` (or `ansible_host_key_checking`) and `ansible_ssh_common_args`.
+- `-o IdentitiesOnly=yes` is added to the arguments if they lack it.
+- They mean the same at every stage, because `group_vars/admitted.yml` finds the repository from the `ansible.cfg` in use (`ansible_config_file`), not from the inventory's directory.
+
+A promoted admitted node, reached with the onboard inventory alone, still refuses a changed host key. A test covers it. The become password does not move with it: it is a group variable of `admitted`, and onboarding replaces the batch password with one per node (OE-ACC-03). That is for the onboarding kickoff.
 
 ### Testing Without a Node
 
