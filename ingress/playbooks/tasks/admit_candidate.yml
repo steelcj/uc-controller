@@ -10,9 +10,10 @@
 #   (the host's vars for admitted.yml), known_hosts (its key lines under the
 #   hostname) and python (the reported interpreter).
 #
-# Outcomes: admitted, known, refused (breaks the contract or host keys
-# differ), stopped (reinstall, name collision, known under another name),
-# not-contract (no SSH, or the controller key or confirmation is refused).
+# Outcomes: admitted, known, refused (breaks the contract, host keys differ
+# from the confirmation, or, for a known node, from ssh/known_hosts), stopped
+# (reinstall, name collision, known under another name), not-contract (no
+# SSH, or the controller key or confirmation is refused).
 # Every step after the first runs only while the outcome is pending.
 
 - name: "{{ candidate }}: start"
@@ -175,15 +176,6 @@
     - admit_expected_fingerprint is defined
     - admit_expected_fingerprint not in admit_scanned
 
-- name: "{{ candidate }}: warn that the host key was trusted on first use"
-  ansible.builtin.set_fact:
-    admit_one: >-
-      {{ admit_one | combine({'findings': admit_one.findings + [{
-           'severity': 'warning', 'clause': 'PA-HOST-01', 'field': 'ssh_host_keys',
-           'message': 'host key trusted on first use: no admit_expected_fingerprint was '
-                      'given to compare with the console'}]}) }}
-  when: admit_one.outcome == 'pending' and admit_expected_fingerprint is not defined
-
 # 5. Identity. Another candidate of this run may be the same node at
 # another address, before anything is written.
 - name: "{{ candidate }}: the same node at another address in this run"
@@ -213,6 +205,62 @@
            'outcome': {'new': 'pending', 'known': 'known'}.get((admit_match.stdout | from_json).decision, 'stopped'),
            'message': (admit_match.stdout | from_json).message}) }}
   when: admit_one.outcome == 'pending'
+
+# A known node must still present exactly the keys trusted at its admission.
+# They are looked up in ssh/known_hosts under the inventory hostname, the
+# name the strict connection uses as HostKeyAlias. Keys are compared as type
+# and SHA256 fingerprint, both from ssh-keygen -l, so a key type present on
+# one side only is a difference too. No recorded keys is a refusal.
+- name: "{{ candidate }}: fingerprint the keys recorded in ssh/known_hosts"
+  ansible.builtin.command:
+    argv: [ssh-keygen, -l, -E, sha256, -F, "{{ admit_one.hostname }}", -f, "{{ admit_known_hosts }}"]
+  register: admit_recorded
+  changed_when: false
+  failed_when: admit_recorded.rc not in [0, 1]
+  when:
+    - admit_one.outcome == 'known'
+    - admit_match is not skipped
+
+- name: "{{ candidate }}: compare the presented keys with ssh/known_hosts"
+  ansible.builtin.set_fact:
+    admit_presented_typed: >-
+      {{ admit_fingerprints.stdout_lines | select('match', '^[0-9]+ SHA256:')
+         | map('regex_replace', '^[0-9]+ (SHA256:[A-Za-z0-9+/]+) .*[(](\S+)[)]$', '\2 \1')
+         | unique | sort }}
+    # With -F, ssh-keygen prints "<host> <TYPE> SHA256:..." instead.
+    admit_recorded_typed: >-
+      {{ admit_recorded.stdout_lines | reject('match', '^#') | select('search', ' SHA256:')
+         | map('regex_replace', '^\S+ (\S+) (SHA256:[A-Za-z0-9+/]+)\s*$', '\1 \2')
+         | unique | sort }}
+  when:
+    - admit_one.outcome == 'known'
+    - admit_match is not skipped
+
+- name: "{{ candidate }}: refuse a known node whose host keys changed"
+  ansible.builtin.set_fact:
+    admit_one: >-
+      {{ admit_one | combine({'outcome': 'refused', 'message':
+         ('no host keys are recorded for ' ~ admit_one.hostname ~ ' in ssh/known_hosts'
+          if admit_recorded_typed | length == 0 else
+          'host keys differ from ssh/known_hosts for ' ~ admit_one.hostname
+          ~ ': presented ' ~ (admit_presented_typed | join(', '))
+          ~ '; recorded ' ~ (admit_recorded_typed | join(', ')))
+         ~ '. If the change is expected, check the new fingerprint at the console, '
+         ~ 'remove the node from its inventory and its keys with ssh-keygen -R '
+         ~ admit_one.hostname ~ ' -f ssh/known_hosts, and admit it again'}) }}
+  when:
+    - admit_one.outcome == 'known'
+    - admit_match is not skipped
+    - admit_presented_typed != admit_recorded_typed or admit_recorded_typed | length == 0
+
+- name: "{{ candidate }}: warn that the host key was trusted on first use"
+  ansible.builtin.set_fact:
+    admit_one: >-
+      {{ admit_one | combine({'findings': admit_one.findings + [{
+           'severity': 'warning', 'clause': 'PA-HOST-01', 'field': 'ssh_host_keys',
+           'message': 'host key trusted on first use: no admit_expected_fingerprint was '
+                      'given to compare with the console'}]}) }}
+  when: admit_one.outcome == 'pending' and admit_expected_fingerprint is not defined
 
 # 6, first half: what admission writes. The play writes it for all
 # candidates at once.

@@ -270,6 +270,7 @@ class AdmitPlaybook(unittest.TestCase):
         again = self.admit("-e", "admit_addresses=203.0.113.10")
         self.assertEqual(again.returncode, 0, again.stdout[-2000:])
         self.assertIn("203.0.113.10: known test-vt-0001 - test-vt-0001 is already known", again.stdout)
+        self.assertNotIn("PA-HOST-01", again.stdout)   # first use is warned of only on admission
         self.assertEqual((self.admitted(), self.known_hosts()), before)
 
         # 3. The strict connection refuses a changed host key, and accepts it restored.
@@ -374,6 +375,50 @@ class AdmitPlaybook(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout[-2000:])
         for secret in ("tannery unbiased pebble", "abc123"):
             self.assertNotIn(secret, result.stdout + result.stderr)
+
+    def test_9_known_node_with_changed_host_keys_is_refused(self):
+        """test-vt-0005 (admitted in test_3) against altered records in ssh/known_hosts."""
+        path = self.repo / "ssh/known_hosts"
+        original = path.read_text()
+        lines = original.splitlines()
+        mine = [l for l in lines if l.startswith("test-vt-0005 ")]
+        self.assertEqual(len(mine), 2)
+        ed = next(l for l in mine if " ssh-ed25519 " in l)
+        key = ed.split()[2]
+        changed = ed.replace(key, key[:30] + ("A" if key[30] != "A" else "B") + key[31:])
+        extra_key = self.root / "extra_rsa"
+        subprocess.run(["ssh-keygen", "-q", "-t", "rsa", "-b", "2048", "-N", "", "-f", str(extra_key)],
+                       check=True)
+        extra = "test-vt-0005 " + " ".join(Path(f"{extra_key}.pub").read_text().split()[:2])
+
+        cases = {
+            "one key changed": "\n".join(changed if l == ed else l for l in lines),
+            "a type presented but not recorded": "\n".join(
+                l for l in lines if not (l.startswith("test-vt-0005 ") and " ecdsa-" in l)),
+            "a type recorded but not presented": "\n".join(
+                lines + [extra]) if not original.endswith("\n") else original + extra + "\n",
+            "no keys recorded": "\n".join(l for l in lines if not l.startswith("test-vt-0005 ")),
+        }
+        before = self.admitted()
+        try:
+            for name, text in cases.items():
+                with self.subTest(case=name):
+                    path.write_text(text if text.endswith("\n") else text + "\n")
+                    written = path.read_text()
+                    result = self.admit("-e", "admit_addresses=203.0.113.50")
+                    self.assertEqual(result.returncode, 0, result.stdout[-2000:])
+                    self.assertIn("203.0.113.50: refused test-vt-0005 - ", result.stdout)
+                    expected = ("no host keys are recorded for test-vt-0005"
+                                if name == "no keys recorded"
+                                else "host keys differ from ssh/known_hosts for test-vt-0005")
+                    self.assertIn(expected, result.stdout)
+                    self.assertIn("ssh-keygen -R test-vt-0005 -f ssh/known_hosts", result.stdout)
+                    self.assertEqual(path.read_text(), written)   # nothing rewritten
+                    self.assertEqual(self.admitted(), before)
+        finally:
+            path.write_text(original)
+        result = self.admit("-e", "admit_addresses=203.0.113.50")
+        self.assertIn("203.0.113.50: known test-vt-0005", result.stdout)
 
 if __name__ == "__main__":
     unittest.main()

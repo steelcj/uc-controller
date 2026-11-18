@@ -1722,8 +1722,8 @@ For each candidate, on the controller:
 | 1 | `ssh-keyscan` on the contract port, into a temporary file only | `not-contract`: no SSH server |
 | 2 | `ssh -F /dev/null` as `initial` with the controller key alone, trusting only the scanned keys, runs `cat /var/lib/raw-node/confirmation.yml` (Python is reported, not promised) | `not-contract`: the key or the file is refused |
 | 3 | `check_raw_confirmation.py` on what was read | `refused`, with each failing clause |
-| 4 | The confirmation's `ssh_host_keys` must equal the fingerprints of the scanned keys. With `admit_expected_fingerprint`, read at the console, that fingerprint must be one of them. Without it, a warning says the key was trusted on first use (PA-HOST-01) | `refused`: keys differ |
-| 5 | `match_raw_identity.py` against every stage inventory | `known`, or `stopped` for a reinstall, a name collision, or a node known under another name |
+| 4 | The confirmation's `ssh_host_keys` must equal the fingerprints of the scanned keys. With `admit_expected_fingerprint`, read at the console, that fingerprint must be one of them | `refused`: keys differ |
+| 5 | `match_raw_identity.py` against every stage inventory. For a node found to be `known`, the presented keys must also equal the keys recorded in `ssh/known_hosts` under its inventory hostname, the name the strict connection uses as `HostKeyAlias`. Keys are compared as type and SHA256 fingerprint, so a type present on one side only is a difference, and no recorded keys is a refusal. A node about to be admitted without `admit_expected_fingerprint` gets a warning that its key was trusted on first use (PA-HOST-01) | `known`; `refused` when a known node's keys differ from `ssh/known_hosts`; or `stopped` for a reinstall, a name collision, or a node known under another name |
 | 6 | Write the node into `admitted.yml` under its confirmed hostname, add its keys to `ssh/known_hosts`, then confirm `raw: true` as `initial` and `raw: id -u` with become, over the strict connection, and Ansible's `ping` where Python is reported | Admission undone: the entry and the keys are removed, and the run fails |
 
 A node that is not a contract node is reported and does not fail the run, so a whole subnet scan can be offered with `admit_from_discovered=true`. The play measures the batch passphrase on the controller, without logging it. A passphrase under 15 characters is reported as a warning against RN-ACC-08 for every node of the batch. The node is still admitted, because it was built with that passphrase. A batch that is not in `vault.yml` stops the run. The play changes nothing on a node, and may be run any number of times.
@@ -1798,6 +1798,7 @@ It covers:
 - a failed confirmation that is undone;
 - a console fingerprint, wrong and right;
 - `admit_from_discovered`;
+- a known node whose keys differ from `ssh/known_hosts`: one key changed, a type presented but not recorded, a type recorded but not presented, and no keys recorded, each refused with nothing written;
 - a short batch passphrase reported against RN-ACC-08;
 - a batch that is not in `vault.yml`;
 - a run at `-vvv` that never prints a passphrase;
