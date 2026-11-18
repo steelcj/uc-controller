@@ -1,0 +1,292 @@
+#!/usr/bin/env ansible-playbook
+---
+# Admit raw nodes that meet the raw node contract.
+#
+# For each candidate address, on the controller:
+#   1. fetch its SSH host keys with ssh-keyscan, into a temporary file only;
+#   2. connect as initial with the controller's key, trusting only those
+#      keys, and read /var/lib/raw-node/confirmation.yml with cat (Python is
+#      reported by a raw node, not promised). A node that refuses the key is
+#      not a contract node: it is reported and skipped;
+#   3. check the confirmation with scripts/check_raw_confirmation.py;
+#   4. admit only when the confirmation's ssh_host_keys equal the scanned
+#      keys, and, with -e admit_expected_fingerprint=SHA256:..., when that
+#      fingerprint (read at the node's console) is one of them;
+#   5. match its identity against every stage inventory with
+#      scripts/match_raw_identity.py: known, reinstalled, a name collision,
+#      known under another name, or new;
+#   6. write a new node into inventories/raw/admitted.yml under its confirmed
+#      hostname, add its host keys to ssh/known_hosts, and confirm an
+#      Ansible connection as initial and a become with the batch password,
+#      both over the admitted group's strict connection.
+#
+# Nothing on a node is changed. The play may run any number of times: a
+# node already admitted is reported as known and left as it is.
+#
+# Usage, from the repository root, with the onboard inventory loaded for
+# onboard_ssh_private_key_file:
+#
+#   ansible-playbook -i inventories/raw -i inventories/onboard/dev \
+#     ingress/playbooks/05_admit.yml -e admit_addresses=192.168.1.109
+#   ... -e admit_from_discovered=true      every host in raw/discovered.yml
+#
+# Options:
+#   admit_expected_fingerprint  SHA256 fingerprint from the console; one candidate only
+#   admit_batch_id              batch the nodes were built with (default: current)
+#   admit_ssh_port              expected ssh_port (default 22)
+#   admit_initial_username      expected initial_username (default initial)
+#
+# Admitted nodes are not onboarded by 10_onboard.yml yet; that comes in a
+# later kickoff.
+
+- name: Admit raw nodes that meet the raw node contract
+  hosts: localhost
+  gather_facts: false
+  become: false
+
+  vars:
+    admit_raw_dir: "{{ raw_inventory | default('inventories/raw') | ansible.builtin.realpath }}"
+    admit_repo: "{{ admit_raw_dir | dirname | dirname }}"
+    admit_admitted_file: "{{ admit_raw_dir }}/admitted.yml"
+    admit_known_hosts: "{{ admit_repo }}/ssh/known_hosts"
+    admit_batch_store: "{{ admit_repo }}/secrets/raw-batches"
+    admit_python: "{{ ansible_playbook_python }}"
+    admit_port: "{{ admit_ssh_port | default(22) | int }}"
+    admit_user: "{{ admit_initial_username | default('initial') }}"
+    admit_key: "{{ onboard_ssh_private_key_file | ansible.builtin.expanduser }}"
+
+  tasks:
+    # A fact rather than a play variable, so the last play can rewrite the
+    # file with the same header.
+    - name: Set the admitted inventory's header
+      ansible.builtin.set_fact:
+        admit_header: |
+          # inventories/raw/admitted.yml
+          #
+          # Generated inventory, written only by ingress/playbooks/05_admit.yml,
+          # which adds each raw node it admits and keeps the ones already here.
+          # promote_node.py removes a host from it when promoting that host. Not
+          # committed. Do not edit by hand. Connection settings come from
+          # group_vars/admitted.yml; host keys are in ssh/known_hosts.
+
+    - name: Require the controller key and one way of choosing candidates
+      ansible.builtin.assert:
+        that:
+          - onboard_ssh_private_key_file is defined
+          - (admit_addresses is defined) != (admit_from_discovered | default(false) | bool)
+        fail_msg: >-
+          Load the onboard inventory (-i inventories/onboard/dev) for
+          onboard_ssh_private_key_file, and give either
+          -e admit_addresses=ADDRESS[,ADDRESS...] or -e admit_from_discovered=true.
+        quiet: true
+
+    - name: Read the batch index
+      ansible.builtin.set_fact:
+        admit_index: "{{ lookup('ansible.builtin.file', admit_batch_store ~ '/index.yml') | from_yaml }}"
+
+    - name: Choose the batch the candidates were built with
+      ansible.builtin.set_fact:
+        admit_batch: "{{ admit_batch_id | default(admit_index.current) }}"
+
+    # meets_min_length has no default: an entry without it is an error.
+    - name: Require an active batch with a stored password and a recorded length check
+      ansible.builtin.assert:
+        that:
+          - admit_batch in admit_index.batches
+          - admit_index.batches[admit_batch].status == 'active'
+          - admit_index.batches[admit_batch].meets_min_length is boolean
+          - (admit_batch_store ~ '/' ~ admit_batch ~ '.vault') is file
+        fail_msg: >-
+          Batch {{ admit_batch }} is not an active batch with a password and a
+          meets_min_length value in secrets/raw-batches/. See
+          python3 scripts/new_raw_batch.py --list.
+        quiet: true
+
+    - name: Take candidates from admit_addresses
+      ansible.builtin.set_fact:
+        admit_candidates: >-
+          {{ ((admit_addresses.split(',') if admit_addresses is string else admit_addresses)
+              | map('trim') | select | unique | list) }}
+      when: admit_addresses is defined
+
+    - name: Take candidates from the discovered inventory
+      when: admit_from_discovered | default(false) | bool
+      block:
+        - name: Require a subnet scan first
+          ansible.builtin.assert:
+            that: (admit_raw_dir ~ '/discovered.yml') is file
+            fail_msg: Run ingress/playbooks/00_discover.yml first; there is no discovered.yml.
+            quiet: true
+
+        - name: List every discovered address
+          ansible.builtin.set_fact:
+            admit_candidates: >-
+              {{ ((lookup('ansible.builtin.file', admit_raw_dir ~ '/discovered.yml') | from_yaml).discovered.hosts
+                  | default({}, true)) | dict2items | map(attribute='value.ansible_host')
+                  | select | unique | list }}
+
+    - name: Require at least one candidate, and a console fingerprint for one only
+      ansible.builtin.assert:
+        that:
+          - admit_candidates | length > 0
+          - admit_expected_fingerprint is not defined or admit_candidates | length == 1
+          - admit_expected_fingerprint is not defined or admit_expected_fingerprint is match('^SHA256:[A-Za-z0-9+/]{43}$')
+        fail_msg: >-
+          No candidates, or admit_expected_fingerprint was given for more than one
+          candidate or is not a SHA256 fingerprint as ssh-keygen -l prints it.
+        quiet: true
+
+    - name: Read the nodes already admitted
+      ansible.builtin.set_fact:
+        admit_existing: >-
+          {{ ((lookup('ansible.builtin.file', admit_admitted_file) | from_yaml).admitted.hosts | default({}, true))
+             if admit_admitted_file is file else {} }}
+
+    - name: Check each candidate
+      block:
+        - name: Make a private temporary directory for scanned keys
+          ansible.builtin.tempfile:
+            state: directory
+            prefix: uc-admit-
+          register: admit_tmp
+
+        - name: Start with no results
+          ansible.builtin.set_fact:
+            admit_results: []
+
+        - name: Check one candidate
+          ansible.builtin.include_tasks: tasks/admit_candidate.yml
+          loop: "{{ admit_candidates }}"
+          loop_control:
+            loop_var: candidate
+
+      always:
+        - name: Remove the scanned keys
+          ansible.builtin.file:
+            path: "{{ admit_tmp.path }}"
+            state: absent
+          when: admit_tmp.path is defined
+
+    - name: Collect the nodes to admit
+      ansible.builtin.set_fact:
+        admit_new: "{{ admit_results | selectattr('outcome', 'eq', 'admitted') | list }}"
+
+    - name: Collect their names and reported Python
+      ansible.builtin.set_fact:
+        admit_new_names: "{{ admit_new | map(attribute='hostname') | list }}"
+        admit_new_python: "{{ admit_new | items2dict(key_name='hostname', value_name='python') }}"
+
+    - name: Write the new nodes into the admitted inventory
+      ansible.builtin.copy:
+        dest: "{{ admit_admitted_file }}"
+        mode: "0644"
+        content: >-
+          {{ admit_header }}{{ {'admitted': {'hosts': admit_existing
+             | combine(admit_new | items2dict(key_name='hostname', value_name='entry'))}}
+             | to_nice_yaml(indent=2, sort_keys=False) }}
+      when: admit_new | length > 0
+
+    - name: Add their host keys to the controller's known hosts file
+      ansible.builtin.blockinfile:
+        path: "{{ admit_known_hosts }}"
+        marker: "# {mark} {{ item.hostname }}, admitted by 05_admit.yml"
+        block: "{{ item.known_hosts | join('\n') }}"
+      loop: "{{ admit_new }}"
+      loop_control:
+        label: "{{ item.hostname }}"
+
+    - name: Reload the inventory so the next play sees the admitted nodes
+      ansible.builtin.meta: refresh_inventory
+
+- name: Confirm the strict connection and become on newly admitted nodes
+  hosts: admitted
+  gather_facts: false
+  become: false
+
+  tasks:
+    - name: Skip nodes admitted earlier
+      ansible.builtin.meta: end_host
+      when: inventory_hostname not in hostvars['localhost'].admit_new_names | default([])
+
+    - name: Confirm
+      block:
+        - name: Connect as initial, checking the host key against ssh/known_hosts
+          ansible.builtin.raw: "true"
+          changed_when: false
+          ignore_unreachable: true
+          register: admit_connect
+
+        - name: Stop when the strict connection failed
+          ansible.builtin.fail:
+            msg: "connection as initial failed: {{ admit_connect.msg | default(admit_connect.stderr | default('')) }}"
+          when: admit_connect.unreachable | default(false) or admit_connect.rc | default(1) != 0
+
+        - name: Become root with the batch password
+          ansible.builtin.raw: id -u
+          become: true
+          changed_when: false
+          ignore_unreachable: true
+          register: admit_become
+
+        - name: Stop when become failed
+          ansible.builtin.fail:
+            msg: "become with the batch password failed: {{ admit_become.msg | default(admit_become.stdout | default('')) }}"
+          when: admit_become.unreachable | default(false) or (admit_become.stdout | default('') | trim) != '0'
+
+        # The ping module needs Python on the node, which the contract reports
+        # but does not promise. Where the confirmation names an interpreter,
+        # ping with it as well.
+        - name: Ansible ping with the reported Python
+          ansible.builtin.ping:
+          vars:
+            ansible_python_interpreter: "{{ hostvars['localhost'].admit_new_python[inventory_hostname] }}"
+          when: hostvars['localhost'].admit_new_python[inventory_hostname] | default('') | length > 0
+
+      rescue:
+        - name: Record the failure
+          ansible.builtin.set_fact:
+            admit_confirm_error: "{{ ansible_failed_result.msg | default('confirmation failed') }}"
+
+- name: Undo admissions that could not be confirmed, and report
+  hosts: localhost
+  gather_facts: false
+  become: false
+
+  vars:
+    admit_raw_dir: "{{ raw_inventory | default('inventories/raw') | ansible.builtin.realpath }}"
+    admit_admitted_file: "{{ admit_raw_dir }}/admitted.yml"
+    admit_known_hosts: "{{ admit_raw_dir | dirname | dirname }}/ssh/known_hosts"
+
+  tasks:
+    - name: Find nodes whose confirmation failed
+      ansible.builtin.set_fact:
+        admit_failed: >-
+          {{ admit_new_names | default([]) | select('in', hostvars) | map('extract', hostvars)
+             | selectattr('admit_confirm_error', 'defined')
+             | items2dict(key_name='inventory_hostname', value_name='admit_confirm_error') }}
+
+    - name: Remove them from the admitted inventory
+      ansible.builtin.copy:
+        dest: "{{ admit_admitted_file }}"
+        mode: "0644"
+        content: >-
+          {{ admit_header }}{{ {'admitted': {'hosts': (lookup('ansible.builtin.file', admit_admitted_file) | from_yaml).admitted.hosts
+             | dict2items | rejectattr('key', 'in', admit_failed) | items2dict}}
+             | to_nice_yaml(indent=2, sort_keys=False) }}
+      when: admit_failed | length > 0
+
+    - name: Remove their keys from the controller's known hosts file
+      ansible.builtin.blockinfile:
+        path: "{{ admit_known_hosts }}"
+        marker: "# {mark} {{ item }}, admitted by 05_admit.yml"
+        state: absent
+      loop: "{{ admit_failed | list }}"
+
+    - name: Report every candidate
+      ansible.builtin.debug:
+        msg: "{{ admit_results | default([]) | map(attribute='line') | list }}"
+
+    - name: Fail when an admission could not be confirmed
+      ansible.builtin.fail:
+        msg: "Not admitted, confirmation failed: {{ admit_failed | to_json }}"
+      when: admit_failed | length > 0
