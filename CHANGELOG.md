@@ -8,6 +8,7 @@ Write entries in the Unreleased section below as work happens. `scripts/cut-rele
 
 ### Added
 
+- `LICENSE` holds the GNU Affero General Public License version 3, and `README.md`'s License section states `SPDX-License-Identifier: AGPL-3.0-or-later` with the notice that the program may be used under version 3 or any later version.
 - `uc_secret`, a lookup plugin in `shared/plugins/lookup/`, is the one way anything reads a secret. It reads `~/.secrets/uc/fleet/<path>.yml`, uc-controller's half of `~/.secrets/uc/`, and refuses a path outside that root, directories that are not mode 0700, files that are not mode 0600, and files or directories not owned by the user.
 - `en/docs/guides/batch-secrets.md`: the layout and modes of batch files, how to create one without the password reaching shell history or the process list, and how to retire a batch.
 - `inventory-defaults/`, one directory per stage (`raw/`, `onboard/`, `normalized/`), holding the group structure and every piece of logic, and no hosts or client values. Client inventories are loaded after it.
