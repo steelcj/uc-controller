@@ -6,6 +6,8 @@ Write entries in the Unreleased section below as work happens. `scripts/cut-rele
 
 ## [Unreleased]
 
+This is the first release from the recreated repository. Earlier releases were published from the earlier repository, which no longer exists.
+
 ### Added
 
 - `LICENSE` holds the GNU Affero General Public License version 3, and `README.md`'s License section states `SPDX-License-Identifier: AGPL-3.0-or-later` with the notice that the program may be used under version 3 or any later version.
