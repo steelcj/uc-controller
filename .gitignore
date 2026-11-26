@@ -1,0 +1,4 @@
+# Release artifacts, built by scripts/publish-release.py.
+dist/
+
+__pycache__/
