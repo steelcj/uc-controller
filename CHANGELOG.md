@@ -6,6 +6,8 @@ Write entries in the Unreleased section below as work happens. `scripts/cut-rele
 
 ## [Unreleased]
 
+## [0.1.7] - 2026-11-26
+
 This is the first release from the recreated repository. Earlier releases were published from the earlier repository, which no longer exists.
 
 ### Added
