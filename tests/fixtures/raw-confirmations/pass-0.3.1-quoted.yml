@@ -1,0 +1,31 @@
+# pass-0.3.1-quoted.yml
+#
+# Contract 0.3.1, every string quoted as 0.3.1 advises. No Python
+# (python is empty), one interface, an upper-case MAC that is normalized.
+#
+# expect-exit: 0
+deb13-vt-c3d4:
+  contract: "0.3.1"
+  baseline: "0.4.0"
+  timestamp: "2026-11-17T19:35:00-05:00"
+  machine_id: "1970010100000000000000000000ab01"
+  user: "initial"
+  sudo: true
+  sudo_nopasswd: false
+  ssh_port: 22
+  ssh_password_auth: false
+  ssh_host_keys:
+    - type: "ssh-ed25519"
+      fingerprint: "SHA256:EXAMPLEexampleEXAMPLEexampleEXAMPLEexample0"
+  firewall: "foomuuri"
+  firewall_active: true
+  python: ""
+  interfaces:
+    - name: "enp2s0"
+      type: "ethernet"
+      mac: "02:00:00:AB:00:01"
+      state: "up"
+      default_route4: true
+      default_route6: false
+      ip: ["203.0.113.10"]
+      ip6: []

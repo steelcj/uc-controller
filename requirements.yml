@@ -1,0 +1,80 @@
+---
+# Every role and collection is pinned to an exact version: the versions the
+# lifecycle was verified with (see Verification Status in the design
+# document). To move one, see "Bumping a Pinned Version" there.
+
+# The collections the playbooks and the vendored roles use. Both also ship
+# inside the "ansible" package of the controller's virtual environment;
+# installing them from this file puts the pinned versions in the user's
+# collections path, which Ansible searches first.
+collections:
+  # For the community.general.incus connection plugin, and needed by
+  # robertdebock.openssh.
+  - name: community.general
+    version: "14.0.1"
+  # Needed by robertdebock.users, for authorized_key.
+  - name: ansible.posix
+    version: "2.2.2"
+
+roles:
+  - name: robertdebock.bootstrap
+    version: "7.3.1"
+  # Our fork of robertdebock.umask, adding the umask_system option for a
+  # system-wide umask (login.defs + profile.d). Sourced from git, not Galaxy,
+  # because the option does not exist upstream. Must run before
+  # robertdebock.users so new home directories get the intended permissions.
+  - name: steelcj.umask
+    src: git@github.com:steelcj/ansible-role-umask.git
+    scm: git
+    # A commit, not a branch: the fork has no tagged release. This is the head
+    # of master on 2026-11-13.
+    version: 424960626fd48d86ecd23ba1654fdf8b722f7821
+  - name: robertdebock.epel
+    version: 4.1.7
+  - name: robertdebock.update
+    version: 3.1.10
+#  - name: robertdebock.grub
+  - name: robertdebock.locale
+    version: 3.3.12
+#  - name: robertdebock.buildtools
+#  - name: robertdebock.python_pip
+#  - name: robertdebock.digitalocean_agent
+#  - name: robertdebock.sysstat
+  - name: robertdebock.auto_update
+    version: 3.1.9
+  - name: robertdebock.cron
+    version: 2.2.8
+  - name: robertdebock.ntp
+    version: 3.1.7
+  - name: robertdebock.openssh
+    version: 5.0.4
+  - name: robertdebock.fail2ban
+    version: 5.0.7
+  # The Foomuuri firewall. No release yet, so pinned to a commit.
+  - name: steelcj.foomuuri
+    src: https://github.com/steelcj/ansible-role-foomuuri.git
+    scm: git
+    version: b62b02b5ee0c7dbf2bf2721aad46cf52ce60ebe3
+#  - name: robertdebock.postfix
+  - name: robertdebock.users
+    version: 6.1.8
+#  - name: robertdebock.docker
+#  - name: robertdebock.libvirt
+#  - name: robertdebock.git
+#  - name: robertdebock.gitlab_runner
+#  - name: robertdebock.ansible
+#  - name: robertdebock.molecule
+#  - name: robertdebock.software
+#  - name: robertdebock.hashicorp
+#  - name: robertdebock.gnome
+#  - name: robertdebock.xrdp
+  - name: robertdebock.selinux
+    version: 3.1.12
+  - name: robertdebock.auditd
+    version: 3.2.13
+  - name: robertdebock.sysctl
+    version: 2.1.10
+  - name: robertdebock.hostname
+    version: 3.1.11
+  - name: robertdebock.rsyslog
+    version: 5.0.1

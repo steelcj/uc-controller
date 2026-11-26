@@ -1,0 +1,55 @@
+#!/usr/bin/env ansible-playbook
+---
+- name: Require a client inventory
+  hosts: localhost
+  gather_facts: false
+  become: false
+  tasks:
+    - name: Require a client inventory, and find its root
+      ansible.builtin.import_tasks: ../../shared/tasks/require-client-inventory.yml
+
+- name: specialize normalized nodes
+  hosts: normalized
+  become: yes
+  gather_facts: yes
+  # Each node converges independently; the config default stays linear.
+  strategy: free
+
+  # Firewall values come from the client inventory, one variable per stage,
+  # shaped for steelcj.foomuuri. Until the switch to that role, the vars file
+  # turns the stages listed in uc_firewall_stages into the firewall_rules list
+  # shared/roles/uc_firewall applies. Each is loaded only
+  # when its stage is given to scripts/inventory-args:
+  #   firewall_onboard_ssh          onboard/<env>/group_vars/all.yml
+  #   firewall_normalize_services   normalized/<env>/group_vars/all.yml
+  #   firewall_specialize_services  normalized/<env>/group_vars/<group>.yml
+  #                                 (for example webservers.yml)
+  # See Firewall Layering in en/docs/uc-controller-v0.1.8.md.
+  vars_files:
+    - ../../shared/vars/uc_firewall_interim.yml
+
+  vars:
+    uc_firewall_stages: [onboard, normalize, specialize]
+
+  # The roles are included as tasks, not listed under roles:, so the play can
+  # check specialize_role first. A roles: entry named by an undefined variable
+  # fails while the playbook is parsed, with only "'specialize_role' is
+  # undefined" as the message.
+  tasks:
+    - name: require specialize_role
+      ansible.builtin.assert:
+        that:
+          - specialize_role is defined
+          - specialize_role | length > 0
+        fail_msg: >-
+          Set the role this stage applies, for example
+          -e specialize_role=webserver.
+        quiet: true
+
+    - name: apply the specialize role
+      ansible.builtin.include_role:
+        name: "{{ specialize_role }}"
+
+    - name: apply the combined firewall rules
+      ansible.builtin.include_role:
+        name: uc_firewall

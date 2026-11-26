@@ -1,0 +1,126 @@
+#!/usr/bin/env ansible-playbook
+---
+# Find raw nodes and write them to a generated inventory file.
+#
+# Each source writes only its own root-level file in the client inventory's
+# raw/ directory:
+#   subnet -> discovered.yml, hosts in the discovered group
+#   cloud  -> cloud.yml (placeholder, not wired into raw; see below)
+#
+# The client inventory is found from the -i sources (uc_client_root), so
+# this does not depend on where this playbook lives:
+#
+#   ansible-playbook $(scripts/inventory-args ~/uc-inventories/example.org raw) \
+#     ingress/playbooks/00_discover.yml -e discover_subnet=203.0.113.0/24
+#
+# Generated names are provisional: disc-<ip with dots as hyphens>, with
+# name_provisional: true on the host. Renaming is not done here.
+
+- name: Require a client inventory
+  hosts: localhost
+  gather_facts: false
+  become: false
+  tasks:
+    - name: Require a client inventory, and find its root
+      ansible.builtin.import_tasks: ../../shared/tasks/require-client-inventory.yml
+
+- name: discover raw nodes
+  hosts: localhost
+  gather_facts: no
+  become: no
+
+  vars:
+    discover_raw_dir: "{{ uc_client_root }}/raw"
+
+  tasks:
+    - name: scan subnet for SSH-capable hosts
+      # Host discovery by a TCP probe on the SSH port. Run without root, nmap's
+      # default -sn probes only ports 80 and 443, which a raw contract node's
+      # firewall drops (RN-FW-03), so contract nodes looked down. A host whose
+      # port 22 is closed answers with a reset and is listed too; admission
+      # reports it as not a contract node.
+      command: "nmap -sn -PS{{ discover_ssh_port | default(22) }} -oG - {{ discover_subnet | default('198.51.100.0/24') }}"
+      register: scan_results
+      changed_when: false
+      when: (discover_source | default('subnet')) == 'subnet'
+
+    - name: parse discovered hosts
+      set_fact:
+        discovered_hosts: >-
+          {{
+            scan_results.stdout_lines
+            | select('match', '^Host:')
+            | map('regex_replace', '^Host: (\S+).*', '\1')
+            | list
+          }}
+      when: (discover_source | default('subnet')) == 'subnet'
+
+    - name: derive provisional hostnames from IPs
+      set_fact:
+        discovered_named: >-
+          {{
+            discovered_hosts
+            | map('replace', '.', '-')
+            | map('regex_replace', '^', 'disc-')
+            | zip(discovered_hosts)
+            | list
+          }}
+      when: (discover_source | default('subnet')) == 'subnet'
+
+    # Overwritten on every subnet scan. ansible_connection and ansible_user
+    # come from raw/group_vars/discovered.yml.
+    - name: write the discovered inventory from the subnet scan
+      copy:
+        dest: "{{ discover_raw_dir }}/discovered.yml"
+        content: |
+          # raw/discovered.yml
+          #
+          # Generated inventory, written by ingress/playbooks/00_discover.yml in
+          # uc-controller and overwritten on every subnet scan. promote_node.py removes
+          # a host from it when promoting that host. Committed. Do not edit by hand.
+          # Names are provisional (disc-<ip>) until onboarding.
+          discovered:
+          {% if discovered_named | length == 0 %}
+            hosts: {}
+          {% else %}
+            hosts:
+          {% for pair in discovered_named %}
+              {{ pair[0] }}:
+                ansible_host: {{ pair[1] }}
+                name_provisional: true
+          {% endfor %}
+          {% endif %}
+      when: (discover_source | default('subnet')) == 'subnet'
+
+    - name: query cloud API for instances
+      uri:
+        url: "{{ cloud_api_url }}/instances"
+        method: GET
+        return_content: yes
+        headers:
+          Authorization: "Bearer {{ cloud_api_token }}"
+      register: cloud_instances
+      when: (discover_source | default('subnet')) == 'cloud'
+
+    # Placeholder, not developed further. It writes its own file so it cannot
+    # clobber anything. The cloud group is not a child of raw in hosts.yml,
+    # so these hosts are not onboarded until a cloud source is added.
+    - name: write the cloud placeholder inventory
+      copy:
+        dest: "{{ discover_raw_dir }}/cloud.yml"
+        content: |
+          # raw/cloud.yml
+          #
+          # Generated inventory, written by the cloud placeholder in
+          # ingress/playbooks/00_discover.yml. Not committed. Not wired into raw.
+          cloud:
+            hosts:
+          {% for instance in cloud_instances.json %}
+              {{ instance.name }}:
+                ansible_host: {{ instance.private_ip }}
+                ansible_user: root
+          {% endfor %}
+      when: (discover_source | default('subnet')) == 'cloud'
+
+    - name: reload inventory so later plays see the discovered hosts
+      meta: refresh_inventory

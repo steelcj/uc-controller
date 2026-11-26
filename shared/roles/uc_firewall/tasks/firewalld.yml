@@ -1,0 +1,44 @@
+---
+# Not yet tested: there is no Red Hat family test node.
+- name: Remove conflicting firewall software
+  ansible.builtin.package:
+    name: "{{ uc_firewall_packages.firewalld.conflicting }}"
+    state: absent
+  when: uc_firewall_packages.firewalld.conflicting | length > 0
+
+- name: Install firewalld
+  ansible.builtin.package:
+    name: "{{ uc_firewall_packages.firewalld.required }}"
+    state: present
+
+- name: Start and enable firewalld
+  ansible.builtin.service:
+    name: firewalld
+    state: started
+    enabled: true
+
+# Allow rules go in before the default deny takes effect. firewalld's
+# default zone already rejects unlisted incoming traffic and allows outgoing.
+- name: Allow each rule without a source
+  ansible.posix.firewalld:
+    port: "{{ item.port }}/{{ item.protocol | default('tcp') }}"
+    permanent: true
+    immediate: true
+    state: enabled
+  loop: "{{ firewall_rules | rejectattr('source', 'defined') | list }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Allow each rule with a source
+  ansible.posix.firewalld:
+    rich_rule: >-
+      rule family="{{ 'ipv6' if ':' in item.source else 'ipv4' }}"
+      source address="{{ item.source }}"
+      port port="{{ item.port }}" protocol="{{ item.protocol | default('tcp') }}"
+      accept
+    permanent: true
+    immediate: true
+    state: enabled
+  loop: "{{ firewall_rules | selectattr('source', 'defined') | list }}"
+  loop_control:
+    label: "{{ item.name }}"

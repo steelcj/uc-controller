@@ -1,0 +1,164 @@
+#!/usr/bin/env ansible-playbook
+---
+- name: Require a client inventory
+  hosts: localhost
+  gather_facts: false
+  become: false
+  tasks:
+    - name: Require a client inventory, and find its root
+      ansible.builtin.import_tasks: ../../shared/tasks/require-client-inventory.yml
+
+- name: validate and promote onboarded nodes
+  # normalized too, so normalize can be rerun on a node already promoted.
+  hosts: onboarded:normalized
+  gather_facts: no
+  # ansible.cfg turns become on globally; the reachability check runs on the
+  # controller, where sudo would need a password.
+  become: no
+
+  tasks:
+    # The last play moves each normalized host from the onboard environment
+    # to the normalized environment loaded with -i, so exactly one of each
+    # must be loaded. They come from the -i sources, as in 10_onboard.yml.
+    - name: require one onboard and one normalized environment
+      ansible.builtin.assert:
+        that:
+          - hostvars['localhost'].uc_client_stages | select('match', '^onboard/') | list | length == 1
+          - hostvars['localhost'].uc_client_stages | select('match', '^normalized/') | list | length == 1
+        fail_msg: >-
+          Load exactly one onboard and one normalized environment of the client
+          inventory, for example scripts/inventory-args <client> onboard/dev normalized/dev.
+        quiet: true
+
+    - name: confirm reachability
+      wait_for:
+        host: "{{ ansible_host | default(inventory_hostname) }}"
+        port: 22
+        timeout: 10
+      delegate_to: localhost
+
+    # normalizing holds only the hosts in this run; the later plays target
+    # it. normalized is what 30_specialize.yml targets when chained in the
+    # same run through site.yml.
+    - name: promote to normalized group
+      add_host:
+        name: "{{ item }}"
+        ansible_host: "{{ hostvars[item].ansible_host | default(item) }}"
+        groups:
+          - normalizing
+          - normalized
+          - "{{ target_group | default('ungrouped') }}"
+      loop: "{{ ansible_play_hosts }}"
+      # add_host changes only the in-memory inventory; nothing on the node
+      # changes, so it does not count towards the run's changed total.
+      changed_when: false
+
+- name: converge normalized baseline
+  hosts: normalizing
+  become: yes
+  gather_facts: yes
+  # Each node converges independently, so a slow node does not hold the
+  # others at every task. The config default stays linear; the validation
+  # play above keeps it for its add_host loop.
+  strategy: free
+
+  # Firewall values come from the client inventory, one variable per stage,
+  # shaped for steelcj.foomuuri. Until the switch to that role, the vars file
+  # turns the stages listed in uc_firewall_stages into the firewall_rules list
+  # shared/roles/uc_firewall applies. Each is loaded only
+  # when its stage is given to scripts/inventory-args:
+  #   firewall_onboard_ssh         onboard/<env>/group_vars/all.yml
+  #   firewall_normalize_services  normalized/<env>/group_vars/all.yml
+  # See Firewall Layering in en/docs/uc-controller-v0.1.8.md.
+  vars_files:
+    - ../../shared/vars/uc_firewall_interim.yml
+
+  vars:
+    uc_firewall_stages: [onboard, normalize]
+    # Container virtualization types, as in the ntp gate in 10_onboard.yml.
+    # Roles that need the kernel or host access a container does not have are
+    # skipped there; VMs and bare metal run them.
+    normalize_container_types: ['lxc', 'lxd', 'incus', 'docker', 'podman', 'systemd-nspawn', 'container', 'openvz']
+
+  # A Red Hat family image can ship without an SELinux policy: the Incus
+  # rockylinux/9 VM image has SELinux disabled, no selinux-policy package and
+  # no /etc/selinux/config. robertdebock.selinux installs only the Python
+  # bindings, so its "Manage selinux" task fails there. Install the policy
+  # first. Nothing else is needed for the first boot into enforcing: while
+  # SELinux is disabled, selinux-autorelabel-mark.service (policycoreutils)
+  # creates /.autorelabel at every boot, so the reboot the role asks for
+  # relabels the filesystem and then boots again, enforcing.
+  pre_tasks:
+    - name: install the SELinux policy the selinux role configures
+      ansible.builtin.package:
+        name: selinux-policy-targeted
+        state: present
+      when: ansible_facts['os_family'] == 'RedHat'
+
+  # Removed, none of them exists in requirements.yml: pam, limits and motd
+  # (no stated requirement; no configuration is invented), timezone (the
+  # onboard stage sets it through locale_timezone and ntp_timezone), and
+  # chrony (time sync is a pending proposal; see Time Sync in
+  # en/docs/uc-controller-v0.1.4.md).
+  # Role order matters for the reboot. robertdebock.hostname reboots the node
+  # through a handler when the hostname changes (hostname_reboot is left at
+  # the role default, true). Handlers run at the end of the play, but
+  # robertdebock.selinux flushes handlers partway through its own tasks, so
+  # hostname must stay after selinux or its reboot would fire mid-play.
+  # Handler names are shared across roles: selinux also notifies Reboot.
+  roles:
+    # SELinux only on the Red Hat family. On Debian and Ubuntu, which use
+    # AppArmor, the role's defaults would install a policy, set enforcing and
+    # reboot. An OS family condition is not a source condition.
+    - role: robertdebock.selinux
+      when: ansible_facts['os_family'] == 'RedHat'
+    # auditd needs the kernel audit subsystem, which a container cannot use
+    # (the service is masked there).
+    - role: robertdebock.auditd
+      when: ansible_facts['virtualization_type'] | default('') not in normalize_container_types
+    - role: robertdebock.sysctl
+    - role: robertdebock.hostname
+    - role: robertdebock.rsyslog
+    - role: uc_firewall
+
+- name: Persist the promotion to the normalized inventory
+  hosts: normalizing
+  gather_facts: no
+  become: no
+  # Linear, the config default, although the converge play above runs free:
+  # the single run_once task below must see every host that completed.
+
+  vars:
+    # The script is resolved on the controller against the directory
+    # ansible-playbook was started from, the uc-controller checkout, as in
+    # 10_onboard.yml. The client inventory and its stages come from -i.
+    promote_script: "{{ uc_scripts_dir | default('scripts') | ansible.builtin.realpath }}/promote_node.py"
+    promote_inventory: "{{ hostvars['localhost'].uc_client_root }}"
+    promote_from: "{{ hostvars['localhost'].uc_client_stages | select('match', '^onboard/') | first }}"
+    promote_to: "{{ hostvars['localhost'].uc_client_stages | select('match', '^normalized/') | first }}"
+
+  tasks:
+    # promote_node.py is the only code that writes hosts.yml entries. One
+    # run_once task loops over the hosts that completed the converge play (a
+    # host that failed is not in this play), serializing the writes. Only
+    # hosts still listed in the onboard inventory are moved; a rerun on a
+    # node already normalized moves nothing. Connection settings and group
+    # memberships carry over in promote_node.py. become is off because
+    # ansible.cfg enables it globally and this writes to the operator's
+    # working tree. The commit is left to the operator.
+    - name: move each normalized host to the normalized inventory
+      ansible.builtin.command:
+        argv: >-
+          {{
+            [ansible_playbook_python, promote_script,
+             '--inventory', promote_inventory,
+             '--from', promote_from,
+             '--to', promote_to,
+             '--host', item,
+             '--no-commit']
+            + (['--group', target_group] if target_group is defined else [])
+          }}
+      loop: "{{ ansible_play_hosts | select('in', groups['onboarded'] | default([])) | list }}"
+      run_once: true
+      delegate_to: localhost
+      become: no

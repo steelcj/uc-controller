@@ -1,4 +1,6 @@
+__pycache__/
 # Release artifacts, built by scripts/publish-release.py.
 dist/
 
-__pycache__/
+/resume.txt
+

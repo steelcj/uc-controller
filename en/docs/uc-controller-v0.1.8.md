@@ -1,0 +1,2336 @@
+# uc-controller
+
+An Ansible controller configuration that moves nodes through a four stage lifecycle: discover, onboard, normalize, and specialize. Each stage owns its own inventory, its own variables, and its own contribution to the firewall.
+
+## Changelog
+
+### v0.1.7 → v0.1.8
+
+| Change | Description |
+|--------|-------------|
+| Firewall values | `firewall_rules_onboard`, `_normalize` and `_specialize` become `firewall_onboard_ssh`, `firewall_normalize_services` and `firewall_specialize_services`, shaped for `steelcj.foomuuri`. Until the switch to that role, `shared/vars/uc_firewall_interim.yml` turns them into the same rules for `uc_firewall`. See Firewall Layering |
+| Client inventories | Hosts, client values and trusted host keys move out of uc-controller into one private repository per client. uc-controller keeps `inventory-defaults/<stage>/`, the group structure and every piece of logic, and `inventory-template/`, the layout of a client repository. See Inventories |
+| `scripts/inventory-args` | Prints the `-i` options for a client's stages: all of uc-controller's defaults first, then all the client's directories, so a client value always overrides a default |
+| `scripts/new-inventory`, `scripts/check_inventory.py` | Make a client repository from the template, with a pre-commit hook; refuse a client inventory that holds logic or secrets |
+| Every playbook needs a client inventory | Each starts with a play on localhost that runs `shared/tasks/require-client-inventory.yml`: it refuses a run without a client inventory, and finds the client's root and stages from the `-i` sources. `ansible.cfg` names no inventory, and `-e onboard_inventory` and `-e normalized_inventory` are gone |
+| Secrets | Batch passwords move from ansible-vault to one file per batch, `~/.secrets/uc/fleet/batches/<batch>.yml`, holding the password only, read only through the `uc_secret` lookup, which an OpenBao backend can later replace. `vault.yml` and `vault_identity_list` are removed. See Secrets |
+| Known hosts file | The client inventory's `ssh/known_hosts`, named `uc_known_hosts_file`, which resolves to the same file at every stage |
+| Scripts | `promote_node.py`, `demote_node.py`, `match_raw_identity.py` and `reset_inventories.py` take the client inventory's root with `--inventory`, and stages by name |
+| Example fingerprint | Fingerprints in examples are the register's, `SHA256:EXAMPLEexampleEXAMPLEexampleEXAMPLEexample0` and up, numbered by the last character: `…example0` for an ed25519 key, `…example1` for ecdsa |
+| Real values removed | The verification record and the examples name `deb13-vt-0001`, `203.0.113.10` and made-up MACs and machine id in place of the real node's, and `00_discover.yml`'s default subnet is `198.51.100.0/24` |
+| Example batch | Examples and tests use the batch name `raw-1970-01-01-01`, the Unix epoch, which follows the `raw-YYYY-MM-DD-NN` pattern and is a date no real batch can have |
+| Listings | The playbook and script listings below are regenerated from the files; those of `10_onboard.yml` and `promote_node.py` had fallen behind in v0.1.7 |
+
+### v0.1.6 → v0.1.7
+
+| Change | Description |
+|--------|-------------|
+| Secrets | Raw node batch passphrases are kept with plain Ansible Vault: one encrypted file, `inventories/raw/group_vars/admitted/vault.yml`, under the vault ID `batches`, whose passphrase file `ansible.cfg` names. Passphrases are made with dice by the operator. See Secrets |
+| Batch scripts withdrawn | `vault-client.py`, `new_raw_batch.py`, `sha512_crypt.py` and the `secrets/raw-batches/` store, written earlier in this work, were removed after review in favour of plain Ansible Vault: they cost more to understand than they protected, for one operator |
+| The `admitted` raw source | A third source under `raw`, for raw nodes that meet the raw node contract. Its hosts are in `inventories/raw/admitted.yml`, which only `05_admit.yml` writes. They are reached over SSH as `initial` with the controller's key alone, with strict host key checking against `ssh/known_hosts` and their batch passphrase for sudo. See Admission |
+| `05_admit.yml` | New ingress playbook. It admits candidate addresses after checking the confirmation, the host keys and the node's identity, then confirms a connection and a become over the strict connection. It changes nothing on the node, and running it again reports the node as known |
+| Candidates file | `admit_candidates`, usually given with `-e @candidates.yml`, lists each node's address with the host key fingerprint read at its console, so several nodes can be admitted without trusting any on first use. It is the main way to name candidates |
+| Known nodes rechecked | A node found to be known must present exactly the keys recorded in `ssh/known_hosts` under its inventory hostname, or it is refused. Found missing during verification, when a node with an altered recorded key was still reported known |
+| Exit status | Admission exits 2 after its report when any candidate was refused or stopped, or an admission could not be confirmed, and 0 otherwise, including for hosts that are not contract nodes |
+| Known hosts file | New `ssh/known_hosts`, committed, keyed by inventory hostname through `HostKeyAlias` |
+| `match_raw_identity.py`, `inventory_hosts.py` | New scripts: the identity decision for admission, and the host walker it uses |
+| `promote_node.py`, `reset_inventories.py` | Both handle `admitted.yml` as they handle `discovered.yml`. `promote_node.py` keeps a host's strict host key settings when it already has them |
+| `00_discover.yml` scan | `nmap -sn` now probes the SSH port (`-PS22`, `discover_ssh_port`). Without root, its default probes only ports 80 and 443, which a raw contract node's firewall drops, so contract nodes were never found. A host with port 22 closed is listed too, and admission reports it as not a contract node |
+| `10_onboard.yml` | Targets `raw:!admitted`, and says in one line that onboarding contract nodes comes in a later kickoff |
+| Confirmation checker | New `scripts/check_raw_confirmation.py` checks a raw node's `confirmation.yml` against raw node contract 0.3.0 and 0.3.1 and prints JSON for the admission play. See Checking a Confirmation |
+| Tests | New `tests/`, run with `python3 tests/run_tests.py`: the confirmation checker against the fixtures in `tests/fixtures/raw-confirmations/`, the identity decisions, promotion and reset, and `05_admit.yml` end to end against stand-in nodes and a vault of its own |
+
+### v0.1.5 → v0.1.6
+
+| Change | Description |
+|--------|-------------|
+| Ubuntu 24.04 verified | `ubu2404`, an Ubuntu 24.04 container, ran the whole chain from `raw` with `failed=0` and both reruns with `changed=0`; no change to the repository was needed |
+| Red Hat family verified on a VM | `rky9`, a Rocky Linux 9 virtual machine, ran the chain from `raw`: onboard, normalize and specialize with `webserver`, each with `failed=0`, and both reruns with `changed=0`. SELinux enforcing, auditd, the firewalld path of `uc_firewall`, the `webserver` role and chrony through `robertdebock.ntp` are verified there (see Verification Status) |
+| SELinux policy installed before the role | `20_normalize.yml` installs `selinux-policy-targeted` in a `pre_tasks` step on the Red Hat family. The Incus Rocky 9 image has no policy package and no `/etc/selinux/config`, and `robertdebock.selinux` installs only the Python bindings, so its first run failed |
+| Which `Reboot` handler runs | Verified: `robertdebock.selinux` notifies `Reboot`, and the handler that runs is the one `robertdebock.hostname` defines (see Reboots and Role Order) |
+| Known issues | New: with SELinux enforcing, the Incus agent in the Rocky 9 VM cannot start, so `incus exec` and the Incus connection stop working after normalize; the cause is the missing `bin_t` file context for the agent binary, and a fix is proposed but not applied. New: `hostname_reboot` controls the SELinux reboot. New: the Rocky 9 image does not grow its root partition. New: firewalld's `public` zone keeps `cockpit` and `dhcpv6-client` |
+| Pinned versions | `requirements.yml` pins every role to its installed version, `steelcj.umask` to a commit, and lists `community.general` 13.5.1 and `ansible.posix` 2.2.2; new sections Pinned Versions and Bumping a Pinned Version |
+| Listings | The `10_onboard.yml`, `20_normalize.yml` and `30_specialize.yml` listings are refreshed from the repository; in v0.1.5 they lacked `changed_when: false` and the `shared/roles` comment |
+| Port 443 removed from `deb13` | `deb13` was restored to `20-normalized` and specialized again, so ufw no longer lists `allow-https`; `30-webserver` was retaken stopped. An example of the additive firewall's Known Limitation: a removed rule leaves the node only by a rebuild or by hand |
+
+### v0.1.4 → v0.1.5
+
+| Change | Description |
+|--------|-------------|
+| Hostname reboot kept | `hostname_reboot` stays at the role default; `robertdebock.hostname` must stay after `robertdebock.selinux`, which flushes handlers partway through |
+| SELinux on the Red Hat family only | `robertdebock.selinux` runs only when `os_family` is `RedHat`; on Debian and Ubuntu it installed a policy, set enforcing and triggered the shared `Reboot` handler |
+| Role directories | Four role directories with one rule each (see Role Directories); `uc_firewall`, used by onboarding and both converge stages, lives in `shared/roles/`; `roles/` holds only vendored roles; the boundary check fails on a role used across concerns |
+| Scaffold removed | `tools/scaffold.yml`, the experimental role-defaults scaffold, was deleted: it wrote a mapping where the firewall plays expect a list, and nothing depended on it |
+| Vault guidance | The onboarding guide no longer tells readers to create vault files; the secrets pattern is not decided |
+| Normalize persists its promotion | `20_normalize.yml` ends with a play that moves each host that completed it from `onboard_inventory` to `normalized_inventory` through `promote_node.py`; both variables are required |
+| Stopped snapshots | Stage snapshots are taken with the instance stopped (stop, snapshot, start, each with a time limit, then wait for SSH) after snapshots of running containers hung |
+| Specialize stage | `converge/roles/webserver` installs nginx and serves a one-line page naming the host; `30_specialize.yml` includes the role as a task and fails early with a clear message when `specialize_role` is not set. HTTP is opened only as `firewall_rules_specialize` data for the `webservers` group |
+| Verification status | New section: the chain is verified on Debian 13 containers only; auditd, firewalld, the SELinux role and its `Reboot` handler collision, and the `webserver` role on the Red Hat family are untested |
+| Port 443 not opened | `allow-https` removed from `webservers.yml`; nothing serves TLS |
+| Promotions report no change | The in-memory `add_host` promotion tasks in `10_onboard.yml` and `20_normalize.yml` set `changed_when: false`, so a normalize rerun can report `changed=0` |
+| Known issues | New section: Incus snapshots sometimes hang, with the instance running or stopped; the time limit and one retry have always worked |
+| Group memberships kept | Moves between onboard and normalized, in either direction, keep every group other than the stage group and leave the connection settings unchanged |
+
+### v0.1.3 → v0.1.4
+
+| Change | Description |
+|--------|-------------|
+| Option A layout | Playbooks live in `ingress/playbooks/` (discover, onboard) and `converge/playbooks/` (normalize, specialize), `site.yml` at the repository root, `scaffold.yml` in `tools/`; `roles_path` keeps the shared `./roles` first |
+| Multi-source raw inventory | `inventories/raw/hosts.yml` is a hand-maintained static file in which each source group is a child of `raw`; hosts come from per-source root-level files; new Raw Inventory section |
+| Source group invariant | Every raw host is in `raw` and in exactly one source group; connection settings live in `group_vars/<source>.yml` |
+| Incus host names | `host_fqdn: false` in `inventories/raw/incus.yml`, so an instance named `deb13` is the inventory host `deb13`, not `deb13.default.local` |
+| Bootstrap opt-out variable | `needs_python_bootstrap: true` in `raw/group_vars/all.yml`; a source opts out only when its images ship Python and sudo |
+| Reset helper | `reset_inventories.py` never touches the static `raw/hosts.yml` |
+| Discovery output | `00_discover.yml` writes only `inventories/raw/discovered.yml` (subnet) or `cloud.yml` (placeholder), never `hosts.yml`; its directory comes from `raw_inventory`, not `playbook_dir` |
+| Provisional names | Discovered hosts are named `disc-<ip>` and carry `name_provisional: true`; a rename-at-onboarding proposal is recorded |
+| Scripts find hosts in any static file | `promote_node.py` searches every static inventory file in the source stage; `raw/hosts.yml` is read-only to scripts (`uc_origin: static`) |
+| Scripts never add hosts to raw | Demotion to raw removes the host's entry and writes nothing under `inventories/raw/`; the node reappears through its source. Promotion still removes a scanned host from `discovered.yml` |
+| Re-onboarding guard | `10_onboard.yml` checks for the `initial` user first and ends the play for a host that is already onboarded; later plays target only the hosts promoted in the run |
+| Generated raw files ignored | `inventories/raw/discovered.yml` and `cloud.yml` are in `.gitignore`; live host entries are not committed |
+| Script path | `10_onboard.yml` resolves `promote_node.py` from the repository root, as discovery resolves `raw_inventory` |
+| Vault placeholders removed | `vaults/` held three unencrypted placeholders; secrets handling is deferred until the first secret exists |
+| Bootstrap gate | The bootstrap play runs only when `needs_python_bootstrap` is true |
+| Firewall traceability | Converge playbooks name the file each `firewall_rules_<stage>` list lives in |
+| Runnable normalize stage | `20_normalize.yml` drops `pam`, `limits`, `motd`, `timezone` and `chrony` (none exists), gates `auditd` off in containers, and runs its controller-side check without become; a time sync proposal is recorded |
+| Speed settings | `profile_tasks` on, pipelining, per-user fact cache, fresh facts in the onboard converge play, `forks = 20`, `strategy: free` on the converge plays; measured in the speed overview |
+| Firewall rules role | `robertdebock.firewall` read only `firewall_services` and could not restrict sources, so no `firewall_rules` list reached the firewall; it is replaced by the project role `roles/uc_firewall`, which applies `firewall_rules` with ufw or firewalld |
+| Persistence and snapshots | New Persistence and Snapshot Alignment sections: what `add_host` does, when `promote_node.py` runs, the snapshot to take after each playbook, and restore-and-resume |
+| Listings | Playbook and script listings refreshed from the repository |
+
+### v0.1.2 → v0.1.3
+
+| Fix | Description |
+|-----|-------------|
+| Indentation | All code blocks, the directory tree, and the lifecycle diagram restored to valid indentation |
+| Promotion of every host | Both `add_host` promotion tasks now loop over `ansible_play_hosts`; without the loop only the first host was promoted |
+| `raw` group | Discovery now writes hosts into a `raw` group instead of directly under `all`, so `hosts: raw` in `10_onboard.yml` matches them |
+| Inventory refresh | Discovery ends with `meta: refresh_inventory` so a full `site.yml` run sees the hosts it has just written |
+| Scripts | `promote_node.sh` and `demote_node.sh` replaced by working Python scripts that run on Linux, macOS, and Windows |
+
+### v0.1.1 → v0.1.2
+
+| Fix | Description |
+|-----|-------------|
+| Firewall rule loss | Usage commands now pass all relevant inventories with `-i` in load-order so stage-namespaced vars are always available |
+| Self-referencing vars | Removed recursive `vars:` declarations from `00_discover.yml`; defaults are now inline in tasks |
+| Name mismatches | `scaffold_stage` expects `normalized` (matching the tree); `firewall_raw` removed from flow diagram; unused `target_env` removed from usage |
+| `wait_for` delegation | All `wait_for` tasks now run on the controller via `delegate_to: localhost` |
+| Hostname collisions | Discovery now derives unique hostnames from full IPs instead of first octet |
+
+## Verification Status
+
+Nothing is described as working here unless it was run. Each node started from its `raw` snapshot with the stage inventories holding no entry for it, and each stage ran as its own command.
+
+| Node | OS | Type | Onboard | Normalize | Specialize (`webserver`) | Reruns |
+|------|----|------|---------|-----------|--------------------------|--------|
+| `deb13` | Debian 13 | Incus container | `failed=0` | `failed=0`, no reboot | `failed=0`, page served | normalize and specialize `changed=0` |
+| `ubu2404` | Ubuntu 24.04.5 | Incus container | `failed=0` | `failed=0`, no reboot | `failed=0`, page served | normalize and specialize `changed=0` |
+| `rky9` | Rocky Linux 9.8 | Incus virtual machine, 2 vCPU, 2 GiB, 20 GiB disk | `failed=0` | `failed=0`, one reboot | `failed=0`, page served with SELinux enforcing | normalize and specialize `changed=0`, no reboot, hostname unchanged |
+
+On `ubu2404` the checks were those made on `deb13`: SSH login as `initial`, passwordless sudo, the umask (`0027` in `/etc/login.defs` and `/etc/profile.d/umask.sh`, home directory `750`), and the three firewall layers in ufw, `allow-ssh`, `allow-monitoring` from `10.0.0.0/24` and `allow-http`, with port 80 timing out before specialize and the page returned after it. Nothing in the repository needed changing for Ubuntu.
+
+On a container, the absence of a reboot is read from the log (no `Reboot` handler) and from the start time of PID 1. `/proc/sys/kernel/random/boot_id` belongs to the host kernel there and does not change when a container restarts; on a virtual machine it does.
+
+Verified on `rky9`, and only there:
+
+- **`robertdebock.selinux`.** The image starts with SELinux disabled. After normalize the node has rebooted (the boot ID changed), relabelled its filesystem, and `getenforce` reports `Enforcing` with the `targeted` policy. This needs the policy package that `20_normalize.yml` installs first.
+- **The `Reboot` handler.** `robertdebock.selinux` is the only role that notifies it; the hostname task reports no change. The handler that runs is logged as `robertdebock.hostname : Reboot`, so it is the definition in `robertdebock.hostname`. See Reboots and Role Order.
+- **`robertdebock.auditd`.** `auditd` is active and enabled, and `auditctl -s` reports `enabled 1`.
+- **The firewalld path of `uc_firewall`.** After normalize the `public` zone has `22/tcp` open to all and a rich rule accepting `9100/tcp` from `10.0.0.0/24`; port 80 is refused from the controller. After specialize a rich rule accepts `80/tcp`, the earlier rules are still there and SSH still works.
+- **The `webserver` role.** `curl` from the controller returns `rky9` with SELinux enforcing. The packaged `/usr/share/nginx/html/index.html` is a symlink to `../../testpage/index.html`; the role replaces the link with a regular file, labelled `httpd_sys_content_t`, and leaves the test page itself alone.
+- **Time sync.** `robertdebock.ntp`, in onboarding, installs chrony on Rocky 9; `chronyd` is active, enabled and synchronised.
+
+### Raw Node Admission
+
+`05_admit.yml` was run against `deb13-vt-0001`, a uc-ventoy metal node at 203.0.113.10, built to raw node contract 0.3.0 with baseline 0.4.0, with batch `raw-1970-01-01-01`.
+
+| Check | Result |
+|-------|--------|
+| Admission | `admitted`, exit 0. Confirmation passed, keys equal to the confirmation's, identity new. Connection as `initial`, become with the batch passphrase and Ansible `ping` confirmed over the strict connection. `admitted.yml` holds every field; three host keys added to `ssh/known_hosts`. Trusted on first use, then the ED25519 fingerprint was confirmed at the console |
+| Rerun | `known`, exit 0. `admitted.yml` and `ssh/known_hosts` unchanged, by checksum and modification time |
+| Effective SSH options | `ssh -G` with Ansible's own arguments: `StrictHostKeyChecking` on, `HostKeyAlias deb13-vt-0001`, `UserKnownHostsFile` the repository's `ssh/known_hosts` only, `GlobalKnownHostsFile /dev/null` |
+| One character of the recorded ED25519 key changed | The strict connection refused the node (`REMOTE HOST IDENTIFICATION HAS CHANGED`). Before the fix, admission still reported it `known`. After the fix, admission refused it, naming the differing key, exit 2. Restored by checksum both times, and the connection worked again |
+| Discovery | `00_discover.yml` on `203.0.113.10/32` found nothing until the scan probed the SSH port. With `-PS22` it listed only 203.0.113.10, and `admit_from_discovered=true` reported the node `known`, exit 0 |
+
+The candidates file and the exit status rule were tested offline only, against stand-in nodes in `tests/test_admit_playbook.py`.
+
+Not verified:
+
+- `site.yml` as one invocation. It is only syntax-checked.
+- A reboot caused by an actual hostname change. The hostname never changed on either node.
+- Debian or Ubuntu as a virtual machine, where auditd and time sync would run.
+- A Red Hat family container, and any Red Hat family release other than Rocky 9.
+
+## Known Issues
+
+### Incus Snapshots Sometimes Hang
+
+`incus snapshot create` occasionally hangs on the workstation. It has happened with the container running and with it stopped. The cause is unknown: at each hang the Incus daemon logged nothing and showed no pending operation, and the kernel log showed no storage or I/O error. Every stage snapshot is therefore taken stopped and under a time limit (see Snapshot Alignment). When a snapshot times out, retrying it once with the instance still stopped has always worked, and finished in under a second. A timed-out create leaves no snapshot, so confirm it with `incus snapshot list`.
+
+### The Incus Agent Cannot Start Under SELinux Enforcing
+
+On `rky9` the Incus agent stops working once normalize has set SELinux to enforcing. `incus-agent.service` fails after ten restarts, and the audit log holds one denial per attempt:
+
+```text
+type=AVC msg=audit(1794594786.848:90): avc:  denied  { create } for  pid=765 comm="incus-agent" scontext=system_u:system_r:init_t:s0 tcontext=system_u:system_r:init_t:s0 tclass=vsock_socket permissive=0
+```
+
+What stops working:
+
+- `incus exec rky9` answers `VM agent isn't currently running`.
+- The Incus connection plugin, so an ad-hoc command against the node through the client's raw stage fails. Ansible over SSH is not affected, and every stage after onboarding uses SSH.
+- `incus list` no longer shows the guest's own interface name; it reports the address from the DHCP lease instead.
+
+What still works: `incus stop`, `start`, `snapshot` and `restore`, which do not need the agent.
+
+One consequence for onboarding: a normalized `rky9` that is running is still listed in raw by the plugin, and the re-onboarding guard cannot reach it to see the `initial` user. An onboard run that is not limited with `-l` would wait for it and then report it as failed. Limit onboard runs to the nodes being onboarded.
+
+**Cause.** The agent binary has the wrong label. A read-only check on the normalized node found:
+
+- `/run/incus_agent/incus-agent` is labelled `var_run_t`, and `matchpathcon` gives `var_run_t` for it under both `/run` and `/var/run`. systemd starts it without a domain transition, so it runs as `init_t`, which the `targeted` policy does not allow to create a `vsock_socket`.
+- `semanage fcontext -l -C` lists no local rule. The agent's `install.sh` adds one, `bin_t` for `/run/incus_agent/incus-agent` and `/var/run/incus_agent/incus-agent`, but only when `getenforce` and `semanage` both run, and it discards the result. When the image was built there was no `semanage` and no policy store, so the rule was never written.
+- `/run/incus_agent` is a tmpfs that `incus-agent-setup` fills at every start and then runs `restorecon -R` on. With no rule, `restorecon` keeps `var_run_t`. With the rule it would set `bin_t` at every boot, so the rule alone is enough to survive a reboot.
+- `semanage` is installed on the normalized node (`policycoreutils-python-utils`).
+
+**Proposed fix, not applied.** Add the rule the install script meant to add, once a policy exists:
+
+- `bin_t` file context for `/run/incus_agent/incus-agent` and `/var/run/incus_agent/incus-agent`, through `community.general.sefcontext`, then `restorecon` on the binary and a start of `incus-agent.service` for a node that is already enforcing.
+- Guarded to Incus virtual machines by what is on the node, not by where it came from: the Red Hat family, and `incus-agent.service` installed. Converge must not depend on the source of a node, so the inventory group is not the condition.
+- It would live in the converge play of `20_normalize.yml`, in `pre_tasks` after the policy package is installed and before `robertdebock.selinux` reboots the node, so the first enforcing boot already finds the rule. If it grows beyond those tasks, it becomes a small role in `converge/roles/`.
+- It must be tested across a reboot: from `10-onboarded`, normalize, then `incus exec rky9 -- true`, a reboot, and `incus exec` again, with `ls -Z` showing `bin_t` and no new denial for `incus-agent`. That `bin_t` gives the agent a domain that may open the socket is expected, not yet observed.
+
+Until then a normalized Red Hat family VM is managed over SSH only.
+
+### The Rocky 9 Image Does Not Grow Its Root Partition
+
+`rky9` was launched with a 20 GiB root disk, but the root filesystem stayed at 3.8 GiB: the default image variant has no cloud-init and nothing grows the partition. The chain fits, with about 2 GiB free at the end. A role that installs much more would need the partition grown first.
+
+### hostname_reboot Controls the SELinux Reboot
+
+`robertdebock.selinux` and `robertdebock.hostname` both define a handler called `Reboot`, and Ansible runs the one loaded last, which is the one in `robertdebock.hostname` (see Reboots and Role Order). The reboot SELinux needs on its first run is therefore switched by `hostname_reboot`, and `selinux_reboot` has no effect in this play. Setting `hostname_reboot: false` to avoid a reboot on a hostname change would leave a Red Hat family node with SELinux configured as enforcing but not yet active, with nothing in the run saying so. Keep `hostname_reboot` at its default. The vendored roles are not changed.
+
+### The Public Zone Keeps cockpit and dhcpv6-client
+
+On the Red Hat family `uc_firewall` adds its rules to firewalld's default zone, `public`, and removes nothing. Rocky 9 enables the services `ssh`, `dhcpv6-client` and `cockpit` in that zone, so after onboarding `firewall-cmd --list-all` shows them beside the rules from the inventory. Port 9090 for `cockpit` is open in the firewall although nothing listens on it, and `ssh` is open twice, as the service and as the `22/tcp` port from `allow-ssh`. This is the same additive behaviour as the Known Limitation under Firewall Layering: the firewall holds what the inventory lists and whatever was there before.
+
+## Repository Layout
+
+```text
+uc-controller/
+├── ansible.cfg
+├── requirements.yml
+├── site.yml                      # chains ingress then converge in one run
+│
+├── ingress/                      # source-specific: raw node to onboarded node
+│   ├── playbooks/
+│   │   ├── 00_discover.yml
+│   │   ├── 05_admit.yml          # admit raw contract nodes into raw/admitted.yml
+│   │   ├── tasks/
+│   │   │   └── admit_candidate.yml
+│   │   ├── 10_onboard.yml
+│   │   └── artifacts/            # earlier onboard versions, not run
+│   └── roles/
+│
+├── converge/                     # source-agnostic: reads the onboard contract
+│   ├── playbooks/
+│   │   ├── 20_normalize.yml
+│   │   └── 30_specialize.yml
+│   └── roles/                    # repository roles used by converge only
+│       └── webserver/            # specialize: nginx and a one-line page
+│
+├── inventory-defaults/           # logic only, loaded before every client inventory
+│   ├── raw/
+│   │   ├── hosts.yml             # source groups under raw, no hosts
+│   │   └── group_vars/
+│   │       ├── all.yml           # shared raw defaults
+│   │       ├── incus.yml         # Incus connection as root
+│   │       ├── discovered.yml    # plain SSH as root
+│   │       └── admitted.yml      # SSH as initial, strict host keys, uc_secret become
+│   ├── onboard/
+│   │   ├── hosts.yml             # the onboarded group, no hosts
+│   │   └── group_vars/
+│   │       └── all.yml           # umask, openssh hardening, the initial user
+│   └── normalized/
+│       └── hosts.yml             # the normalized group, no hosts
+│
+├── inventory-template/           # the layout of a client inventory repository
+│   ├── raw/                      # incus.yml, admitted.yml, discovered.yml, group_vars/
+│   ├── onboard/<env>/            # hosts.yml, group_vars/all.yml and onboarded.yml
+│   ├── normalized/<env>/         # hosts.yml, group_vars/all.yml and normalized.yml
+│   ├── ssh/known_hosts           # empty
+│   ├── .githooks/pre-commit      # runs check_inventory.py, then yamllint
+│   └── README.md
+│
+├── shared/
+│   ├── roles/                    # repository roles used by ingress and converge
+│   │   └── uc_firewall/
+│   ├── plugins/lookup/
+│   │   └── uc_secret.py          # the only way anything reads a secret
+│   └── tasks/
+│       └── require-client-inventory.yml  # the first play of every playbook
+│
+├── roles/                        # vendored Galaxy roles only
+│
+├── scripts/
+│   ├── inventory-args            # the -i options for a client's stages
+│   ├── new-inventory             # a client repository from the template
+│   ├── check_inventory.py        # refuses logic or secrets in a client inventory
+│   ├── promote_node.py
+│   ├── demote_node.py
+│   ├── reset_inventories.py
+│   ├── check_converge_boundary.py
+│   ├── check_raw_confirmation.py # a raw node's confirmation against the contract
+│   ├── match_raw_identity.py     # a raw node's identity against every stage of a client
+│   └── inventory_hosts.py        # every host in the static inventory files
+│
+└── tests/                        # python3 tests/run_tests.py
+    └── fixtures/
+        ├── raw-confirmations/    # one file per pass, failure and edge case
+        └── inventory-split/      # the variables before and after the inventory split
+```
+
+A client inventory repository, one per client, made with `scripts/new-inventory` and kept private, holds the hosts, the values and the trusted host keys:
+
+```text
+~/uc-inventories/example.org/
+├── raw/            # admitted.yml, discovered.yml, incus.yml, group_vars/
+├── onboard/<env>/  # hosts.yml, group_vars/
+├── normalized/<env>/
+├── ssh/known_hosts # host keys of admitted nodes, committed
+└── .githooks/pre-commit
+```
+
+### Role Directories
+
+| Directory | Holds | Edited here |
+|-----------|-------|-------------|
+| `roles/` | Vendored roles, installed from `requirements.yml` (Galaxy or git) | No |
+| `shared/roles/` | Repository roles used by both ingress and converge playbooks | Yes |
+| `ingress/roles/` | Repository roles used only by ingress playbooks | Yes |
+| `converge/roles/` | Repository roles used only by converge playbooks | Yes |
+
+All four are on `roles_path`, in that order, so any playbook resolves a role by name wherever it lives. The directories state who uses a role, and `scripts/check_converge_boundary.py` holds ingress and converge to it: it fails when a playbook in `ingress/playbooks/` uses a role from `converge/roles/`, or one in `converge/playbooks/` uses a role from `ingress/roles/`. A role that both need moves to `shared/roles/`. `uc_firewall` is there because onboarding opens SSH with it and both converge stages add their layers with it. Role names built from a variable, such as `{{ specialize_role }}`, are not checked.
+
+A `prod` environment, when it exists, follows the same pattern as `dev` and `stage` under a client inventory's `onboard/` and `normalized/`. Secrets are kept in no inventory; see Secrets.
+
+## Inventories
+
+uc-controller holds no hosts and no client values. A run loads two kinds of inventory source, in this order:
+
+1. **`inventory-defaults/<stage>/`**, in uc-controller: the group structure and every piece of logic, such as how each raw source is reached, the admitted group's strict host key settings and become password, and the onboard policy (umask, openssh hardening, the initial user). It is the same for every client.
+2. **The client inventory's stage directories**: `raw/`, `onboard/<environment>/`, `normalized/<environment>/`. They hold the hosts, the generated files, and the values that describe the client: the controller key, the initial user's public keys, locale, time zone and firewall rules.
+
+`scripts/inventory-args <client> <stage> [<stage> ...]` prints the `-i` options: all the defaults directories first, then all the client's directories, each in the order the stages are given. Ansible merges sources in order and group variables from a later source override an earlier one, so a client value always overrides a default. Playbook-level `group_vars/` were set aside: they take precedence over inventory variables, and would block client overrides. A single flat `inventory-defaults/` was set aside too: per-stage defaults keep each stage complete when it runs alone.
+
+A run that combines stages merges their `all` groups, and the last source wins for every host. So a value in `group_vars/all.yml` must mean the same at every stage, such as `uc_client_inventory: true`, and a value that differs by stage goes on the stage's own group: `raw`, `onboarded` or `normalized`. `uc_known_hosts_file` is one. It is built from `inventory_dir`, one level deep for `raw` and two for the others, through `realpath`, and resolves to the client's `ssh/known_hosts` at every stage. A test checks it for every stage alone and for the combined runs the playbooks use.
+
+Every playbook starts with a play on localhost that includes `shared/tasks/require-client-inventory.yml`. It fails, naming `scripts/inventory-args`, when `uc_client_inventory` is not true, which only a client inventory sets. It then takes the `-i` sources outside `inventory-defaults/`, strips the stage from each, fails unless they give one root, and sets `uc_client_root` and `uc_client_stages` on localhost, which has no `inventory_dir` of its own. Admission and discovery write into `uc_client_root`; onboarding and normalization take their one onboard and one normalized environment from `uc_client_stages`.
+
+The template, `inventory-template/`, is versioned with the code that reads it. `scripts/new-inventory` copies it, runs `git init` and sets `core.hooksPath`; the hook runs `scripts/check_inventory.py`, which refuses connection variables under `group_vars/` or `host_vars/`, vault files, crypt hashes, private keys, lookups, and admitted hosts without a batch or host keys. The operator's procedure is in `en/docs/guides/client-inventories.md`.
+
+## Raw Inventory
+
+The raw stage describes nodes as their source provides them, before onboarding has given them an `initial` user and SSH. Source differences end here: once a node is onboarded it is reached over SSH as `initial`, and the onboard and normalized inventories do not care where it came from.
+
+### Layout
+
+| File | Kind | Written by |
+|------|------|------------|
+| `inventory-defaults/raw/hosts.yml` | Static inventory: the source groups, no hosts | Hand, in uc-controller. No playbook or script writes to it. |
+| `inventory-defaults/raw/group_vars/all.yml` | Shared defaults for every source | Hand, in uc-controller |
+| `inventory-defaults/raw/group_vars/<source>.yml` | How that source's nodes are reached | Hand, in uc-controller |
+| `raw/incus.yml` | Dynamic inventory plugin config (`community.general.incus`) | Hand, in the client inventory. The plugin generates the hosts at run time. |
+| `raw/discovered.yml` | Generated inventory, `discovered` group | `00_discover.yml` (subnet scan, overwritten each run). `promote_node.py` removes a host from it when promoting that host. Committed in the client inventory. |
+| `raw/admitted.yml` | Generated inventory, `admitted` group | `05_admit.yml`, which adds each node it admits and keeps the rest. `promote_node.py` removes a host from it when promoting that host. Committed in the client inventory. |
+| `raw/cloud.yml` | Generated inventory, `cloud` group, placeholder | The cloud branch of `00_discover.yml`. Not a child of `raw`, so not onboarded. |
+| `raw/group_vars/` | The client's raw values, and `uc_known_hosts_file` on the `raw` group | Hand, in the client inventory |
+
+Root-level files in a client's `raw/` are reserved for host sources, either a dynamic plugin config or a generated inventory, and each starts with a header comment stating which it is and what writes it. Groups are declared only in `inventory-defaults/raw/hosts.yml`.
+
+### The Source Group Invariant
+
+Every raw host is a member of `raw` and of exactly one source group. `inventory-defaults/raw/hosts.yml` declares each source group as a child of `raw`:
+
+```yaml
+raw:
+  children:
+    incus: {}       # Incus instances, from the client's raw/incus.yml
+    discovered: {}  # SSH-reachable nodes found by 00_discover.yml
+    admitted: {}    # raw contract nodes admitted by 05_admit.yml, SSH as initial
+```
+
+A source puts its hosts into its own group and never into `raw` directly. `10_onboard.yml` targets `hosts: raw`, so it reaches every source through the child groups, and it gets each node's connection settings from `inventory-defaults/raw/group_vars/<source>.yml`. The Incus plugin's default groups (`incus`, `incus_<remote>`, `incus_<remote>_<project>`) supply the `incus` membership, and the plugin config has no `groups: raw: true`.
+
+### Raw Images Are the Lightest Variant
+
+A raw node starts from the lightest image of whatever OS is targeted. For Incus that is the `default` variant from the `images:` remote: `images:debian/13` for `deb13` and `images:ubuntu/24.04` for `ubu2404`, the latter being `ubuntu-minimal` with no cloud-init, snapd, or desktop. The `cloud` and `desktop` variants and Canonical's server images carry more than raw needs. Anything beyond the minimal base is the lifecycle's job, and a desktop, if a node needs one, is added in the specialize stage. Snapshot the instance as `raw` before Ansible touches it.
+
+### Why raw Has No Environment Split
+
+`onboard/` and `normalized/` are split by environment, and `raw/` is not. A raw node has no environment until onboarding assigns one: the onboard environment loaded with `scripts/inventory-args` decides it. A container just launched, a cloud instance, or a node found by a scan may never belong to any environment, and some will be someone else's. Splitting `raw/` by environment would force that decision before the node is even reachable as `initial`, and would duplicate every source config per environment. Do not add `raw/dev/` or `raw/stage/`.
+
+### Adding a Source
+
+Add a source only when there is a node to test it against.
+
+- Add the group under `raw.children` in `inventory-defaults/raw/hosts.yml`.
+- Add `inventory-defaults/raw/group_vars/<source>.yml` with the connection settings (`ansible_connection`, `ansible_user`, and anything else the source needs). Set `needs_python_bootstrap: false` there only if the source's images are known to ship both Python and sudo.
+- Add the root-level file that supplies the hosts to `inventory-template/raw/`, and to each client inventory that has the source: a plugin config named as the plugin requires, or a generated inventory. Give it a header comment saying which it is and what writes it, and make it put hosts only in the source group.
+- Confirm with `ansible-inventory $(scripts/inventory-args ~/uc-inventories/example.org raw) --graph` that the new hosts appear under `raw` and the source group, and with `--host` that they get the source's connection settings.
+
+Nothing in the onboard or normalized stages, or the converge playbooks, changes.
+
+### Scripts Never Add Hosts to Raw
+
+Raw is what the sources report: the Incus plugin, a hand-maintained `raw/hosts.yml` where a client has one, and the scan's `discovered.yml`. No script adds a host to any file under a client's `raw/`.
+
+- Promotion out of raw removes a scanned host from `discovered.yml`, and an admitted host from `admitted.yml`, so the host is not listed in two stages. These are the only cases where a script changes a raw file. Writing `admitted.yml` is the admission playbook's job, as writing `discovered.yml` is discovery's.
+- A host entered by hand in `hosts.yml` is copied on promotion, not moved, and marked `uc_origin: static`. A plugin host is created from `--address` and marked `uc_origin: plugin`.
+- Moves between onboard and normalized, in either direction, keep the host's connection settings and every group it was in other than the stage group. The connection contract is written only on promotion out of raw.
+- Demotion to raw removes the host's entry from the onboard (or normalized) inventory and writes nothing. The node reappears in raw through its source: the plugin lists a running Incus instance, a hand-entered host never left `hosts.yml`, and a scanned host is found by the next scan.
+
+Demotion is inventory bookkeeping. It exists so the inventory can follow a node after a snapshot restore, and it has nothing to do with making onboarding repeatable. Onboarding is one-shot; see Re-onboarding Guard.
+
+## Variable Precedence
+
+```text
+<client>/normalized/<env>/host_vars/<host>.yml           ← highest
+<client>/normalized/<env>/group_vars/<group>.yml
+<client>/normalized/<env>/group_vars/all.yml
+<client>/onboard/<env>/group_vars/all.yml
+<client>/raw/group_vars/all.yml
+inventory-defaults/<stage>/group_vars/                   (loaded before every client source)
+roles/<role>/defaults/main.yml                           ← lowest
+```
+
+For variables of the same group, a later source overrides an earlier one, so every client directory overrides every defaults directory, as `scripts/inventory-args` orders them. A more specific group still overrides a less specific one, whichever source it is in: a client's `group_vars/all.yml` does not override a default set on a child group such as `admitted`. That is how the defaults keep the connection settings that `check_inventory.py` forbids clients to set.
+
+Within a single inventory this follows Ansible's documented order, in which role defaults are the most easily overridden, inventory `group_vars/all` sits above them, more specific `group_vars` files sit above that, and `host_vars` sit higher still <a id="cite-ansible-variables"></a>([Ansible project contributors, n.d.-f](#ref-ansible-variables)).
+
+The ordering across the raw, onboard, and normalized stages applies only when those stages are loaded together in the same run. Ansible loads inventory sources in the order they are supplied, and when the same variable is defined more than once the last definition wins <a id="cite-ansible-inventory"></a>([Ansible project contributors, n.d.-e](#ref-ansible-inventory)). A stage that is not given to a run contributes no variables to it.
+
+### Critical Constraint
+
+Ansible variable precedence **replaces** lists, it does not merge them. If `firewall_rules` is defined in both onboard and normalized `group_vars/all.yml`, the higher-precedence definition wins and the lower one vanishes silently. The default `hash_behaviour` is `replace`, and even the optional `merge` setting applies only to dictionaries, never to lists; the documentation recommends avoiding reused variable names and building merged values explicitly instead <a id="cite-ansible-config"></a>([Ansible project contributors, n.d.-c](#ref-ansible-config)). This is why stage-namespaced variables are required (see Firewall Layering below).
+
+## Firewall Layering
+
+### The Problem
+
+Ansible's variable precedence operates on a replace basis for lists. You cannot rely on `group_vars` inheritance to accumulate firewall rules across lifecycle stages. The higher-precedence file overwrites the lower one entirely.
+
+### The Solution: Stage-Namespaced Variables
+
+Each stage owns its own firewall values under a **distinct variable name**, so a run that combines stages cannot clobber one with another. The values are shaped for `steelcj.foomuuri`, the firewall uc-node's nodes arrive with, which uc-controller is switching to (see Moving to steelcj.foomuuri below). Until then, the playbook combines them at play time into the input `uc_firewall` expects (`firewall_rules`). This preserves idempotency: re-running normalize or specialize always produces the same complete rule set because the role sees the full picture, not a delta.
+
+### Variable Placement
+
+| Variable | Where | Foomuuri fragment | Shape |
+|----------|-------|-------------------|-------|
+| `firewall_onboard_ssh` | `onboard/<env>/group_vars/all.yml` | `10-base`, as `foomuuri_ssh_port` and `foomuuri_ssh_sources` | `port`, and `sources` (empty means any) |
+| `firewall_normalize_services` | `normalized/<env>/group_vars/all.yml` | `20-normalize`, as `foomuuri_services` | A list of `name` (a Foomuuri macro such as `http`, or a port), `protocol` (default `tcp`), `sources` (empty or absent means any) and `state` (`absent` leaves the entry out) |
+| `firewall_specialize_services` | `normalized/<env>/group_vars/<group>.yml` | `30-specialize`, as `foomuuri_services` | As `firewall_normalize_services` |
+
+```yaml
+# <client>/onboard/dev/group_vars/all.yml
+firewall_onboard_ssh:
+  port: 22
+  sources: []
+```
+
+```yaml
+# <client>/normalized/dev/group_vars/all.yml
+firewall_normalize_services:
+  - name: 9100  # node exporter
+    protocol: tcp
+    sources:
+      - 198.51.100.0/24
+```
+
+```yaml
+# <client>/normalized/dev/group_vars/webservers.yml
+firewall_specialize_services:
+  - name: http
+    protocol: tcp
+    sources:
+      - 0.0.0.0/0
+```
+
+Empty sources mean any address, IPv4 or IPv6. A source of `0.0.0.0/0` is any IPv4 address only, which is what these values meant under `uc_firewall`.
+
+### Combine Expression
+
+Each playbook loads `shared/vars/uc_firewall_interim.yml` with `vars_files` and lists the stages it applies:
+
+```yaml
+vars_files:
+  - ../../shared/vars/uc_firewall_interim.yml
+
+vars:
+  uc_firewall_stages: [onboard, normalize, specialize]
+```
+
+The vars file builds `firewall_rules` from the stages listed: one rule for each source of `firewall_onboard_ssh`, named `allow-ssh`, then one for each source of each service, named `allow-<name>`. A service named by a macro gets that macro's TCP port (`ssh` 22, `http` 80, `https` 443), and any other name is used as the port. Without `firewall_onboard_ssh` there is no SSH rule, so `uc_firewall` still refuses to enable the firewall. `tests/test_uc_firewall_interim.py` checks that the template's values give the rules the earlier `firewall_rules_<stage>` lists gave.
+
+`uc_firewall` runs against the merged list. Run it once or ten times, same result, idempotent.
+
+**Important:** the `default([])` guards only prevent a template error when a variable is undefined. They do not recover rules from an inventory that was not loaded. All inventories contributing rules must be passed with `-i` in the correct order. See Usage below.
+
+### Why This Works
+
+- **Onboard** knows it needs SSH. That's all it knows.
+- **Normalize** knows it needs monitoring. It doesn't care about SSH.
+- **Specialize** knows it needs port 80. It doesn't care about monitoring.
+- **None of them know the full picture individually.** The combine at play time is the convergence.
+
+The firewall settings live with the stage that owns them. The role only ever runs against the merged result. That's layering without overwrite.
+
+### The Firewall Role
+
+`uc_firewall` is a project role, not a vendored one. It lives in `shared/roles/` (see Role Directories), because onboarding and both converge stages use it. It replaced `robertdebock.firewall`, which read only `firewall_services` and could not restrict a rule's source address.
+
+#### Rule Schema
+
+| Key | Required | Meaning |
+|-----|----------|---------|
+| `name` | yes | Rule name, used as the rule comment |
+| `port` | yes | Port number |
+| `protocol` | no | `tcp` (default) or `udp` |
+| `source` | no | Address or network allowed to connect. A rule without `source` is open to all addresses. |
+
+#### Behaviour
+
+- Backend per OS family, the same one `robertdebock.firewall` installed, so nothing else on the node changes: ufw on the Debian family (Debian, Ubuntu) through `community.general.ufw`, firewalld on the Red Hat family through `ansible.posix.firewalld`, with a rich rule for each rule that has a `source`. The firewalld path is verified on `rky9`. A rule without a `source` becomes a port in the default zone; a rule with one becomes a rich rule, so `allow-http`, whose data gives `0.0.0.0/0`, is a rich rule too. The role adds to the default zone, `public`, and removes nothing from it: the services the distribution enables there (`ssh`, `dhcpv6-client` and `cockpit` on Rocky 9) stay enabled.
+- SSH safety: before anything is enabled, the role asserts that `firewall_rules` contains a TCP rule for the SSH port in use (`uc_firewall_ssh_port`, default `ansible_port` or 22), and fails with a message naming the file to fix if it does not. `firewall_onboard_ssh` in the client inventory's `onboard/<env>/group_vars/all.yml` gives that rule.
+- Order: allow rules first, then the default policy (deny incoming, allow outgoing), then the firewall is enabled, so the default deny never takes effect before the allow rules exist.
+
+#### Known Limitation
+
+The role is additive. It adds and keeps the rules in the list, and it never removes a rule that is missing from the list. Deleting a service from `firewall_<stage>_services` leaves its rule on nodes that already have it; remove it by hand (`ufw delete allow ...`) or rebuild the node from its snapshot. Under `steelcj.foomuuri` each stage writes a whole fragment, so a deleted service goes with the next run.
+
+### Moving to steelcj.foomuuri
+
+uc-node builds raw nodes with Foomuuri and writes the base fragment, `10-base`, as a bootstrap rule that lets the controller in. From admission on, uc-controller owns every firewall fragment; the raw node contract 0.3.1 lets onboarding keep the firewall manager it finds or replace it. The switch is its own change, after the inventory split, and is listed in `ROADMAP.md`:
+
+- Onboard calls `steelcj.foomuuri` with `foomuuri_fragment: 10-base`, the default, so it replaces uc-node's file under the same name and leaves nothing behind. `foomuuri_ssh_port` and `foomuuri_ssh_sources` come from `firewall_onboard_ssh`, and `foomuuri_require_ssh` stays true, so a base fragment without SSH is refused.
+- Normalize writes `20-normalize`, and specialize writes `30-specialize`, each from its service list.
+- Every call lists all of uc-controller's other fragments in `foomuuri_keep_fragments`, not just the earlier ones, so rerunning normalize after specialize does not purge `30-specialize`.
+- A stage with an empty service list sets `foomuuri_fragment_state: absent`, so an old fragment is removed rather than left in place.
+- The SSH port stays at 22 for now. The role only moves the firewall's rule, `foomuuri_ssh_port`, and sshd moves later in the same run, which is the lockout uc-node's ROADMAP describes.
+
+`shared/roles/uc_firewall`, `shared/vars/uc_firewall_interim.yml` and its test, `tests/test_uc_firewall_interim.py`, are removed with the switch. The client inventory's values keep their names and shape through it.
+
+## Playbooks
+
+### 00_discover.yml
+
+Find raw nodes and write them to a generated inventory file. Supports subnet scanning (nmap) and a cloud API placeholder. Lives in `ingress/playbooks/`.
+
+The subnet scan writes only the client inventory's `raw/discovered.yml`, under the `discovered` group, and overwrites it on every run. The cloud placeholder writes its own `cloud.yml`. The target directory is the client's `raw/`, under the `uc_client_root` that the first play finds from the `-i` sources, so it does not depend on where the playbook lives. Hosts get provisional names (`disc-<ip>`) and `name_provisional: true`.
+
+Parameters are passed via `-e` and consumed inline with `| default()` filters. No recursive `vars:` declarations.
+
+Discovered hosts are written into the `discovered` group, which `hosts.yml` declares as a child of `raw`, so `hosts: raw` in the onboard play matches them. The play ends with `meta: refresh_inventory` because inventory is read once at startup; without the refresh, a full `site.yml` run would not see the hosts it has just written.
+
+```yaml
+#!/usr/bin/env ansible-playbook
+---
+# Find raw nodes and write them to a generated inventory file.
+#
+# Each source writes only its own root-level file in the client inventory's
+# raw/ directory:
+#   subnet -> discovered.yml, hosts in the discovered group
+#   cloud  -> cloud.yml (placeholder, not wired into raw; see below)
+#
+# The client inventory is found from the -i sources (uc_client_root), so
+# this does not depend on where this playbook lives:
+#
+#   ansible-playbook $(scripts/inventory-args ~/uc-inventories/example.org raw) \
+#     ingress/playbooks/00_discover.yml -e discover_subnet=203.0.113.0/24
+#
+# Generated names are provisional: disc-<ip with dots as hyphens>, with
+# name_provisional: true on the host. Renaming is not done here.
+
+- name: Require a client inventory
+  hosts: localhost
+  gather_facts: false
+  become: false
+  tasks:
+    - name: Require a client inventory, and find its root
+      ansible.builtin.import_tasks: ../../shared/tasks/require-client-inventory.yml
+
+- name: discover raw nodes
+  hosts: localhost
+  gather_facts: no
+  become: no
+
+  vars:
+    discover_raw_dir: "{{ uc_client_root }}/raw"
+
+  tasks:
+    - name: scan subnet for SSH-capable hosts
+      # Host discovery by a TCP probe on the SSH port. Run without root, nmap's
+      # default -sn probes only ports 80 and 443, which a raw contract node's
+      # firewall drops (RN-FW-03), so contract nodes looked down. A host whose
+      # port 22 is closed answers with a reset and is listed too; admission
+      # reports it as not a contract node.
+      command: "nmap -sn -PS{{ discover_ssh_port | default(22) }} -oG - {{ discover_subnet | default('198.51.100.0/24') }}"
+      register: scan_results
+      changed_when: false
+      when: (discover_source | default('subnet')) == 'subnet'
+
+    - name: parse discovered hosts
+      set_fact:
+        discovered_hosts: >-
+          {{
+            scan_results.stdout_lines
+            | select('match', '^Host:')
+            | map('regex_replace', '^Host: (\S+).*', '\1')
+            | list
+          }}
+      when: (discover_source | default('subnet')) == 'subnet'
+
+    - name: derive provisional hostnames from IPs
+      set_fact:
+        discovered_named: >-
+          {{
+            discovered_hosts
+            | map('replace', '.', '-')
+            | map('regex_replace', '^', 'disc-')
+            | zip(discovered_hosts)
+            | list
+          }}
+      when: (discover_source | default('subnet')) == 'subnet'
+
+    # Overwritten on every subnet scan. ansible_connection and ansible_user
+    # come from raw/group_vars/discovered.yml.
+    - name: write the discovered inventory from the subnet scan
+      copy:
+        dest: "{{ discover_raw_dir }}/discovered.yml"
+        content: |
+          # raw/discovered.yml
+          #
+          # Generated inventory, written by ingress/playbooks/00_discover.yml in
+          # uc-controller and overwritten on every subnet scan. promote_node.py removes
+          # a host from it when promoting that host. Committed. Do not edit by hand.
+          # Names are provisional (disc-<ip>) until onboarding.
+          discovered:
+          {% if discovered_named | length == 0 %}
+            hosts: {}
+          {% else %}
+            hosts:
+          {% for pair in discovered_named %}
+              {{ pair[0] }}:
+                ansible_host: {{ pair[1] }}
+                name_provisional: true
+          {% endfor %}
+          {% endif %}
+      when: (discover_source | default('subnet')) == 'subnet'
+
+    - name: query cloud API for instances
+      uri:
+        url: "{{ cloud_api_url }}/instances"
+        method: GET
+        return_content: yes
+        headers:
+          Authorization: "Bearer {{ cloud_api_token }}"
+      register: cloud_instances
+      when: (discover_source | default('subnet')) == 'cloud'
+
+    # Placeholder, not developed further. It writes its own file so it cannot
+    # clobber anything. The cloud group is not a child of raw in hosts.yml,
+    # so these hosts are not onboarded until a cloud source is added.
+    - name: write the cloud placeholder inventory
+      copy:
+        dest: "{{ discover_raw_dir }}/cloud.yml"
+        content: |
+          # raw/cloud.yml
+          #
+          # Generated inventory, written by the cloud placeholder in
+          # ingress/playbooks/00_discover.yml. Not committed. Not wired into raw.
+          cloud:
+            hosts:
+          {% for instance in cloud_instances.json %}
+              {{ instance.name }}:
+                ansible_host: {{ instance.private_ip }}
+                ansible_user: root
+          {% endfor %}
+      when: (discover_source | default('subnet')) == 'cloud'
+
+    - name: reload inventory so later plays see the discovered hosts
+      meta: refresh_inventory
+```
+
+### 10_onboard.yml
+
+Make it manageable. Lives in `ingress/playbooks/`. It writes promoted nodes into the one onboard environment loaded, and fails at once unless exactly one is (`scripts/inventory-args <client> raw onboard/<env>`).
+
+- Play 1 first skips any node that is already onboarded (see Re-onboarding Guard), then probes each raw node with `raw: 'true'` over whatever connection its source provides, and promotes it into `onboarding` and `onboarded` in memory.
+- Play 2 runs `robertdebock.bootstrap` (Python and sudo) when `needs_python_bootstrap` is true, still over the source connection as root.
+- Play 3 converges the onboarding baseline, including the `initial` user.
+- Play 4 re-targets the node over SSH as `initial` with the full connection contract.
+- Play 5 confirms SSH and sudo as `initial`.
+- Play 6 persists the promotion by calling `promote_node.py` (see Persistence).
+
+Promotion uses `add_host`, which adds hosts and groups to the in-memory inventory so that later plays in the same playbook run can target them <a id="cite-ansible-add-host"></a>([Ansible project contributors, n.d.-a](#ref-ansible-add-host)). `add_host` runs once per play rather than once per host, so the task loops over `ansible_play_hosts` to promote every node. That list holds only the hosts still active in the play, so a node that failed a check is not promoted or persisted.
+
+```yaml
+#!/usr/bin/env ansible-playbook
+---
+# Make raw nodes manageable.
+#
+# A raw node is reached however discovery left it: an Incus instance over the
+# incus connection as root, or a bare-metal/VPS node over SSH as root. Neither
+# has the "initial" user or sshd-as-initial yet; creating them is this stage's
+# job. So the onboard plays run over that root connection, and only at the end
+# is the connection switched to SSH as "initial" for the stages that follow.
+#
+# The connection and user for each raw node come from its inventory
+# (inventory-defaults/raw/group_vars/incus.yml sets ansible_connection and
+# ansible_user for the Incus group). This playbook carries those through
+# promotion rather than assuming SSH.
+#
+# Usage, with the client inventory's raw stage and the onboard environment
+# that promoted nodes are written into:
+#
+#   ansible-playbook $(scripts/inventory-args ~/uc-inventories/example.org raw onboard/dev) \
+#     ingress/playbooks/10_onboard.yml
+
+# Raw nodes admitted by 05_admit.yml (the admitted group) meet the raw node
+# contract and are reached as initial with a password for sudo. This
+# playbook still onboards over a root connection, so it leaves them out.
+- name: Require a client inventory
+  hosts: localhost
+  gather_facts: false
+  become: false
+  tasks:
+    - name: Require a client inventory, and find its root
+      ansible.builtin.import_tasks: ../../shared/tasks/require-client-inventory.yml
+
+- name: Leave out admitted raw contract nodes
+  hosts: localhost
+  gather_facts: false
+  become: false
+  tasks:
+    - name: Say that admitted nodes are not onboarded here
+      ansible.builtin.debug:
+        msg: "Skipping admitted nodes ({{ groups['admitted'] | join(', ') }}): onboarding contract nodes comes in a later kickoff."
+      when: groups['admitted'] | default([]) | length > 0
+
+- name: Confirm raw nodes are reachable and promote them
+  hosts: raw:!admitted
+  gather_facts: no
+  become: no
+
+  tasks:
+    # Re-onboarding guard. Onboarding is one-shot, and an onboarded Incus
+    # instance stays in raw for as long as it runs, because the plugin lists
+    # it. If the initial user already exists, the node has been onboarded:
+    # say so and end the play for that host only. raw needs no Python, and an
+    # unreachable node is left to the readiness probe below.
+#    - name: check whether the node is already onboarded
+#      ansible.builtin.raw: id initial
+#      register: onboarded_probe
+#      failed_when: false
+#      changed_when: false
+#      ignore_unreachable: true
+
+    - name: report a node that is already onboarded
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }} is already onboarded (the initial user
+          exists); skipping it. Restore it to its raw snapshot and demote its
+          inventory entry to onboard it again.
+      when: onboarded_probe.rc | default(1) == 0
+
+    - name: end the play for a node that is already onboarded
+      ansible.builtin.meta: end_host
+      when: onboarded_probe.rc | default(1) == 0
+
+    # The last play writes each promoted host into the onboard environment
+    # loaded with -i, so exactly one must be loaded. It comes from the -i
+    # sources, not from playbook_dir, so it does not depend on where this
+    # file lives.
+    - name: require one onboard environment and the key file
+      ansible.builtin.assert:
+        that:
+          - hostvars['localhost'].uc_client_stages | select('match', '^onboard/') | list | length == 1
+          - onboard_ssh_private_key_file is defined
+        fail_msg: >-
+          Load the client inventory's raw stage and exactly one onboard
+          environment, for example scripts/inventory-args <client> raw onboard/dev,
+          so the promoted nodes have one destination and onboard_ssh_private_key_file
+          is defined.
+        quiet: true
+
+    # raw runs over whatever connection the node uses and needs no Python, so
+    # it is a readiness probe that works for both Incus (already up) and an
+    # SSH root node (retried until sshd answers). This replaces the old
+    # wait_for port 22, which a raw Incus node without sshd can never pass.
+    - name: wait for the node to accept a connection
+      ansible.builtin.raw: 'true'
+      register: probe
+      retries: 10
+      delay: 6
+      until: probe is succeeded
+      changed_when: false
+
+    # Promoted nodes join two in-memory groups. onboarding holds only the
+    # nodes promoted in this run, and the later plays here target it, so a
+    # node already listed in the onboard inventory's onboarded group is not
+    # touched again. onboarded is what 20_normalize.yml targets when it is
+    # chained in the same run through site.yml.
+    #
+    # add_host runs once per play, so loop over ansible_play_hosts to promote
+    # every node still active in the play. The connection vars are carried
+    # across with default(omit) so an Incus node keeps its incus connection and
+    # an SSH node keeps the ansible_host from its inventory.
+    - name: promote reachable nodes to onboarded
+      ansible.builtin.add_host:
+        name: "{{ item }}"
+        groups:
+          - onboarding
+          - onboarded
+          - "{{ target_group | default('ungrouped') }}"
+        ansible_connection: "{{ hostvars[item].ansible_connection | default(omit) }}"
+        ansible_user: "{{ hostvars[item].ansible_user | default(omit) }}"
+        ansible_host: "{{ hostvars[item].ansible_host | default(omit) }}"
+      loop: "{{ ansible_play_hosts }}"
+      # add_host changes only the in-memory inventory; nothing on the node
+      # changes, so it does not count towards the run's changed total.
+      changed_when: false
+
+- name: Bootstrap Python onto onboarded nodes
+  hosts: onboarding
+  gather_facts: no          # Python is not present yet; bootstrap installs it.
+  become: no                # Already root over the incus/ssh-root connection.
+
+  vars:
+    # sudo may not be installed on a minimal image, and it is not needed while
+    # the connection is already root. The later ssh-as-initial stages turn
+    # become back on.
+    bootstrap_become: false
+
+  roles:
+    # needs_python_bootstrap defaults to true in raw/group_vars/all.yml. A
+    # source opts out in its own group_vars only when its images ship both
+    # Python and sudo; the users role later in this playbook needs sudo.
+    - role: robertdebock.bootstrap
+      when: needs_python_bootstrap | default(true) | bool
+
+- name: Converge the onboard baseline
+  hosts: onboarding
+  gather_facts: no          # Gathered fresh by the setup pre_task below.
+  become: no                # Still root over the root connection.
+
+  # Always gather fresh facts here, never from the cache. Instance names are
+  # reused across rebuilds, and the SSH switch below takes the node's address
+  # from these facts; under gathering = smart a cached fact from an earlier
+  # instance of the same name could point at a stale address. Python is
+  # present now, installed by bootstrap above.
+  pre_tasks:
+    - name: gather fresh facts
+      ansible.builtin.setup:
+
+  # Firewall values come from the client inventory, one variable per stage,
+  # shaped for steelcj.foomuuri. Until the switch to that role, the vars file
+  # turns the stages listed in uc_firewall_stages into the firewall_rules list
+  # shared/roles/uc_firewall applies. Onboard applies only
+  # firewall_onboard_ssh, from onboard/<env>/group_vars/all.yml.
+  vars_files:
+    - ../../shared/vars/uc_firewall_interim.yml
+
+  vars:
+    uc_firewall_stages: [onboard]
+
+  # No sudo pre_task is needed: robertdebock.bootstrap already installs sudo
+  # (its Debian package set is "python3 sudo gnupg python3-apt"), which is why
+  # the users role can rely on visudo and write /etc/sudoers.d/initial.
+
+  roles:
+    # Set a tight system-wide umask before any user is created, so the initial
+    # user's home directory is created with the intended permissions. The umask
+    # values live in inventory-defaults/onboard/group_vars/all.yml.
+    - role: steelcj.umask
+    - role: robertdebock.epel
+    - role: robertdebock.update
+    - role: robertdebock.locale
+    - role: robertdebock.auto_update
+    - role: robertdebock.cron
+    # Containers take their clock from the host and usually cannot set time,
+    # so skip ntp there. This also sidesteps Debian trixie dropping the 'ntp'
+    # package; real VMs and bare metal on trixie need a time-sync rethink
+    # (chrony or systemd-timesyncd), tracked separately.
+    - role: robertdebock.ntp
+      when: ansible_facts['virtualization_type'] | default('') not in ['lxc', 'lxd', 'incus', 'docker', 'podman', 'systemd-nspawn', 'container', 'openvz']
+    - role: robertdebock.openssh      # installs and hardens sshd
+    - role: robertdebock.fail2ban
+    - role: uc_firewall               # applies firewall_rules; refuses without the SSH rule
+    - role: robertdebock.users        # creates the initial user + sudo + key
+
+- name: Switch onboarded nodes to SSH as the initial user
+  hosts: onboarding
+  gather_facts: no
+  become: no
+
+  tasks:
+    # After this play the node is reached over SSH as initial, which is what
+    # 20_normalize.yml and later stages expect. The management address is the
+    # fact gathered in the previous play; fall back to any inventory
+    # ansible_host, then the inventory name.
+    - name: re-target the node over SSH as initial
+      ansible.builtin.add_host:
+        name: "{{ item }}"
+        groups:
+          - onboarded
+        ansible_connection: ssh
+        ansible_user: initial
+        ansible_ssh_private_key_file: "{{ onboard_ssh_private_key_file }}"
+        # Offer only the key above. Otherwise agent keys are tried first, can
+        # exhaust sshd's MaxAuthTries, and get the controller banned by fail2ban.
+        ansible_ssh_common_args: "-o IdentitiesOnly=yes"
+        ansible_host: >-
+          {{
+            hostvars[item].ansible_default_ipv4.address
+            | default(hostvars[item].ansible_host)
+            | default(item)
+          }}
+      loop: "{{ ansible_play_hosts }}"
+
+- name: Confirm SSH as the initial user works
+  hosts: onboarding
+  gather_facts: no
+  become: yes               # initial has passwordless sudo
+
+  tasks:
+    - name: wait for SSH to answer as initial
+      ansible.builtin.wait_for_connection:
+        timeout: 60
+
+    - name: confirm sudo works for initial
+      ansible.builtin.command: id
+      changed_when: false
+      register: initial_id
+
+    - name: show who we are now
+      ansible.builtin.debug:
+        msg: "{{ inventory_hostname }}: {{ initial_id.stdout }}"
+
+- name: Persist the promotion to the onboard inventory
+  hosts: onboarding
+  gather_facts: no
+  become: no
+
+  vars:
+    # The script is resolved on the controller against the directory
+    # ansible-playbook was started from, the uc-controller checkout. The
+    # client inventory and its stages come from the -i sources.
+    promote_script: "{{ uc_scripts_dir | default('scripts') | ansible.builtin.realpath }}/promote_node.py"
+    promote_inventory: "{{ hostvars['localhost'].uc_client_root }}"
+    promote_from: raw
+    promote_to: "{{ hostvars['localhost'].uc_client_stages | select('match', '^onboard/') | first }}"
+
+  tasks:
+    # promote_node.py is the only code that writes hosts.yml entries. One
+    # run_once task looping over the play's hosts serializes the writes, so
+    # several nodes finishing together cannot race on the same file. become
+    # is off because ansible.cfg enables it globally and this writes to the
+    # operator's own working tree. The commit is left to the operator.
+    # The key path comes from the inventory variable, not from
+    # ansible_ssh_private_key_file, which Ansible expands to an absolute path
+    # once connected; the unexpanded ~/ form stays valid on other controllers.
+    # expand_argument_vars is off because the command module otherwise expands
+    # ~ in arguments before the script sees them.
+    - name: write each promoted host and its connection contract
+      ansible.builtin.command:
+        expand_argument_vars: false
+        argv: >-
+          {{
+            [ansible_playbook_python, promote_script,
+             '--inventory', promote_inventory,
+             '--from', promote_from,
+             '--to', promote_to,
+             '--host', item,
+             '--address', hostvars[item].ansible_host,
+             '--key-file', hostvars[item].onboard_ssh_private_key_file,
+             '--no-commit']
+            + (['--group', target_group] if target_group is defined else [])
+          }}
+      loop: "{{ ansible_play_hosts }}"
+      run_once: true
+      delegate_to: localhost
+      become: no
+```
+
+### 20_normalize.yml
+
+Make it compliant. Lives in `converge/playbooks/`. Validates onboarded (and, on a rerun, normalized) nodes, promotes them into the `normalized` group in memory, converges the compliance baseline, and persists the promotion with `promote_node.py` (see Persistence). It needs exactly one onboard and one normalized environment loaded (`scripts/inventory-args <client> onboard/<env> normalized/<env>`), and fails at once otherwise.
+
+#### Role List
+
+| Role | Status |
+|------|--------|
+| `robertdebock.selinux` | Red Hat family only, after a `pre_tasks` step that installs `selinux-policy-targeted`. Verified on `rky9`: enforcing after one reboot. On Debian and Ubuntu, which use AppArmor, its defaults installed the SELinux policy, set enforcing and notified a reboot |
+| `robertdebock.auditd` | Skipped in containers, where `auditd.service` is masked; runs on VMs and bare metal. Verified on `rky9` |
+| `robertdebock.sysctl` | Runs. No settings are defined yet |
+| `robertdebock.hostname` | Runs, after `selinux`. Reboots the node when the hostname changes (`hostname_reboot` at its default, true) |
+| `robertdebock.rsyslog` | Runs |
+| `uc_firewall` | Runs. Adds the rules from `firewall_normalize_services` |
+| `pam`, `limits`, `motd` | Removed. There is no role of that name and no stated requirement, and no configuration is invented |
+| `timezone` | Removed. The onboard stage sets the timezone through `locale_timezone` and `ntp_timezone` |
+| `chrony` | Removed. See Time Sync |
+
+Run with `failed=0` on `deb13`, `ubu2404` and `rky9` from `10-onboarded`; the monitoring rule is present with its `10.0.0.0/24` source restriction.
+
+#### Reboots and Role Order
+
+`robertdebock.hostname` reboots the node through a handler when it changes the hostname. A reboot after a hostname change is wanted, so `hostname_reboot` stays at its default. Handlers normally run at the end of the play, but `robertdebock.selinux` calls `flush_handlers` partway through its own tasks. `hostname` must therefore stay after `selinux` in the role list, or its reboot would fire mid-play.
+
+Handler names are shared by every role in a play. `robertdebock.selinux` notifies a handler called `Reboot` when it changes the SELinux state, and `robertdebock.hostname` defines one of the same name. Before SELinux was limited to the Red Hat family, this reboot ran on every Debian and Ubuntu normalize run, labelled `robertdebock.hostname : Reboot` even though the hostname had not changed: SELinux had triggered it.
+
+On `rky9` this was observed directly. The only task that notified `Reboot` was `robertdebock.selinux : Manage selinux`; `robertdebock.hostname : Set hostname` reported no change. The log line was `RUNNING HANDLER [robertdebock.hostname : Reboot]`. With two handlers of one name in a play, Ansible runs the one loaded last, and `hostname` is listed after `selinux`. So the SELinux reboot is governed by `hostname_reboot`, not by `selinux_reboot`: setting `hostname_reboot: false` would also stop the reboot SELinux needs. The same happens to `Gather facts`, which both roles define.
+
+The first normalize run on a Red Hat family node therefore reboots it, twice in fact: once into the relabel that `selinux-autorelabel-mark.service` requests while SELinux is disabled, and again from there into enforcing. The handler waited 37 to 49 seconds for the node to come back. A rerun does not reboot.
+
+#### SELinux Policy Package
+
+`robertdebock.selinux` installs the Python bindings and then writes `/etc/selinux/config` through `ansible.posix.selinux`. It does not install a policy. The Incus `rockylinux/9` VM image has SELinux disabled and no `selinux-policy` package, so the module failed with `Unable to find file /etc/selinux/config`. The converge play in `20_normalize.yml` now installs `selinux-policy-targeted` in `pre_tasks`, on the Red Hat family only. The vendored role is not changed. Nothing more is needed for the relabel: `policycoreutils` already marks one at every boot with SELinux disabled.
+
+#### Time Sync (Proposal)
+
+Not implemented. Today `robertdebock.ntp` runs in `10_onboard.yml` and is skipped in containers.
+
+- Containers take their clock from the host and usually cannot set it. Leave time sync off there, as now.
+- VMs and bare metal need a client. Debian 13 no longer ships the `ntp` package, so `robertdebock.ntp` cannot be the answer on trixie. Use `systemd-timesyncd` (present on Debian and Ubuntu, a client only) or `chrony` (also the Red Hat default, and able to serve time). The likely choice is chrony everywhere outside containers, from a vendored role or a small project role, configured from one `time_servers` list.
+- It belongs in normalize, not onboard: onboarding only needs a clock good enough for package signatures, which the image provides.
+- Remove `robertdebock.ntp` from onboarding once the normalize role exists, and test on a VM node.
+- Evidence from `rky9`: on Rocky 9 `robertdebock.ntp` installs chrony, not `ntp`, and after onboarding `chronyd` is active, enabled and synchronised. So the trixie problem does not apply to the Red Hat family. The proposal stays open, because time sync still sits in onboarding and no Debian or Ubuntu VM has been tested.
+
+```yaml
+#!/usr/bin/env ansible-playbook
+---
+- name: Require a client inventory
+  hosts: localhost
+  gather_facts: false
+  become: false
+  tasks:
+    - name: Require a client inventory, and find its root
+      ansible.builtin.import_tasks: ../../shared/tasks/require-client-inventory.yml
+
+- name: validate and promote onboarded nodes
+  # normalized too, so normalize can be rerun on a node already promoted.
+  hosts: onboarded:normalized
+  gather_facts: no
+  # ansible.cfg turns become on globally; the reachability check runs on the
+  # controller, where sudo would need a password.
+  become: no
+
+  tasks:
+    # The last play moves each normalized host from the onboard environment
+    # to the normalized environment loaded with -i, so exactly one of each
+    # must be loaded. They come from the -i sources, as in 10_onboard.yml.
+    - name: require one onboard and one normalized environment
+      ansible.builtin.assert:
+        that:
+          - hostvars['localhost'].uc_client_stages | select('match', '^onboard/') | list | length == 1
+          - hostvars['localhost'].uc_client_stages | select('match', '^normalized/') | list | length == 1
+        fail_msg: >-
+          Load exactly one onboard and one normalized environment of the client
+          inventory, for example scripts/inventory-args <client> onboard/dev normalized/dev.
+        quiet: true
+
+    - name: confirm reachability
+      wait_for:
+        host: "{{ ansible_host | default(inventory_hostname) }}"
+        port: 22
+        timeout: 10
+      delegate_to: localhost
+
+    # normalizing holds only the hosts in this run; the later plays target
+    # it. normalized is what 30_specialize.yml targets when chained in the
+    # same run through site.yml.
+    - name: promote to normalized group
+      add_host:
+        name: "{{ item }}"
+        ansible_host: "{{ hostvars[item].ansible_host | default(item) }}"
+        groups:
+          - normalizing
+          - normalized
+          - "{{ target_group | default('ungrouped') }}"
+      loop: "{{ ansible_play_hosts }}"
+      # add_host changes only the in-memory inventory; nothing on the node
+      # changes, so it does not count towards the run's changed total.
+      changed_when: false
+
+- name: converge normalized baseline
+  hosts: normalizing
+  become: yes
+  gather_facts: yes
+  # Each node converges independently, so a slow node does not hold the
+  # others at every task. The config default stays linear; the validation
+  # play above keeps it for its add_host loop.
+  strategy: free
+
+  # Firewall values come from the client inventory, one variable per stage,
+  # shaped for steelcj.foomuuri. Until the switch to that role, the vars file
+  # turns the stages listed in uc_firewall_stages into the firewall_rules list
+  # shared/roles/uc_firewall applies. Each is loaded only
+  # when its stage is given to scripts/inventory-args:
+  #   firewall_onboard_ssh         onboard/<env>/group_vars/all.yml
+  #   firewall_normalize_services  normalized/<env>/group_vars/all.yml
+  # See Firewall Layering in en/docs/uc-controller-v0.1.8.md.
+  vars_files:
+    - ../../shared/vars/uc_firewall_interim.yml
+
+  vars:
+    uc_firewall_stages: [onboard, normalize]
+    # Container virtualization types, as in the ntp gate in 10_onboard.yml.
+    # Roles that need the kernel or host access a container does not have are
+    # skipped there; VMs and bare metal run them.
+    normalize_container_types: ['lxc', 'lxd', 'incus', 'docker', 'podman', 'systemd-nspawn', 'container', 'openvz']
+
+  # A Red Hat family image can ship without an SELinux policy: the Incus
+  # rockylinux/9 VM image has SELinux disabled, no selinux-policy package and
+  # no /etc/selinux/config. robertdebock.selinux installs only the Python
+  # bindings, so its "Manage selinux" task fails there. Install the policy
+  # first. Nothing else is needed for the first boot into enforcing: while
+  # SELinux is disabled, selinux-autorelabel-mark.service (policycoreutils)
+  # creates /.autorelabel at every boot, so the reboot the role asks for
+  # relabels the filesystem and then boots again, enforcing.
+  pre_tasks:
+    - name: install the SELinux policy the selinux role configures
+      ansible.builtin.package:
+        name: selinux-policy-targeted
+        state: present
+      when: ansible_facts['os_family'] == 'RedHat'
+
+  # Removed, none of them exists in requirements.yml: pam, limits and motd
+  # (no stated requirement; no configuration is invented), timezone (the
+  # onboard stage sets it through locale_timezone and ntp_timezone), and
+  # chrony (time sync is a pending proposal; see Time Sync in
+  # en/docs/uc-controller-v0.1.4.md).
+  # Role order matters for the reboot. robertdebock.hostname reboots the node
+  # through a handler when the hostname changes (hostname_reboot is left at
+  # the role default, true). Handlers run at the end of the play, but
+  # robertdebock.selinux flushes handlers partway through its own tasks, so
+  # hostname must stay after selinux or its reboot would fire mid-play.
+  # Handler names are shared across roles: selinux also notifies Reboot.
+  roles:
+    # SELinux only on the Red Hat family. On Debian and Ubuntu, which use
+    # AppArmor, the role's defaults would install a policy, set enforcing and
+    # reboot. An OS family condition is not a source condition.
+    - role: robertdebock.selinux
+      when: ansible_facts['os_family'] == 'RedHat'
+    # auditd needs the kernel audit subsystem, which a container cannot use
+    # (the service is masked there).
+    - role: robertdebock.auditd
+      when: ansible_facts['virtualization_type'] | default('') not in normalize_container_types
+    - role: robertdebock.sysctl
+    - role: robertdebock.hostname
+    - role: robertdebock.rsyslog
+    - role: uc_firewall
+
+- name: Persist the promotion to the normalized inventory
+  hosts: normalizing
+  gather_facts: no
+  become: no
+  # Linear, the config default, although the converge play above runs free:
+  # the single run_once task below must see every host that completed.
+
+  vars:
+    # The script is resolved on the controller against the directory
+    # ansible-playbook was started from, the uc-controller checkout, as in
+    # 10_onboard.yml. The client inventory and its stages come from -i.
+    promote_script: "{{ uc_scripts_dir | default('scripts') | ansible.builtin.realpath }}/promote_node.py"
+    promote_inventory: "{{ hostvars['localhost'].uc_client_root }}"
+    promote_from: "{{ hostvars['localhost'].uc_client_stages | select('match', '^onboard/') | first }}"
+    promote_to: "{{ hostvars['localhost'].uc_client_stages | select('match', '^normalized/') | first }}"
+
+  tasks:
+    # promote_node.py is the only code that writes hosts.yml entries. One
+    # run_once task loops over the hosts that completed the converge play (a
+    # host that failed is not in this play), serializing the writes. Only
+    # hosts still listed in the onboard inventory are moved; a rerun on a
+    # node already normalized moves nothing. Connection settings and group
+    # memberships carry over in promote_node.py. become is off because
+    # ansible.cfg enables it globally and this writes to the operator's
+    # working tree. The commit is left to the operator.
+    - name: move each normalized host to the normalized inventory
+      ansible.builtin.command:
+        argv: >-
+          {{
+            [ansible_playbook_python, promote_script,
+             '--inventory', promote_inventory,
+             '--from', promote_from,
+             '--to', promote_to,
+             '--host', item,
+             '--no-commit']
+            + (['--group', target_group] if target_group is defined else [])
+          }}
+      loop: "{{ ansible_play_hosts | select('in', groups['onboarded'] | default([])) | list }}"
+      run_once: true
+      delegate_to: localhost
+      become: no
+```
+
+### 30_specialize.yml
+
+Make it useful. Applies the role-specific composition and the complete firewall state.
+
+```yaml
+#!/usr/bin/env ansible-playbook
+---
+- name: Require a client inventory
+  hosts: localhost
+  gather_facts: false
+  become: false
+  tasks:
+    - name: Require a client inventory, and find its root
+      ansible.builtin.import_tasks: ../../shared/tasks/require-client-inventory.yml
+
+- name: specialize normalized nodes
+  hosts: normalized
+  become: yes
+  gather_facts: yes
+  # Each node converges independently; the config default stays linear.
+  strategy: free
+
+  # Firewall values come from the client inventory, one variable per stage,
+  # shaped for steelcj.foomuuri. Until the switch to that role, the vars file
+  # turns the stages listed in uc_firewall_stages into the firewall_rules list
+  # shared/roles/uc_firewall applies. Each is loaded only
+  # when its stage is given to scripts/inventory-args:
+  #   firewall_onboard_ssh          onboard/<env>/group_vars/all.yml
+  #   firewall_normalize_services   normalized/<env>/group_vars/all.yml
+  #   firewall_specialize_services  normalized/<env>/group_vars/<group>.yml
+  #                                 (for example webservers.yml)
+  # See Firewall Layering in en/docs/uc-controller-v0.1.8.md.
+  vars_files:
+    - ../../shared/vars/uc_firewall_interim.yml
+
+  vars:
+    uc_firewall_stages: [onboard, normalize, specialize]
+
+  # The roles are included as tasks, not listed under roles:, so the play can
+  # check specialize_role first. A roles: entry named by an undefined variable
+  # fails while the playbook is parsed, with only "'specialize_role' is
+  # undefined" as the message.
+  tasks:
+    - name: require specialize_role
+      ansible.builtin.assert:
+        that:
+          - specialize_role is defined
+          - specialize_role | length > 0
+        fail_msg: >-
+          Set the role this stage applies, for example
+          -e specialize_role=webserver.
+        quiet: true
+
+    - name: apply the specialize role
+      ansible.builtin.include_role:
+        name: "{{ specialize_role }}"
+
+    - name: apply the combined firewall rules
+      ansible.builtin.include_role:
+        name: uc_firewall
+```
+
+The specialize role is chosen at run time with `-e specialize_role=<role>`. The play checks it is set before anything else runs, which a `roles:` list cannot do: a role named by an undefined variable stops the playbook while it is being parsed. Both roles are included with `include_role`, so they run in the listed order, the specialize role first and the firewall last.
+
+Load the onboard stage as well as the normalized one. `firewall_onboard_ssh`, which gives the SSH rule, is only loaded from the client's `onboard/<env>/group_vars/all.yml`, and `uc_firewall` refuses to enable the firewall without an SSH rule.
+
+#### The webserver Role
+
+`converge/roles/webserver` is the smallest role that exercises the stage. It installs nginx, enables and starts it, and writes `index.html` with the host's inventory name into the distribution's default document root, `/var/www/html` on the Debian family and `/usr/share/nginx/html` on the Red Hat family. It opens no port. HTTP is opened at the specialize layer by `firewall_specialize_services` in the client's `normalized/<env>/group_vars/webservers.yml`, so only hosts in the `webservers` group get it. Port 443 is not opened, because nothing serves TLS. No TLS, no virtual hosts, no templated site configuration.
+
+Run on the freshly onboarded and normalized `deb13`: before specialize, port 80 timed out from the controller and SSH worked. The run finished with `failed=0`; afterwards `curl` returned `deb13`, SSH still worked, and ufw listed `allow-ssh`, `allow-monitoring` (from `10.0.0.0/24`), `allow-http` and `allow-https`. A second run reported `changed=0`.
+
+Run on `rky9` with SELinux enforcing: port 80 was refused beforehand, the run finished with `failed=0`, and `curl` returned `rky9`. The packaged `index.html` there is a symlink to the distribution's test page; `copy` replaced the link with a regular file labelled `httpd_sys_content_t`. A second run reported `changed=0`.
+
+`allow-https` was then removed from `webservers.yml`. Because `uc_firewall` is additive (see Known Limitation under Firewall Layering), the rule stays on a node that already has it until it is deleted by hand or the node is rebuilt from a snapshot taken before specialize.
+
+### site.yml
+
+Full converge, chains all lifecycle stages for a given environment. Each stage is pulled in with `import_playbook`, which can only be used at the top level of a playbook and not inside a play <a id="cite-ansible-import-playbook"></a>([Ansible project contributors, n.d.-b](#ref-ansible-import-playbook)).
+
+```yaml
+#!/usr/bin/env ansible-playbook
+---
+- import_playbook: ingress/playbooks/00_discover.yml
+- import_playbook: ingress/playbooks/10_onboard.yml
+- import_playbook: converge/playbooks/20_normalize.yml
+- import_playbook: converge/playbooks/30_specialize.yml
+```
+
+## Persistence
+
+### What add_host Does
+
+The playbooks move a node between groups with `add_host`. That changes only the in-memory inventory of the current `ansible-playbook` run <a id="cite-ansible-add-host-2"></a>([Ansible project contributors, n.d.-a](#ref-ansible-add-host)). Later plays in the same run see the node in its new group, and nothing is written to disk. `site.yml` works because every stage runs in one invocation. Separate invocations do not see each other's promotions.
+
+### When promote_node.py Runs
+
+- After `10_onboard.yml`: automatically. The playbook's last play calls `promote_node.py` once for all hosts that passed the SSH check, with `--address`, `--key-file`, `--no-commit` and `--group` when `target_group` is set. It writes each host and its connection contract into the client's onboard environment loaded with `-i`. The change is left uncommitted for the operator to review.
+- After `20_normalize.yml`: automatically. Its last play, on the default linear strategy, calls `promote_node.py` once on the controller and moves each host that completed the converge play from the client's onboard environment to its normalized environment, both loaded with `-i`. Exactly one of each is required, and the playbook fails at once otherwise. A host that failed is not moved, and a host already in the normalized inventory (a rerun) is left where it is. The change is left uncommitted.
+- After a snapshot restore: run `demote_node.py` so the inventory matches the restored node (see Restore and Resume).
+
+### What Is Lost If It Is Skipped
+
+- The onboard inventory has no entry for the node, so a separate converge run does not find it in `onboarded`.
+- The connection contract is not on disk. Loaded together with raw, an Incus node falls back to the Incus connection as root. A discovered node falls back to SSH as root, which onboarding has just disabled, so the converge run cannot reach it at all.
+- The address gathered during onboarding is lost with the run.
+
+## Re-onboarding Guard
+
+Onboarding is one-shot and is not made safe to rerun. An onboarded Incus instance stays in `raw` for as long as it runs, because the plugin lists it, so `10_onboard.yml` would target it again. Loaded together with the onboard inventory, the host's contract would then reach it over SSH as `initial`, and the bootstrap and baseline plays would run as a non-root user and fail partway.
+
+The first task of the first play guards against that. It runs `raw: id initial`, which needs no Python. If the `initial` user exists, the play prints that the host is already onboarded and ends for that host only with `meta: end_host`, without failing the run. The later plays target `onboarding`, an in-memory group holding only the hosts promoted in the current run, so a host already listed in the onboard inventory's `onboarded` group is not touched. A second run against onboarded nodes reports both as already onboarded and changes nothing.
+
+To onboard a node again, restore its `raw` snapshot and demote its inventory entry.
+
+### A Possible Second Layer
+
+The Incus plugin's `filters` option is passed to `incus list`, which accepts instance config keys as filters (`incus list image.os=Ubuntu` lists only Ubuntu instances). Promotion could set a user config key such as `user.uc_stage=onboarded` on the instance, and the plugin config could filter on it, so onboarded instances drop out of `raw` altogether. This is not implemented. `incus list` filters match a value exactly or as a regular expression (`image.os=Ub.*` works), but have no negation (`image.os!=Ubuntu` silently matches nothing). The filter would therefore have to select instances that are still raw, for example `user.uc_stage=raw` set at launch, rather than exclude onboarded ones, and every launch would have to set the key.
+
+## Snapshot Alignment
+
+Incus snapshot names follow the playbook numbers (see *Incus: Instance Naming*). Take each snapshot after the playbook succeeds and its inventory change is in place.
+
+| Snapshot | Taken | Inventory stage holding the node |
+|----------|-------|----------------------------------|
+| `raw` | At launch, before Ansible touches the instance | raw, through its source (plugin, `hosts.yml`, or `discovered.yml`); no entry in `onboard/` |
+| `10-onboarded` | After `10_onboard.yml` succeeds | `onboard/<env>/hosts.yml` |
+| `20-normalized` | After `20_normalize.yml` succeeds and `promote_node.py` has run | `normalized/<env>/hosts.yml` |
+| `30-<role>` | After `30_specialize.yml` succeeds with that role | `normalized/<env>/hosts.yml` |
+
+Take every stage snapshot with the instance stopped, each step under a time limit, and wait for SSH before continuing:
+
+```bash
+timeout 120 incus stop deb13
+timeout 120 incus snapshot create deb13 10-onboarded
+timeout 120 incus start deb13
+ansible $(scripts/inventory-args ~/uc-inventories/example.org onboard/dev) deb13 -m ansible.builtin.wait_for_connection
+```
+
+A snapshot of a running container hung twice on the workstation. The investigation found no kernel or storage error at either hang and nothing heavy running inside the container; the host root filesystem, which holds the Incus pool's loop image, had filled up once in between. The host disk is worth watching, because a full root filesystem stops the pool from growing.
+
+Stopping the instance does not prevent the hang. In the final verification, one snapshot of the stopped `deb13` (`10-onboarded`, right after the old one was deleted) ran into its 120-second limit and was not created; the Incus daemon showed no pending operation and logged nothing, and the kernel log showed no error. An immediate retry, still stopped, finished in under a second, as did the next two stage snapshots, each also taken right after deleting the old one. The cause is unknown. The procedure stays: the time limit bounds a hang, and a snapshot that times out is retried once with the instance still stopped. Check `incus snapshot list` afterwards, because a timed-out create leaves no snapshot.
+
+### Restore and Resume
+
+Restoring a snapshot changes the instance only. The inventory entry and the fact cache still describe the later state, so move both back by hand.
+
+- Restore the instance to the snapshot of the stage you want to resume from.
+- Demote the inventory entry to the stage that snapshot belongs to. Demoting to raw removes the entry from the onboard inventory and writes nothing to raw; the node is listed in raw again by its source. Demoting from normalized to onboard moves the entry back with its connection settings and every group it was in, such as `webservers`.
+- Flush the node's cached facts, so the next run does not reach the node at a stale address or skip a fact gathering it needs. The jsonfile cache keeps one file per host in the directory `fact_caching_connection` names; ansible-core 2.21 prefixes the file name, for example `s1_deb13`.
+- Run the next playbook.
+
+To resume onboarding from `raw`:
+
+```bash
+incus snapshot restore deb13 raw
+python3 scripts/demote_node.py --inventory ~/uc-inventories/example.org --from onboard/dev --to raw --host deb13 --no-commit
+CACHE="$(ansible-config dump | awk -F' = ' '/^CACHE_PLUGIN_CONNECTION/{print $2}')"; CACHE="${CACHE/#\~/$HOME}"
+find "$CACHE" -maxdepth 1 \( -name deb13 -o -name '*_deb13' \) -delete
+```
+
+To resume normalizing from `10-onboarded`:
+
+```bash
+incus snapshot restore deb13 10-onboarded
+python3 scripts/demote_node.py --inventory ~/uc-inventories/example.org --from normalized/dev --to onboard/dev --host deb13 --no-commit
+CACHE="$(ansible-config dump | awk -F' = ' '/^CACHE_PLUGIN_CONNECTION/{print $2}')"; CACHE="${CACHE/#\~/$HOME}"
+find "$CACHE" -maxdepth 1 \( -name deb13 -o -name '*_deb13' \) -delete
+```
+
+On a development machine where every node is reset together, `python3 scripts/reset_inventories.py --inventory ~/uc-inventories/example.org` empties every stage of the client inventory and the whole fact cache instead.
+
+## Provisional Names and Renaming
+
+Discovered hosts get provisional names, `disc-<ip with dots as hyphens>`, and the host variable `name_provisional: true`. The naming convention governs instances the controller creates, not nodes it discovers (see the Scope section of *Incus: Instance Naming*), so a discovered node may keep its provisional or source-assigned name. Renaming is not implemented.
+
+### Proposal: Rename Once at Onboarding
+
+If a discovered node is to be renamed, it should happen once, inside `10_onboard.yml`, after facts are gathered and before the persist play writes the onboard inventory entry. Afterwards the name never changes.
+
+- The new name comes from an explicit map passed in (`-e onboard_names='{"disc-192-168-1-10": "deb13-web1"}'`), not derived automatically. An OS code alone does not make a scanned node's name unique.
+- The persist play passes `--host <provisional> --rename <new>` to `promote_node.py`, which drops `name_provisional`, writes the entry under the new name, and refuses a name already present in any stage inventory.
+- The node's own host name is set to match, with the hostname role, in the same play.
+- The cached facts for the provisional name are deleted.
+- A node with no entry in the map keeps its provisional name, and stays marked `name_provisional: true` so the gap is visible.
+
+## Alternative Patterns Considered
+
+### Playbook-Scoped Variables
+
+```text
+playbooks/
+├── normalize/
+│   ├── firewall.yml   ← vars live here
+│   └── main.yml
+```
+
+#### Decision
+
+Rejected. One playbook cannot serve multiple environments with different rules without extra indirection. Mixing "how" (playbook) with "what" (policy) violates the separation principle. The readability gain of co-location does not justify the loss of environment orthogonality.
+
+### Materialized Defaults (Scaffold Pattern)
+
+Generates a real inventory file from a role's `defaults/main.yml`. Admins edit the file directly.
+
+#### Decision
+
+Rejected. A prototype scaffold playbook existed until v0.1.4 and was removed in v0.1.5: it wrote a role's defaults, a mapping, where the firewall plays expect a list, and nothing depended on it.
+
+## Usage
+
+All stage-namespaced firewall variables must be loaded by giving every contributing stage to `scripts/inventory-args`. A stage that is not given contributes no variables, and `default([])` will silently produce an empty list rather than a warning. Run from the uc-controller checkout.
+
+```bash
+# Full lifecycle (site.yml chains all stages; give all of them)
+ansible-playbook $(scripts/inventory-args ~/uc-inventories/example.org raw onboard/dev normalized/dev) \
+  site.yml \
+  -e target_group=webservers \
+  -e specialize_role=webserver
+
+# Individual stages
+
+ansible-playbook $(scripts/inventory-args ~/uc-inventories/example.org raw) \
+  ingress/playbooks/00_discover.yml \
+  -e discover_source=subnet \
+  -e discover_subnet=203.0.113.0/24
+
+ansible-playbook $(scripts/inventory-args ~/uc-inventories/example.org raw onboard/dev) \
+  ingress/playbooks/10_onboard.yml \
+  -l deb13 \
+  -e target_group=webservers
+
+ansible-playbook $(scripts/inventory-args ~/uc-inventories/example.org onboard/dev normalized/dev) \
+  converge/playbooks/20_normalize.yml
+
+ansible-playbook $(scripts/inventory-args ~/uc-inventories/example.org onboard/dev normalized/dev) \
+  converge/playbooks/30_specialize.yml \
+  -e specialize_role=webserver
+```
+
+Discovered nodes are onboarded the same way. They are reached over SSH as root until onboarding disables root login, so the controller's key must already be in root's `authorized_keys`:
+
+```bash
+ansible-playbook $(scripts/inventory-args ~/uc-inventories/example.org raw) \
+  ingress/playbooks/00_discover.yml \
+  -e discover_subnet=203.0.113.0/24
+
+ansible-playbook $(scripts/inventory-args ~/uc-inventories/example.org raw onboard/dev) \
+  ingress/playbooks/10_onboard.yml \
+  -l 'disc-*'
+```
+
+Environment selection is implicit: the environment given to `scripts/inventory-args` determines it. There is no `target_env` variable, and `10_onboard.yml` and `20_normalize.yml` refuse a run that loads more than one onboard or normalized environment. For the raw stage there is no environment at all; see Why raw Has No Environment Split.
+
+## Stage Responsibilities
+
+| Stage | Question it answers | Firewall contribution | Key roles |
+|-------|---------------------|-----------------------|-----------|
+| discover | What exists? | None | nmap / cloud API |
+| onboard | Can I manage it? | SSH (port 22) | bootstrap, umask, epel, update, locale, auto_update, cron, ntp, openssh, fail2ban, uc_firewall, users |
+| normalize | Does it meet the baseline? | Monitoring, internal services | selinux, auditd (not in containers), sysctl, hostname, rsyslog, uc_firewall |
+| specialize | What is it for? | Application ports (80, 443, etc.) | role-specific + uc_firewall |
+
+## Scripts
+
+Both scripts are plain Python 3 and run unchanged on Linux, macOS, and Windows. They need PyYAML, which is already installed wherever Ansible is.
+
+The playbooks promote hosts with `add_host`, which lasts only for the current run. These scripts make the same move permanent in the inventory files, so that a stage can later be run on its own: `20_normalize.yml` targets the `onboarded` group and `30_specialize.yml` targets `normalized`, and those groups must exist in the stage's `hosts.yml` when no earlier play has created them in memory.
+
+### promote_node.py
+
+Moves a host entry between inventory stages. Git-tracked, auditable, revertible.
+
+The host is removed from the source `hosts.yml` and added to the destination `hosts.yml` under the group that stage's playbook targets (`raw`, `onboarded`, or `normalized`), keeping its connection variables. `--group` adds it to a second group such as `webservers`. Both files are then committed to git; pass `--no-commit` to skip that. The files are rewritten by PyYAML, so comments in `hosts.yml` are not preserved.
+
+```python
+#!/usr/bin/env python3
+"""Move a host entry between the stages of a client inventory.
+
+    promote_node.py --inventory <client inventory> --from raw --to onboard/dev --host <host>
+
+Stages are named as the client inventory's directories are: raw, or
+onboard/<environment> or normalized/<environment>. Removes the host from
+whichever static inventory file in the source stage's directory holds it
+(hosts.yml, discovered.yml, admitted.yml; dynamic plugin configs are
+skipped), adds it to the destination stage's hosts.yml under that stage's
+group, then commits the changed files in the client repository. The commit
+runs the client repository's pre-commit hook, with UC_CONTROLLER set to this
+uc-controller checkout unless it is set already.
+
+Raw is what the sources report, and no script adds a host to any file under
+the client's raw/:
+- Plugin-discovered hosts (Incus and similar) are in no static file. Promote
+  one by passing --address; the destination entry is created and marked
+  uc_origin: plugin.
+- A host listed by hand in raw/hosts.yml is copied, not moved, and marked
+  uc_origin: static. Scripts never write raw/hosts.yml.
+- A scanned host is removed from raw/discovered.yml when promoted, and an
+  admitted host from raw/admitted.yml, so it is not listed in two stages.
+  These are the only cases where a script changes a raw file. An admitted
+  host's keys stay in the client inventory's ssh/known_hosts.
+- Between onboard and normalized, in either direction, the host keeps its
+  connection settings and every group it was in other than the stage group.
+- Demotion to raw removes the host's entry from the source stage and writes
+  nothing. The node reappears in raw through its source: the plugin lists a
+  running instance, a hand-entered host never left hosts.yml, a scanned
+  host is found by the next scan, and an admitted host by the next run of
+  05_admit.yml. Demotion is inventory bookkeeping that
+  lets the inventory follow a node after a snapshot restore.
+
+A host promoted into the onboard stage carries the connection contract at
+host level, so it wins over the raw stage's group variables whichever
+order the inventories are loaded in. The strict host key settings it keeps
+come from uc-controller's inventory-defaults/<stage>/group_vars, then the
+client's <stage>/group_vars, in the order Ansible loads them. Runs on Linux, macOS, and Windows. Requires PyYAML,
+which is already present wherever Ansible is installed.
+"""
+from __future__ import annotations
+
+import argparse
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+import yaml
+
+REPO = Path(__file__).resolve().parent.parent
+DEFAULTS = REPO / "inventory-defaults"
+
+# Lifecycle order.
+STAGES = ["raw", "onboard", "normalized"]
+
+# The group a host entry is written under in each stage's hosts.yml. Raw is
+# absent: no script adds a host to raw.
+STAGE_GROUP = {"onboard": "onboarded", "normalized": "normalized"}
+
+# Header comments rewritten whenever the script rewrites these files: the
+# same headers inventory-template/ ships, and 00_discover.yml and
+# 05_admit.yml write.
+HEADERS = {
+    ("raw", "discovered.yml"):
+        "# raw/discovered.yml\n#\n"
+        "# Generated inventory, written by ingress/playbooks/00_discover.yml in\n"
+        "# uc-controller and overwritten on every subnet scan. promote_node.py removes\n"
+        "# a host from it when promoting that host. Committed. Do not edit by hand.\n"
+        "# Names are provisional (disc-<ip>) until onboarding.\n",
+    ("raw", "admitted.yml"):
+        "# raw/admitted.yml\n#\n"
+        "# Generated inventory, written only by ingress/playbooks/05_admit.yml in\n"
+        "# uc-controller, which adds each raw node it admits and keeps the ones\n"
+        "# already here. promote_node.py removes a host from it when promoting that\n"
+        "# host. Committed. Do not edit by hand. Connection settings come from\n"
+        "# uc-controller's inventory-defaults/raw/group_vars/admitted.yml; host keys\n"
+        "# are in ssh/known_hosts.\n",
+}
+
+# How an onboarded node is reached: SSH as the initial user, offering only
+# the named key so agent keys cannot exhaust MaxAuthTries. ansible_host and
+# ansible_ssh_private_key_file are filled in per host.
+CONTRACT = {
+    "ansible_connection": "ssh",
+    "ansible_user": "initial",
+    "ansible_ssh_common_args": "-o IdentitiesOnly=yes",
+}
+# Records where a promoted host came from, for the operator:
+#   plugin: created from --address; a dynamic inventory plugin supplies it
+#   static: listed by hand in raw/hosts.yml, which scripts never write
+# A scanned or admitted host carries no marker; it came from
+# raw/discovered.yml or raw/admitted.yml.
+ORIGIN_KEY, ORIGIN_PLUGIN, ORIGIN_STATIC = "uc_origin", "plugin", "static"
+
+# Hand-maintained files that scripts read but never write.
+READ_ONLY = {("raw", "hosts.yml")}
+
+
+def stage_of(root: Path, stage: str) -> tuple[str, Path]:
+    """Return (lifecycle stage, directory) for a stage name such as onboard/dev."""
+    parts = stage.strip("/").split("/")
+    kind = parts[0]
+    if kind not in STAGES or len(parts) != (1 if kind == "raw" else 2) or ".." in parts:
+        raise SystemExit(
+            f"error: {stage} is not raw, onboard/<environment> or normalized/<environment>"
+        )
+    directory = root.joinpath(*parts)
+    if not directory.is_dir():
+        raise SystemExit(f"error: the client inventory {root} has no {stage}/ directory")
+    return kind, directory
+
+
+def load(hosts_file: Path) -> dict:
+    if not hosts_file.exists():
+        return {}
+    with hosts_file.open(encoding="utf-8") as handle:
+        return yaml.safe_load(handle) or {}
+
+
+def dump(hosts_file: Path, data: dict, header: str | None = None) -> None:
+    hosts_file.parent.mkdir(parents=True, exist_ok=True)
+    with hosts_file.open("w", encoding="utf-8", newline="\n") as handle:
+        if header:
+            handle.write(header)
+        yaml.safe_dump(data, handle, default_flow_style=False, sort_keys=False)
+
+
+def static_files(inventory: Path) -> list[Path]:
+    """Static YAML inventory files at the top of an inventory directory.
+
+    hosts.yml comes first. Files that are dynamic plugin configs (a top-level
+    plugin: key) and files that are not YAML mappings are skipped.
+    """
+    files = sorted(
+        (p for p in inventory.iterdir()
+         if p.is_file() and p.suffix in (".yml", ".yaml")),
+        key=lambda p: (p.name != "hosts.yml", p.name),
+    ) if inventory.is_dir() else []
+    static = []
+    for path in files:
+        try:
+            data = load(path)
+        except yaml.YAMLError:
+            continue
+        if isinstance(data, dict) and "plugin" not in data:
+            static.append(path)
+    return static
+
+
+def find_host(inventory: Path, host: str):
+    """Pop host from the first static file holding it.
+
+    Return (file, its data with the host removed, host vars, the groups that
+    listed it), or (None, None, None, []) when no static file holds it.
+    """
+    for path in static_files(inventory):
+        data = load(path)
+        groups = host_groups(data, host)
+        found, host_vars = pop_host(data, host)
+        if found:
+            return path, data, host_vars, groups
+    return None, None, None, []
+
+
+def pop_host(groups: dict, host: str):
+    """Remove host from every group in the tree. Return (found, its vars).
+
+    The host's vars live under one group (normally the stage group); the other
+    groups list it with no vars. Prefer the entry that carries vars.
+    """
+    found, host_vars = False, None
+    for group in groups.values():
+        if not isinstance(group, dict):
+            continue
+        hosts = group.get("hosts")
+        if isinstance(hosts, dict) and host in hosts:
+            removed = hosts.pop(host)
+            if not found or (host_vars is None and removed is not None):
+                found, host_vars = True, removed
+        children = group.get("children")
+        if isinstance(children, dict):
+            child_found, child_vars = pop_host(children, host)
+            if child_found and (not found or (host_vars is None and child_vars is not None)):
+                found, host_vars = True, child_vars
+    return found, host_vars
+
+
+def host_groups(groups: dict, host: str) -> list[str]:
+    """Names of every group in the tree that lists host, in file order."""
+    names = []
+    for name, group in groups.items():
+        if not isinstance(group, dict):
+            continue
+        hosts = group.get("hosts")
+        if isinstance(hosts, dict) and host in hosts:
+            names.append(name)
+        children = group.get("children")
+        if isinstance(children, dict):
+            names.extend(host_groups(children, host))
+    return names
+
+
+def add_host(data: dict, group: str, host: str, host_vars) -> None:
+    section = data.get(group)
+    if not isinstance(section, dict):
+        section = data[group] = {}
+    hosts = section.get("hosts")
+    if not isinstance(hosts, dict):
+        hosts = section["hosts"] = {}
+    hosts[host] = host_vars
+
+
+# Settings that make a host's SSH connection check host keys strictly. A
+# host promoted out of raw keeps them when it already has them, from its own
+# vars or from its source's group_vars (inventory-defaults/raw/group_vars/
+# admitted.yml sets them for every admitted raw contract node); the
+# connection contract would otherwise replace ansible_ssh_common_args and
+# drop them.
+STRICT_KEYS = ("ansible_host_key_checking", "ansible_ssh_host_key_checking",
+               "ansible_ssh_common_args")
+
+
+def is_true(value) -> bool:
+    return value is True or str(value).strip().lower() in ("true", "yes", "on", "1")
+
+
+def vars_files(directory: Path, name: str) -> list[Path]:
+    """<name>.yml or .yaml in directory, or every YAML file in <name>/."""
+    files = [directory / f"{name}{suffix}" for suffix in (".yml", ".yaml")]
+    folder = directory / name
+    if folder.is_dir():
+        files += sorted(p for p in folder.iterdir() if p.suffix in (".yml", ".yaml"))
+    return [f for f in files if f.is_file()]
+
+
+def strict_settings(kind: str, inventory: Path, groups: list[str], host: str,
+                    host_vars) -> dict:
+    """The host's strict host key settings, as Ansible would resolve them.
+
+    Merges group_vars for all, raw and the groups that list the host, from
+    uc-controller's inventory-defaults/<stage>/ and then from the client's
+    stage directory, then host_vars/<host>, then the host's own entry.
+    Returns {} unless host key checking is on.
+    """
+    merged: dict = {}
+    for path in [p for directory in (DEFAULTS / kind, inventory)
+                 for group in ["all", "raw", *groups]
+                 for p in vars_files(directory / "group_vars", group)] \
+            + vars_files(inventory / "host_vars", host):
+        data = load(path)
+        if isinstance(data, dict):
+            merged.update(data)
+        else:
+            print(f"warning: {path} is not a mapping of variables and was not read",
+                  file=sys.stderr)
+    merged.update(host_vars or {})
+    if not any(is_true(merged.get(key)) for key in STRICT_KEYS[:2]):
+        return {}
+    strict = {key: merged[key] for key in STRICT_KEYS if key in merged}
+    args = str(strict.get("ansible_ssh_common_args", ""))
+    if "IdentitiesOnly=yes" not in args:
+        args = f"{CONTRACT['ansible_ssh_common_args']} {args}".strip()
+    strict["ansible_ssh_common_args"] = args
+    return strict
+
+
+def with_contract(host_vars, address: str | None, key_file: str | None,
+                  host: str, strict: dict | None = None) -> dict:
+    """Return host_vars with the onboard connection contract applied.
+
+    strict, from strict_settings(), is applied over the contract, so a host
+    that checked host keys strictly keeps doing so.
+    """
+    host_vars = dict(host_vars or {})
+    address = address or host_vars.get("ansible_host")
+    key_file = key_file or host_vars.get("ansible_ssh_private_key_file")
+    if not address:
+        raise SystemExit(f"error: no address for {host}; pass --address")
+    if not key_file:
+        raise SystemExit(f"error: no key file for {host}; pass --key-file")
+    host_vars.update(CONTRACT)
+    host_vars.update(strict or {})
+    host_vars["ansible_host"] = address
+    host_vars["ansible_ssh_private_key_file"] = key_file
+    return host_vars
+
+
+
+
+def git_commit(files: list[Path], message: str) -> None:
+    if shutil.which("git") is None:
+        print("warning: git not found, changes left uncommitted", file=sys.stderr)
+        return
+    cwd = files[0].parent
+    top = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"],
+        cwd=cwd, capture_output=True, text=True,
+    )
+    if top.returncode != 0:
+        print("warning: not a git repository, changes left uncommitted", file=sys.stderr)
+        return
+    paths = [str(path.resolve()) for path in files]
+    # The client repository's pre-commit hook runs uc-controller's
+    # check_inventory.py, found through UC_CONTROLLER.
+    env = dict(os.environ)
+    env.setdefault("UC_CONTROLLER", str(REPO))
+    subprocess.run(["git", "add", "--", *paths], cwd=cwd, check=True, env=env)
+    subprocess.run(["git", "commit", "-m", message, "--", *paths], cwd=cwd, check=True, env=env)
+
+
+def main(direction: str = "promote") -> int:
+    parser = argparse.ArgumentParser(
+        description=f"{direction.capitalize()} a host between the stages of a client inventory."
+    )
+    parser.add_argument("--inventory", required=True, type=Path, metavar="CLIENT",
+                        help="the client inventory's root directory")
+    parser.add_argument("--from", dest="source", required=True, metavar="STAGE",
+                        help="source stage: raw, onboard/<environment> or normalized/<environment>")
+    parser.add_argument("--to", dest="dest", required=True, metavar="STAGE",
+                        help="destination stage, named the same way")
+    parser.add_argument("--host", required=True, help="inventory hostname to move")
+    parser.add_argument("--group", help="extra group to add the host to, e.g. webservers")
+    parser.add_argument("--address", metavar="ADDRESS",
+                        help="management address; creates the entry when no static "
+                             "file in the source holds the host (plugin-discovered hosts)")
+    parser.add_argument("--key-file", metavar="PATH",
+                        help="SSH private key path written as ansible_ssh_private_key_file "
+                             "when the destination is the onboard stage")
+    parser.add_argument("--no-commit", action="store_true", help="skip the git commit")
+    args = parser.parse_args()
+
+    root = args.inventory.expanduser()
+    if not root.is_dir():
+        raise SystemExit(f"error: {args.inventory} is not a directory")
+    root = root.resolve()
+    (from_stage, source_dir), (to_stage, dest_dir) = (stage_of(root, args.source),
+                                                      stage_of(root, args.dest))
+    step = STAGES.index(to_stage) - STAGES.index(from_stage)
+    if (direction == "promote" and step <= 0) or (direction == "demote" and step >= 0):
+        raise SystemExit(f"error: cannot {direction} from {from_stage} to {to_stage}")
+
+    source_file, source_data, host_vars, source_groups = find_host(source_dir, args.host)
+    found = source_file is not None
+    if not found and (to_stage == "raw" or not args.address):
+        raise SystemExit(
+            f"error: host {args.host} not found in any static inventory file in {source_dir}"
+        )
+
+    read_only = found and (from_stage, source_file.name) in READ_ONLY
+    if not found:
+        host_vars = {ORIGIN_KEY: ORIGIN_PLUGIN}
+    elif read_only:
+        host_vars = dict(host_vars or {})
+        host_vars[ORIGIN_KEY] = ORIGIN_STATIC
+        print(f"note: {source_file} is hand-maintained; its entry for {args.host} is left in place")
+
+    if to_stage == "raw":
+        # Raw is what the sources report. Remove the entry and write nothing;
+        # the node reappears in raw through its source.
+        dump(source_file, source_data, HEADERS.get((from_stage, source_file.name)))
+        print(f"{direction.capitalize()}d {args.host}: removed from {source_file}; "
+              f"nothing written to {dest_dir}")
+        if not args.no_commit:
+            git_commit([source_file], f"{direction} {args.host}: {from_stage} -> {to_stage}")
+        return 0
+
+    dest_file = dest_dir / "hosts.yml"
+    # The connection contract is written once, on promotion out of raw. Moves
+    # between onboard and normalized carry the entry over unchanged.
+    if from_stage == "raw":
+        strict = (strict_settings(from_stage, source_dir, source_groups, args.host, host_vars)
+                  if found else {})
+        host_vars = with_contract(host_vars, args.address, args.key_file, args.host, strict)
+        if strict:
+            print(f"note: {args.host} keeps its strict host key settings "
+                  f"({', '.join(sorted(strict))})")
+
+    # pop_host clears every existing entry for the host, so a repeat
+    # promotion replaces the entry instead of adding a second one.
+    dest_data = load(dest_file)
+    pop_host(dest_data, args.host)
+    add_host(dest_data, STAGE_GROUP[to_stage], args.host, host_vars)
+    # Between onboard and normalized, in either direction, the host keeps
+    # every group it was in other than the stage group itself (webservers and
+    # the like). Raw's groups are source groups and do not carry over.
+    extra = [] if from_stage == "raw" else [
+        g for g in source_groups if g not in STAGE_GROUP.values()
+    ]
+    if args.group and args.group not in extra:
+        extra.append(args.group)
+    for group in extra:
+        add_host(dest_data, group, args.host, None)
+
+    written = [dest_file]
+    if found and not read_only:
+        dump(source_file, source_data, HEADERS.get((from_stage, source_file.name)))
+        written.insert(0, source_file)
+    elif not found:
+        print(f"note: {args.host} was not in any static file in {source_dir}; "
+              "created from --address")
+    dump(dest_file, dest_data)
+    print(f"{direction.capitalize()}d {args.host}: {args.source} -> {args.dest}")
+
+    if (source_dir / "host_vars" / f"{args.host}.yml").exists():
+        print(f"note: {source_dir / 'host_vars'} still holds a file for {args.host}")
+
+    if not args.no_commit:
+        git_commit(
+            written,
+            f"{direction} {args.host}: {from_stage} -> {to_stage}",
+        )
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main("promote"))
+```
+
+#### Promote Usage
+
+```bash
+python scripts/promote_node.py \
+  --inventory ~/uc-inventories/example.org \
+  --from raw \
+  --to onboard/dev \
+  --host deb13 \
+  --address 203.0.113.20 \
+  --group webservers
+```
+
+On Windows the same command works from PowerShell or `cmd` on one line, using `python` or `py`.
+
+### demote_node.py
+
+Rolls back a node to a previous state. Inverse of promote: same interface, opposite direction. It imports `promote_node.py`, so the two files must stay in the same directory.
+
+```python
+#!/usr/bin/env python3
+"""Roll a host back to an earlier inventory stage.
+
+    demote_node.py --inventory <client inventory> --from onboard/dev --to raw --host <host>
+
+Inverse of promote_node.py: same interface, opposite direction. Demotion is
+inventory bookkeeping: it lets the inventory follow a node after a snapshot
+restore, and has nothing to do with making onboarding repeatable.
+
+- Demotion to raw removes the host's entry from the source stage and writes
+  nothing under the client's raw/. The node reappears in raw through its
+  source: the Incus plugin lists a running instance, a hand-entered host
+  never left raw/hosts.yml, and a scanned host is found by the next scan.
+- Demotion from normalized to onboard moves the entry back, with its
+  connection settings and every group it was in other than the stage group.
+"""
+import sys
+
+from promote_node import main
+
+if __name__ == "__main__":
+    sys.exit(main("demote"))
+```
+
+#### Demote Usage
+
+```bash
+python scripts/demote_node.py \
+  --inventory ~/uc-inventories/example.org \
+  --from normalized/dev \
+  --to onboard/dev \
+  --host deb13
+```
+
+## Admission
+
+Raw node contract 0.3.0 describes a node that neither existing source can reach: it refuses root over SSH, its sudo asks for a password, and it reports itself in `/var/lib/raw-node/confirmation.yml`. `ingress/playbooks/05_admit.yml` takes such nodes into raw, as the `admitted` source.
+
+```yaml
+# ~/uc-candidates.yml: each address with the fingerprint read at that node's console
+admit_candidates:
+  - address: 203.0.113.10
+    fingerprint: SHA256:EXAMPLEexampleEXAMPLEexampleEXAMPLEexample0
+```
+
+```bash
+ansible-playbook $(scripts/inventory-args ~/uc-inventories/example.org raw onboard/dev) \
+  ingress/playbooks/05_admit.yml -e admit_batch_id=raw-1970-01-01-01 \
+  -e @$HOME/uc-candidates.yml
+```
+
+Candidates come from exactly one of `admit_candidates`, `admit_addresses` (with `admit_expected_fingerprint` for a single address), or `admit_from_discovered=true` after a scan. The operator's procedure is in `en/docs/admitting-a-raw-node.md`.
+
+The client's onboard stage is loaded for `onboard_ssh_private_key_file`, the controller's key for `initial`, as `10_onboard.yml` requires. `admit_batch_id` names the batch the candidates were built with, and is required: there is no current batch to fall back on. Its password must be in `~/.secrets/uc/fleet/batches/<batch>.yml`. The admitted inventory and the known hosts file are the client inventory's, under `uc_client_root`.
+
+### The Flow
+
+For each candidate, on the controller:
+
+| Step | Does | Outcome when it fails |
+|------|------|-----------------------|
+| 1 | `ssh-keyscan` on the contract port, into a temporary file only | `not-contract`: no SSH server |
+| 2 | `ssh -F /dev/null` as `initial` with the controller key alone, trusting only the scanned keys, runs `cat /var/lib/raw-node/confirmation.yml` (Python is reported, not promised) | `not-contract`: the key or the file is refused |
+| 3 | `check_raw_confirmation.py` on what was read | `refused`, with each failing clause |
+| 4 | The confirmation's `ssh_host_keys` must equal the fingerprints of the scanned keys. When a fingerprint read at the console is given for the address, in `admit_candidates` or as `admit_expected_fingerprint`, it must be one of them | `refused`: keys differ |
+| 5 | `match_raw_identity.py` against every stage inventory. For a node found to be `known`, the presented keys must also equal the keys recorded in the client's `ssh/known_hosts` under its inventory hostname, the name the strict connection uses as `HostKeyAlias`. Keys are compared as type and SHA256 fingerprint, so a type present on one side only is a difference, and no recorded keys is a refusal. A node about to be admitted with no console fingerprint gets a warning that its key was trusted on first use (PA-HOST-01) | `known`; `refused` when a known node's keys differ from `ssh/known_hosts`; or `stopped` for a reinstall, a name collision, or a node known under another name |
+| 6 | Write the node into `admitted.yml` under its confirmed hostname, add its keys to `ssh/known_hosts`, then confirm `raw: true` as `initial` and `raw: id -u` with become, over the strict connection, and Ansible's `ping` where Python is reported | Admission undone: the entry and the keys are removed, and the run fails |
+
+A node that is not a contract node is reported and does not fail the run, so a whole subnet scan can be offered with `admit_from_discovered=true`.
+
+The exit status follows one rule, applied after the report is printed. It is 0 when every candidate was admitted, is known, or is not a contract node: no SSH, or the controller key or the confirmation was refused. It is 2 when any candidate was refused or stopped, or an admission could not be confirmed, because each of those needs the operator. A refused or stopped candidate is never written, so the other candidates of the same run are still admitted. The play reads the batch password through `uc_secret` and measures it on the controller, keeping only whether it is under 15 characters and never logging it. A password under 15 characters is reported as a warning against RN-ACC-08 for every node of the batch. The node is still admitted, because it was built with that password. A batch without a batch file, or one `uc_secret` refuses, stops the run with `uc_secret`'s message, before any node is contacted. The play changes nothing on a node, and may be run any number of times.
+
+### Identity
+
+`match_raw_identity.py --inventory <client>` compares the confirmed hostname, `machine_id` and MACs with every host in the client inventory's static files: raw source files, each stage's `hosts.yml`, and `host_vars`.
+
+| Hostname | `machine_id` | MACs | Decision |
+|----------|--------------|------|----------|
+| Known | Same | Any | `known`: nothing to do |
+| Known | New | A known one | `reinstall`: stop, and say what to demote or remove from `admitted.yml`, and which keys to forget |
+| Known | New | None known | `collision`: stop, another node has the name |
+| New | Known, or a known MAC | | `conflict`: stop, the node is known under another name |
+| New | New | None known | `new`: admit |
+
+Two candidates of one run that turn out to be the same node, such as its wired and wireless addresses, admit it once. Hosts supplied only by the Incus plugin are in no file and are not compared. Contract nodes have MAC-suffixed names, so a clash with an Incus instance name is unlikely, but it is not checked.
+
+### Each Admitted Host
+
+```yaml
+admitted:
+  hosts:
+    deb13-vt-0001:
+      ansible_host: 203.0.113.10
+      ansible_port: 22
+      raw_node_contract: 0.3.0
+      raw_node_baseline: 0.4.0
+      raw_node_machine_id: 0123456789abcdef0123456789abcdef
+      raw_node_macs: [52:54:00:00:00:01]
+      raw_node_batch: raw-1970-01-01-01
+      raw_node_admitted: '2026-11-18T01:00:00-05:00'
+```
+
+`inventory-defaults/raw/group_vars/admitted.yml` supplies the rest:
+- SSH as `initial`, with `onboard_ssh_private_key_file` offered alone.
+- `ansible_become_password: "{{ lookup('uc_secret', 'batches/' ~ raw_node_batch, key='initial_password') }}"`. Each node uses the batch recorded at its admission, so a node of an earlier batch keeps working after later batches are added. A host without `raw_node_batch`, or whose batch has no file, fails; there is no default. The lookup runs only when Ansible becomes root.
+
+### Host Keys
+
+Proposed and implemented. Admitted nodes are checked against the client inventory's `ssh/known_hosts`, named `uc_known_hosts_file`. They are never checked against `~/.ssh/known_hosts`.
+
+- **Committed, in the client repository.** Host keys are public, but they name the client's hosts, so they live with the client's inventory. Its git history then records when each node's keys were first trusted, and every change after that, which is the record PA-HOST-02 asks for.
+- **Keyed by hostname.** Entries are keyed by inventory hostname, not address. The group connects with `HostKeyAlias=<inventory_hostname>`, so a node keeps its keys when its DHCP address changes. Each node's keys sit in a block marked with its name, written by `05_admit.yml` and removed by it when confirmation fails. `ssh-keygen -R <host> -f <client>/ssh/known_hosts` forgets a node, before re-admitting a reinstalled one for instance.
+- **Strict for this group only.** `ansible.cfg` keeps `host_key_checking = False` for the other sources, whose test nodes are rebuilt often. `inventory-defaults/raw/group_vars/admitted.yml` sets `ansible_ssh_host_key_checking: true`, which Ansible's ssh connection reads per host, so it no longer adds `StrictHostKeyChecking=no` for these hosts. It also sets `StrictHostKeyChecking=yes`, `UserKnownHostsFile={{ uc_known_hosts_file }}` and `GlobalKnownHostsFile=/dev/null`. This was verified from the ssh command Ansible builds, and with a changed key byte, which the connection refuses.
+- **Not inside `raw/`.** Root-level files there are reserved for host sources, and Ansible would try to parse the file as an inventory. It sits at the client repository's top, beside the stage directories.
+
+### Onboarding
+
+`10_onboard.yml` targets `raw:!admitted`. A first play prints one line when admitted nodes exist: onboarding contract nodes comes in a later kickoff.
+
+`promote_node.py` can move an admitted host to the onboard stage by hand. It keeps the host's strict host key settings when the host already has them, from its own vars or from its source's group_vars, and writes them at host level over the connection contract.
+- The settings are `ansible_ssh_host_key_checking` (or `ansible_host_key_checking`) and `ansible_ssh_common_args`.
+- `-o IdentitiesOnly=yes` is added to the arguments if they lack it.
+- They mean the same at every stage, because they name the file as `uc_known_hosts_file`, which the client inventory sets on each stage's own group and which resolves to its `ssh/known_hosts` at every stage.
+
+A promoted admitted node, reached with the onboard stage alone, still refuses a changed host key. A test covers it. The become password does not move with it: it is a group variable of `admitted`, and onboarding replaces the batch password with one per node (OE-ACC-03). That is for the onboarding kickoff.
+
+### Testing Without a Node
+
+`tests/test_admit_playbook.py` runs the play end to end on a temporary copy of the repository, with a client inventory made by `scripts/new-inventory`. It has its own secrets root, named through `UC_SECRETS_DIR`, with batch files of made-up passwords, so the operator's are never read. Stand-in `ssh` and `ssh-keyscan` programs play nodes with real generated host keys, so nothing on the network is touched. The stand-in `ssh` enforces strict host key checking as ssh does.
+
+It covers:
+- a run without a client inventory, refused before anything is contacted;
+- an admission into a client inventory with no raw hosts yet, after which `check_inventory.py` passes;
+- the same node at a second address;
+- a refused key;
+- a contract failure;
+- different host keys;
+- no SSH;
+- a rerun that changes nothing;
+- a changed known host key that is refused, then accepted once restored;
+- a failed confirmation that is undone;
+- a console fingerprint, wrong and right;
+- `admit_from_discovered`;
+- the exit status: 0 for hosts with no SSH or that refuse the key, 2 for a refused candidate and for a stopped one (a name collision), after the report;
+- a known node whose keys differ from `ssh/known_hosts`: one key changed, a type presented but not recorded, a type recorded but not presented, and no keys recorded, each refused with nothing written;
+- a short batch password reported against RN-ACC-08;
+- a batch without a batch file;
+- a run at `-vvv` that never prints a password;
+- a promoted node that keeps strict host key checking.
+
+The real node is verified in Phase 4.
+
+## Checking a Confirmation
+
+A raw node reports itself in `/var/lib/raw-node/confirmation.yml` (RN-REP-01). `scripts/check_raw_confirmation.py` checks that report against raw node contract 0.3.0 and 0.3.1. 0.3.1 changed wording only. The script reads the report from a file or from standard input, and prints one JSON document:
+
+```json
+{
+  "result": "fail",
+  "contract_supported": ["0.3.0", "0.3.1"],
+  "findings": [
+    {"severity": "fail", "clause": "Versioning", "field": "contract",
+     "message": "contract 0.1.0 is not supported; supported: 0.3.0, 0.3.1"}
+  ],
+  "values": {"hostname": "deb13-vt-0001", "machine_id": "19700101...", "macs": ["02:00:00:ab:00:01"], "...": "..."}
+}
+```
+
+Exit status 0 means the report passes, 1 that it breaks the contract, and 2 that it could not be read (no file, not UTF-8, or not YAML). `--user` and `--port` give the expected `initial_username` and `ssh_port` (default `initial` and 22). `--installer-default` adds a hostname to refuse.
+
+### Reading
+
+The YAML is read with PyYAML's `BaseLoader`, so every scalar stays a string, as the contract's Value types section requires of a consumer. A safe loader would read the MAC `52:54:00:12:34:56` as a base 60 integer, and an all-digit `machine_id` as an integer. The checker converts the booleans and `ssh_port` itself, accepting the YAML 1.1 forms Ansible accepts. A mapping key that appears twice is a failure, because a YAML loader silently keeps only the last.
+
+### Checks
+
+| Check | Clause | On failure |
+|-------|--------|------------|
+| Exactly one top-level key | RN-REP-01 | fail |
+| The key is a valid hostname, and not an installer or image default (`debian`, `ubuntu-server`, `localhost` and so on, and uc-ventoy's `deb13-vt` before first boot adds the suffix) | RN-NET-01 | fail |
+| Every field of the contract's field table is present, with its shape: versions `x.y.z`, an ISO 8601 `timestamp` with offset, a 32-digit lower-case hexadecimal `machine_id`, MACs, IPv4 and IPv6 addresses, interface `type` and `state` from their lists | RN-REP-01 | fail |
+| `contract` is 0.3.0 or 0.3.1 | Versioning | fail |
+| `user` is the expected `initial_username` | RN-ACC-01 | fail |
+| `sudo` is true | RN-ACC-04 | fail |
+| `sudo_nopasswd` is false | RN-ACC-07 | fail |
+| `ssh_password_auth` is false | RN-SSH-03 | fail |
+| `ssh_port` is the expected port | RN-SSH-01 | fail |
+| At least one host key, each with a type and a `SHA256:` fingerprint of 43 base64 characters | Host keys | fail |
+| At least one interface address | RN-SSH-02 | fail |
+| `firewall_active` is true | Firewall | warning |
+| A field the supported versions do not define | RN-REP-01 | note |
+
+A warning or a note does not fail the check. A field the checker does not know is a note, because a later minor version may add fields. That is fine while the contract is at 0.3.x.
+
+`firewall_active` is a warning only because admission's agreed checks do not include it. The firewall is a security baseline, so whether an inactive firewall manager should fail admission is a decision for the raw node contract, to be made on purpose. It is not settled here. It is listed as open in the final report of this work.
+
+### Values for Admission
+
+`values` holds every field the checker could read, normalized: booleans as booleans, `ssh_port` as a number, MACs in lower case. It adds `macs`, the node's MAC addresses, and `addresses`, its IPv4 and IPv6 addresses, for identity matching and for choosing where to connect. A field that could not be read is `null`.
+
+### Fixtures
+
+`tests/fixtures/raw-confirmations/` holds:
+- passing reports for 0.3.0 and for 0.3.1 written with every string quoted;
+- the base 60 MAC and all-digit `machine_id` case;
+- a note case and a warning case;
+- one report per failure;
+- an unreadable file;
+- the real report from the uc-ventoy metal node `deb13-vt-0001`, contract 0.1.0, which must fail on its version.
+
+Each fixture states its expected exit status and findings in its header comments:
+
+```yaml
+# expect-exit: 1
+# expect: fail | RN-ACC-07 | sudo_nopasswd
+```
+
+`tests/test_check_raw_confirmation.py` runs the script on every fixture and checks those lines, so adding a case needs no code. `python3 tests/run_tests.py` runs every test in `tests/`, with the standard library and PyYAML only.
+
+## Secrets
+
+Raw node contract 0.3.0 gives the controller its first secret: `initial_password`, the password of `initial` on every node of a build batch. The producer receives only its hash. The privileged access policy calls where the controller keeps it "the controller's secret store". Here that store is one file per batch, outside every repository, read only through one lookup. Each controller has its own half of `~/.secrets/uc/`: `fleet/` for uc-controller, holding the password, and `build/` for uc-node, which will hold the hashes. The contract's promise that the producer receives only the hash then holds for the files too. The split is an approach to try, as `en/docs/design/raw-node-handoff-inventories-and-secrets-v0.1.0.md` in uc-contracts proposes.
+
+The operator's procedure is in `en/docs/guides/batch-secrets.md`.
+
+### The Pieces
+
+| Piece | Where | Committed |
+|-------|-------|-----------|
+| A batch's password, as `initial_password` | `~/.secrets/uc/fleet/batches/<batch>.yml`, mode 0600, in directories of mode 0700 | Never |
+| Its hash and the root password's hash, for uc-node, later | `~/.secrets/uc/build/batches/<batch>.yml`, which uc-controller never reads | Never |
+| The batch name | `raw_node_batch` on each admitted host, in the client inventory, and in uc-node's node definitions | Yes, it is not secret |
+| How it is read | `shared/plugins/lookup/uc_secret.py`, named by `lookup_plugins` in `ansible.cfg` | Yes |
+
+```yaml
+# inventory-defaults/raw/group_vars/admitted.yml
+ansible_become_password: "{{ lookup('uc_secret', 'batches/' ~ raw_node_batch, key='initial_password') }}"
+```
+
+`uc_secret` is the only way any playbook, group variable or script reads a secret. Its file backend reads `~/.secrets/uc/fleet/<path>.yml`, or the root named by `UC_SECRETS_DIR`, which tests set. It refuses a path that is absolute, contains `..` or leaves the root, a root or directory below it that is not mode 0700, a file that is not mode 0600, anything not owned by the user, and a missing file or key, each with a message that says what to fix and never the value. Values come back as unsafe text, so a password containing `{{` is never templated, and any task that prints one sets `no_log: true`. A lookup is evaluated only when its value is used, so a run that never becomes root on an admitted node never reads a batch file. `05_admit.yml` runs on localhost, so it reads the batch itself, keeping only whether the password is under 15 characters.
+
+The plugin is a file reader, not a dispatcher. An OpenBao backend will replace the file read inside it, at `batches/<batch>` in the client namespace's `fleet` mount, which the file path maps onto; playbooks and inventories will not change.
+
+### Passwords
+
+The operator makes each password with dice: six words from the EFF large wordlist and a digit, about 77 bits. That is far beyond the contract's 15 characters (RN-ACC-08), and meets the policy's "generated" and "letters and digits" (PA-PWD-01). uc-controller's batch file holds the password only; the hash uc-node needs goes in uc-node's own file. The guide creates uc-controller's file without the password reaching shell history or the process list.
+
+### Consequences
+
+- **Only runs that become root on an admitted node need the file.** Nothing is decrypted on every run, and an operator without a batch file can still run everything else.
+- **Nothing records a current batch.** Admission takes the batch from `-e admit_batch_id`.
+- **Retiring is by hand.** Retiring a batch is deleting both its files, after `grep -rl 'raw_node_batch: <batch>' ~/uc-inventories/*/` finds no host. Nothing enforces it.
+- **The file is the working copy.** The operator keeps another copy in their password manager.
+
+### Node Secrets
+
+Secrets of single nodes, such as the password onboarding gives each node in place of the batch password (OE-ACC-03), will follow the same pattern: a file of their own under `~/.secrets/uc/fleet/`, read through `uc_secret`. The onboarding kickoff decides the path.
+
+### What Came Before
+
+Earlier in this work, batch passwords were kept by three scripts and a store (`scripts/new_raw_batch.py`, `scripts/vault-client.py`, `scripts/sha512_crypt.py` and `secrets/raw-batches/`), and then, in v0.1.7, with plain ansible-vault: one encrypted file, `inventories/raw/group_vars/admitted/vault.yml`, under a vault ID whose passphrase file every run had to read. Both were committed to a public repository as ciphertext, which can be attacked offline for as long as the history exists. The batch files replace them, and the repository is to be recreated without that history; the ROADMAP records it.
+
+## Ansible Configuration
+
+```ini
+# ansible.cfg
+[defaults]
+# Role directories: ./roles vendored Galaxy roles; ./shared/roles repository roles
+# used by both ingress and converge; ./ingress/roles and ./converge/roles
+# repository roles used by one concern only.
+roles_path = ./roles:./shared/roles:./ingress/roles:./converge/roles:~/.ansible/roles:/usr/share/ansible/roles
+# Repository plugins. uc_secret is the only way anything reads a secret; see
+# en/docs/guides/batch-secrets.md.
+lookup_plugins = ./shared/plugins/lookup
+# No inventory here: every run names uc-controller's inventory-defaults/ and a
+# client inventory with scripts/inventory-args, and every playbook refuses to
+# run without one.
+# Hosts handled in parallel. Test nodes share this machine with the controller.
+forks = 20
+# Test nodes are rebuilt often and their host keys change. Revisit this before
+# any non-test node is managed: enable it and manage known_hosts instead.
+host_key_checking = False
+gathering = smart
+fact_caching = jsonfile
+# Per-user cache, kept out of /tmp. reset_inventories.py reads this path.
+fact_caching_connection = ~/.ansible/fact_cache/uc-controller
+fact_caching_timeout = 3600
+stdout_callback = default
+callback_result_format = yaml
+# Per-task timings at the end of every run.
+callbacks_enabled = ansible.posix.profile_tasks
+
+[privilege_escalation]
+become = True
+become_method = sudo
+become_user = root
+become_ask_pass = False
+
+[connection]
+# Send modules through the open SSH session instead of copying a file first.
+# Needs sudo without requiretty, which Debian and Ubuntu do not set.
+pipelining = True
+```
+
+
+The settings are measured and explained in the speed overview (`en/docs/dev/`). In short: pipelining sends modules through the open SSH session and needs sudo without `requiretty`, which Debian and Ubuntu do not set; the fact cache is per user, outside `/tmp`; `forks = 20` stays modest because the test nodes share the controller's machine; the default strategy stays `linear`, and only the converge plays set `strategy: free`; `host_key_checking = False` is for rebuilt test nodes only and must be revisited before any other node is managed.
+## Requirements
+
+Roles are installed from Ansible Galaxy with `ansible-galaxy install -r requirements.yml`. The file must keep its `.yml` or `.yaml` extension, and roles land in the first writable directory on the configured `roles_path` <a id="cite-ansible-galaxy"></a>([Ansible project contributors, n.d.-d](#ref-ansible-galaxy)).
+
+```yaml
+# requirements.yml
+---
+# Every role and collection is pinned to an exact version: the versions the
+# lifecycle was verified with (see Verification Status in the design
+# document). To move one, see "Bumping a Pinned Version" there.
+
+# The collections the playbooks and the vendored roles use. Both also ship
+# inside the "ansible" package of the controller's virtual environment;
+# installing them from this file puts the pinned versions in the user's
+# collections path, which Ansible searches first.
+collections:
+  - name: community.general
+    version: 13.5.1
+  - name: ansible.posix
+    version: 2.2.2
+
+roles:
+  - name: robertdebock.bootstrap
+    version: 7.1.7
+
+  # Our fork of robertdebock.umask, adding the umask_system option for a
+  # system-wide umask (login.defs + profile.d). Sourced from git, not Galaxy,
+  # because the option does not exist upstream. Must run before
+  # robertdebock.users so new home directories get the intended permissions.
+  - name: steelcj.umask
+    src: git@github.com:steelcj/ansible-role-umask.git
+    scm: git
+    # A commit, not a branch: the fork has no tagged release. This is the head
+    # of master on 2026-11-13.
+    version: 424960626fd48d86ecd23ba1654fdf8b722f7821
+  - name: robertdebock.epel
+    version: 4.1.7
+  - name: robertdebock.update
+    version: 3.1.10
+  - name: robertdebock.locale
+    version: 3.3.12
+  - name: robertdebock.auto_update
+    version: 3.1.9
+  - name: robertdebock.cron
+    version: 2.2.8
+  - name: robertdebock.ntp
+    version: 3.1.7
+  - name: robertdebock.openssh
+    version: 5.0.4
+  - name: robertdebock.fail2ban
+    version: 5.0.7
+  - name: robertdebock.users
+    version: 6.1.8
+  - name: robertdebock.selinux
+    version: 3.1.12
+  - name: robertdebock.auditd
+    version: 3.2.13
+#  - name: robertdebock.pam      # robert does not have a role called pam
+#  - name: robertdebock.limits   # robert does not have a role called limits
+  - name: robertdebock.sysctl
+    version: 2.1.10
+  - name: robertdebock.hostname
+    version: 3.1.11
+#  - name: robertdebock.timezone # robert does not have a role called timezone (see local and ntp)
+#  - name: robertdebock.motd     # robert does not have a role called mod
+#  - name: robertdebock.chrony   # robert does not have a role with this name
+  - name: robertdebock.rsyslog
+    version: 5.0.1
+```
+
+### Pinned Versions
+
+Every role and collection in `requirements.yml` has an exact version, the one the lifecycle was verified with. Galaxy roles are pinned to their release. `steelcj.umask`, the fork, has no tagged release and is pinned to a commit. The file also lists the two collections the playbooks and the vendored roles use, `community.general` 13.5.1 and `ansible.posix` 2.2.2.
+
+The vendored roles are committed under `roles/`, so the pins describe what is there; they do not change a run by themselves. The collections also ship inside the `ansible` package of the controller's virtual environment, at the same versions for `ansible` 14.6.0. `ansible-galaxy collection install -r requirements.yml` puts the pinned versions in the user's collections path, which Ansible searches before the virtual environment, so the pins hold when the virtual environment is rebuilt with a newer `ansible`.
+
+The pinned file was checked by installing it into empty temporary directories. All 16 roles came out byte for byte as they are in `roles/`. Both collections matched the installed ones in every file the virtual environment ships; the Galaxy archives add tests, documentation and CI files.
+
+### Bumping a Pinned Version
+
+One role or collection at a time, on its own branch:
+
+1. Read the upstream changelog between the two versions. Look for renamed variables, changed defaults and new handlers; handler names are shared across roles in a play (see Reboots and Role Order).
+2. Change the version in `requirements.yml`. For `steelcj.umask`, use the new commit hash, or a tag once the fork has one.
+3. Reinstall that role into `roles/`, or the collection into the collections path:
+
+    ```bash
+    ansible-galaxy role install -r requirements.yml --force -p roles robertdebock.openssh
+    ansible-galaxy collection install -r requirements.yml --force
+    ```
+
+4. Review `git diff roles/` before going further. This is the only place a vendored role changes.
+5. Test. Run `python3 scripts/check_converge_boundary.py` and `ansible-playbook --syntax-check` on every playbook, then the end-to-end check from `raw` on a node of each OS family the role runs on: `deb13` or `ubu2404` for the Debian family and `rky9` for the Red Hat family. A role used only in normalize still needs the whole chain, because the reruns must report `changed=0`.
+6. Commit `requirements.yml` and `roles/` together, and record the new version under Verification Status if the result differs.
+
+## Node Lifecycle Flow
+
+```text
+┌───────────┐  10_onboard   ┌───────────┐  20_normalize  ┌────────────┐  30_specialize  ┌─────────────┐
+│ raw       │ ────────────▶ │ onboarded │ ─────────────▶ │ normalized │ ──────────────▶ │ specialized │
+│           │               │           │                │            │                 │             │
+│ hosts.yml │               │ group_vars│                │ group_vars │                 │ group_vars  │
+│ (auto)    │               │ /all.yml  │                │ /all.yml   │                 │ /webservers │
+│           │               │           │                │            │                 │             │
+│ (none)    │               │ firewall  │                │ firewall   │                 │ firewall    │
+│           │               │ _onboard  │                │ _normalize │                 │ _specialize │
+└───────────┘               └───────────┘                └────────────┘                 └─────────────┘
+
+Combined firewall at each stage:
+  onboard:    onboard
+  normalize:  onboard + normalize
+  specialize: onboard + normalize + specialize
+```
+
+## References
+
+<a id="ref-ansible-add-host"></a>
+[Return to citation](#cite-ansible-add-host)
+Ansible project contributors. (n.d.-a). *ansible.builtin.add_host module: Add a host (and alternatively a group) to the ansible-playbook in-memory inventory*. Ansible Community Documentation. Retrieved November 11, 2026, from https://docs.ansible.com/projects/ansible/latest/collections/ansible/builtin/add_host_module.html
+
+<a id="ref-ansible-import-playbook"></a>
+[Return to citation](#cite-ansible-import-playbook)
+Ansible project contributors. (n.d.-b). *ansible.builtin.import_playbook module: Import a playbook*. Ansible Community Documentation. Retrieved November 11, 2026, from https://docs.ansible.com/projects/ansible/latest/collections/ansible/builtin/import_playbook_module.html
+
+<a id="ref-ansible-config"></a>
+[Return to citation](#cite-ansible-config)
+Ansible project contributors. (n.d.-c). *Ansible configuration settings*. Ansible Community Documentation. Retrieved November 11, 2026, from https://docs.ansible.com/projects/ansible/latest/reference_appendices/config.html
+
+<a id="ref-ansible-galaxy"></a>
+[Return to citation](#cite-ansible-galaxy)
+Ansible project contributors. (n.d.-d). *Galaxy user guide*. Ansible Community Documentation. Retrieved November 11, 2026, from https://docs.ansible.com/projects/ansible/latest/galaxy/user_guide.html
+
+<a id="ref-ansible-inventory"></a>
+[Return to citation](#cite-ansible-inventory)
+Ansible project contributors. (n.d.-e). *How to build your inventory*. Ansible Community Documentation. Retrieved November 11, 2026, from https://docs.ansible.com/projects/ansible/latest/inventory_guide/intro_inventory.html
+
+<a id="ref-ansible-variables"></a>
+[Return to citation](#cite-ansible-variables)
+Ansible project contributors. (n.d.-f). *Using variables*. Ansible Community Documentation. Retrieved November 11, 2026, from https://docs.ansible.com/projects/ansible/latest/playbook_guide/playbooks_variables.html

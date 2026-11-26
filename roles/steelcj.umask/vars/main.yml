@@ -1,0 +1,9 @@
+---
+# vars file for umask
+
+# login.defs holds UMASK and HOME_MODE on the Debian and RedHat families.
+# Other families fall back to the same path, which is correct where present.
+_umask_login_defs:
+  default: /etc/login.defs
+
+umask_login_defs: "{{ _umask_login_defs[ansible_facts['os_family']] | default(_umask_login_defs['default']) }}"

@@ -1,0 +1,68 @@
+---
+# shared/tasks/require-client-inventory.yml
+#
+# The only task of the first play of every playbook, a play on localhost.
+# A play on a group runs nothing when no client inventory was given, so the
+# check cannot live there; the implicit localhost reads the all group's
+# variables, so it sees uc_client_inventory.
+#
+# 1. Fails unless a client inventory is loaded. Each stage's
+#    group_vars/all.yml in a client inventory sets uc_client_inventory: true;
+#    uc-controller's inventory-defaults/ never does.
+# 2. Finds the client inventory's root for plays that run on localhost, which
+#    have no inventory_dir and are in no stage group. It takes the -i sources
+#    outside inventory-defaults/, strips the stage from each (/raw, or
+#    /<stage>/<environment>), and fails unless they all give the same root.
+#    It sets, on localhost:
+#      uc_client_root    the client inventory's root directory
+#      uc_client_stages  the client stages loaded, as -i gave them, such as
+#                        [raw, onboard/dev]
+#    Plays read them as hostvars['localhost'].uc_client_root and
+#    hostvars['localhost'].uc_client_stages.
+
+- name: Require a client inventory
+  ansible.builtin.assert:
+    that: uc_client_inventory | default(false) is sameas true
+    fail_msg: >-
+      No client inventory is loaded. Give uc-controller's defaults and a client
+      inventory's stages with scripts/inventory-args, for example:
+      ansible-playbook $(scripts/inventory-args ~/uc-inventories/example.org raw onboard/dev)
+      ingress/playbooks/05_admit.yml
+    quiet: true
+
+- name: Find the client inventory's root and stages
+  ansible.builtin.set_fact:
+    uc_client_sources: >-
+      {%- set defaults = (ansible_config_file | dirname | ansible.builtin.realpath) ~ '/inventory-defaults/' -%}
+      {%- set ns = namespace(found=[]) -%}
+      {%- for source in ansible_inventory_sources | map('ansible.builtin.realpath') -%}
+        {%- if not (source ~ '/').startswith(defaults) -%}
+          {%- if source | basename == 'raw' -%}
+            {%- set ns.found = ns.found + [{'root': source | dirname, 'stage': 'raw', 'source': source}] -%}
+          {%- elif (source | dirname | basename) in ['onboard', 'normalized'] -%}
+            {%- set ns.found = ns.found + [{'root': source | dirname | dirname,
+                  'stage': (source | dirname | basename) ~ '/' ~ (source | basename), 'source': source}] -%}
+          {%- else -%}
+            {%- set ns.found = ns.found + [{'root': '', 'stage': '', 'source': source}] -%}
+          {%- endif -%}
+        {%- endif -%}
+      {%- endfor -%}
+      {{ ns.found }}
+
+- name: Require every client source to be a stage of one client inventory
+  ansible.builtin.assert:
+    that:
+      - uc_client_sources | length > 0
+      - uc_client_sources | selectattr('stage', 'eq', '') | list | length == 0
+      - uc_client_sources | map(attribute='root') | unique | list | length == 1
+    fail_msg: >-
+      The -i sources outside inventory-defaults/ must be stages of one client
+      inventory (<root>/raw, <root>/onboard/<environment> or
+      <root>/normalized/<environment>); scripts/inventory-args gives them.
+      Found: {{ uc_client_sources | map(attribute='source') | join(', ') }}
+    quiet: true
+
+- name: Record the client inventory's root and stages
+  ansible.builtin.set_fact:
+    uc_client_root: "{{ uc_client_sources[0].root }}"
+    uc_client_stages: "{{ uc_client_sources | map(attribute='stage') | list }}"

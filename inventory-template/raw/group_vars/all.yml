@@ -1,0 +1,10 @@
+---
+# raw/group_vars/all.yml
+#
+# Facts about this client's raw stage, and no logic: the connection settings
+# for each source are in uc-controller's inventory-defaults/raw/. A value in
+# all.yml must mean the same at every stage, because a run that combines
+# stages merges their all groups and the last one loaded wins.
+
+# Marks the run as using a client inventory. Every playbook checks it first.
+uc_client_inventory: true

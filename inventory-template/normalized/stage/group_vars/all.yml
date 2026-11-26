@@ -1,0 +1,18 @@
+---
+# normalized/stage/group_vars/all.yml
+#
+# Facts about this client's normalized stage, stage environment, and no logic.
+# A value in all.yml must mean the same at every stage.
+
+uc_client_inventory: true
+
+# The normalized stage's services, written to the Foomuuri fragment
+# 20-normalize as foomuuri_services, beside the onboard stage's 10-base. Each
+# entry is a Foomuuri macro (https) or a port (9100), with protocol (default
+# tcp), sources (empty or absent means any) and state (absent leaves it out).
+# An empty list removes the fragment.
+firewall_normalize_services:
+  - name: 9100  # node exporter
+    protocol: tcp
+    sources:
+      - 198.51.100.0/24

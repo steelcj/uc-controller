@@ -1,0 +1,73 @@
+all:
+  children:
+    normalized:
+      hosts:
+        example-norm-stage:
+          ansible_connection: ssh
+          ansible_host: 203.0.113.41
+          ansible_ssh_common_args: -o IdentitiesOnly=yes
+          ansible_ssh_private_key_file: ~/.ssh/example-initial-id_ed25519
+          ansible_user: initial
+          firewall_normalize_services:
+          - name: 9100
+            protocol: tcp
+            sources:
+            - 198.51.100.0/24
+          firewall_onboard_ssh:
+            port: 22
+            sources:
+            - 0.0.0.0/0
+          onboard_initial_authorized_keys:
+          - ssh-ed25519 EXAMPLE-PUBLIC-KEY-NOT-A-REAL-ONE initial@example.org
+          openssh_challenge_response_authentication: 'no'
+          openssh_password_authentication: 'no'
+          openssh_permit_root_login: 'no'
+          openssh_x11_forwarding: 'no'
+          uc_client_inventory: true
+          uc_known_hosts_file: '{{ (inventory_dir ~ ''/../../ssh/known_hosts'') | ansible.builtin.realpath }}'
+          umask: '0027'
+          umask_home_mode: '0750'
+          umask_system: true
+          umask_users: []
+          users:
+          - authorized_keys: '{{ onboard_initial_authorized_keys }}'
+            comment: Ansible management user
+            name: initial
+            sudo_options: 'ALL=(ALL) NOPASSWD: ALL'
+    onboarded:
+      hosts:
+        example-onb-stage:
+          ansible_connection: ssh
+          ansible_host: 203.0.113.31
+          ansible_ssh_common_args: -o IdentitiesOnly=yes
+          ansible_ssh_private_key_file: ~/.ssh/example-initial-id_ed25519
+          ansible_user: initial
+          firewall_normalize_services:
+          - name: 9100
+            protocol: tcp
+            sources:
+            - 198.51.100.0/24
+          firewall_onboard_ssh:
+            port: 22
+            sources:
+            - 0.0.0.0/0
+          onboard_initial_authorized_keys:
+          - ssh-ed25519 EXAMPLE-PUBLIC-KEY-NOT-A-REAL-ONE initial@example.org
+          openssh_challenge_response_authentication: 'no'
+          openssh_password_authentication: 'no'
+          openssh_permit_root_login: 'no'
+          openssh_x11_forwarding: 'no'
+          uc_client_inventory: true
+          uc_known_hosts_file: '{{ (inventory_dir ~ ''/../../ssh/known_hosts'') | ansible.builtin.realpath }}'
+          umask: '0027'
+          umask_home_mode: '0750'
+          umask_system: true
+          umask_users: []
+          users:
+          - authorized_keys: '{{ onboard_initial_authorized_keys }}'
+            comment: Ansible management user
+            name: initial
+            sudo_options: 'ALL=(ALL) NOPASSWD: ALL'
+    webservers:
+      hosts:
+        example-norm-stage: {}

@@ -1,0 +1,12 @@
+---
+# normalized/dev/group_vars/webservers.yml
+#
+# Services for hosts in the webservers group, written at the specialize
+# stage to the Foomuuri fragment 30-specialize as foomuuri_services. Entries
+# are shaped as in all.yml. A file like this one goes beside all.yml for each
+# group that needs its own services.
+firewall_specialize_services:
+  - name: http
+    protocol: tcp
+    sources:
+      - 0.0.0.0/0

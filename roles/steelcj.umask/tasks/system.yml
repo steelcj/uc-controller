@@ -1,0 +1,42 @@
+---
+# System-wide umask.
+#
+# login.defs drives two things: useradd uses UMASK (or HOME_MODE, if set) for
+# the permissions of a new home directory, and pam_umask reads UMASK for login
+# sessions. The profile.d drop-in covers login shells on distributions whose
+# /etc/profile sets its own umask.
+#
+# Editing login.defs does not change the umask of the running Ansible
+# connection, so this is safe to run mid-play; its effect is on useradd and
+# future logins, which is why the role must run before users are created.
+
+- name: system | Set UMASK in {{ umask_login_defs }}
+  ansible.builtin.lineinfile:
+    path: "{{ umask_login_defs }}"
+    regexp: '^#?\s*UMASK\b'
+    line: "UMASK\t\t{{ umask }}"
+    owner: root
+    group: root
+    mode: "0644"
+    backup: true
+
+- name: system | Set HOME_MODE in {{ umask_login_defs }}
+  ansible.builtin.lineinfile:
+    path: "{{ umask_login_defs }}"
+    regexp: '^#?\s*HOME_MODE\b'
+    line: "HOME_MODE\t{{ umask_home_mode }}"
+    owner: root
+    group: root
+    mode: "0644"
+  when:
+    - umask_home_mode | length > 0
+
+- name: system | Deploy /etc/profile.d/umask.sh
+  ansible.builtin.copy:
+    dest: /etc/profile.d/umask.sh
+    content: "umask {{ umask }}\n"
+    owner: root
+    group: root
+    mode: "0644"
+  when:
+    - umask_profile_d | bool

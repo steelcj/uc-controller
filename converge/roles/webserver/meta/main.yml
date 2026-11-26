@@ -1,0 +1,8 @@
+---
+galaxy_info:
+  role_name: webserver
+  author: uc-controller
+  description: Install nginx and serve a one-line page naming the host.
+  license: AGPL-3.0-or-later
+  min_ansible_version: "2.15"
+dependencies: []

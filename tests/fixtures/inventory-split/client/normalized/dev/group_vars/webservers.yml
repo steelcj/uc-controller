@@ -1,0 +1,5 @@
+firewall_specialize_services:
+- name: http
+  protocol: tcp
+  sources:
+  - 0.0.0.0/0

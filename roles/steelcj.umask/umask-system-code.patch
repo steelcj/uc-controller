@@ -1,0 +1,131 @@
+diff --git a/defaults/main.yml b/defaults/main.yml
+index 21f38fd..1c2c74d 100644
+--- a/defaults/main.yml
++++ b/defaults/main.yml
+@@ -5,3 +5,15 @@ umask: "0022"
+ 
+ umask_users:
+   - root
++
++# Configure a system-wide umask, not just per-user shell rc files.
++# Off by default so the role's original behaviour is unchanged.
++umask_system: false
++
++# Mode for new home directories, written as HOME_MODE in login.defs and
++# applied by useradd. Leave empty ("") to let useradd derive it from UMASK.
++umask_home_mode: "0750"
++
++# Also write /etc/profile.d/umask.sh so login shells pick up the umask
++# regardless of the distribution's own profile defaults.
++umask_profile_d: true
+diff --git a/tasks/assert.yml b/tasks/assert.yml
+index 1bd0351..9c66289 100644
+--- a/tasks/assert.yml
++++ b/tasks/assert.yml
+@@ -14,3 +14,24 @@
+       - umask_users is defined
+       - umask_users is iterable
+     quiet: true
++
++- name: assert | Test umask_system
++  ansible.builtin.assert:
++    that:
++      - umask_system is defined
++      - umask_system | bool in [true, false]
++    quiet: true
++
++- name: assert | Test umask_home_mode
++  ansible.builtin.assert:
++    that:
++      - umask_home_mode is defined
++      - umask_home_mode is string
++    quiet: true
++
++- name: assert | Test umask_profile_d
++  ansible.builtin.assert:
++    that:
++      - umask_profile_d is defined
++      - umask_profile_d | bool in [true, false]
++    quiet: true
+diff --git a/tasks/main.yml b/tasks/main.yml
+index 312c2fc..b469612 100644
+--- a/tasks/main.yml
++++ b/tasks/main.yml
+@@ -7,6 +7,14 @@
+   run_once: true
+   delegate_to: localhost
+ 
++# Run before any users are created (see system.yml) so new home directories
++# get the intended permissions.
++- name: Configure the system-wide umask
++  ansible.builtin.include_tasks:
++    file: system.yml
++  when:
++    - umask_system | bool
++
+ - name: Set umask
+   ansible.builtin.lineinfile:
+     path: ~/.bashrc
+diff --git a/tasks/system.yml b/tasks/system.yml
+new file mode 100644
+index 0000000..c31f1df
+--- /dev/null
++++ b/tasks/system.yml
+@@ -0,0 +1,42 @@
++---
++# System-wide umask.
++#
++# login.defs drives two things: useradd uses UMASK (or HOME_MODE, if set) for
++# the permissions of a new home directory, and pam_umask reads UMASK for login
++# sessions. The profile.d drop-in covers login shells on distributions whose
++# /etc/profile sets its own umask.
++#
++# Editing login.defs does not change the umask of the running Ansible
++# connection, so this is safe to run mid-play; its effect is on useradd and
++# future logins, which is why the role must run before users are created.
++
++- name: system | Set UMASK in {{ umask_login_defs }}
++  ansible.builtin.lineinfile:
++    path: "{{ umask_login_defs }}"
++    regexp: '^#?\s*UMASK\b'
++    line: "UMASK\t\t{{ umask }}"
++    owner: root
++    group: root
++    mode: "0644"
++    backup: true
++
++- name: system | Set HOME_MODE in {{ umask_login_defs }}
++  ansible.builtin.lineinfile:
++    path: "{{ umask_login_defs }}"
++    regexp: '^#?\s*HOME_MODE\b'
++    line: "HOME_MODE\t{{ umask_home_mode }}"
++    owner: root
++    group: root
++    mode: "0644"
++  when:
++    - umask_home_mode | length > 0
++
++- name: system | Deploy /etc/profile.d/umask.sh
++  ansible.builtin.copy:
++    dest: /etc/profile.d/umask.sh
++    content: "umask {{ umask }}\n"
++    owner: root
++    group: root
++    mode: "0644"
++  when:
++    - umask_profile_d | bool
+diff --git a/vars/main.yml b/vars/main.yml
+new file mode 100644
+index 0000000..155a48a
+--- /dev/null
++++ b/vars/main.yml
+@@ -0,0 +1,9 @@
++---
++# vars file for umask
++
++# login.defs holds UMASK and HOME_MODE on the Debian and RedHat families.
++# Other families fall back to the same path, which is correct where present.
++_umask_login_defs:
++  default: /etc/login.defs
++
++umask_login_defs: "{{ _umask_login_defs[ansible_facts['os_family']] | default(_umask_login_defs['default']) }}"

@@ -1,0 +1,78 @@
+#!/usr/bin/env python3
+"""Print the -i options that load a client inventory's stages.
+
+    scripts/inventory-args <client inventory> <stage> [<stage> ...]
+
+A stage is raw, or onboard/<environment> or normalized/<environment>, as the
+client inventory's directories are named. All of uc-controller's
+inventory-defaults/ directories come first, then all the client's
+directories, each in the order the stages are given, so a client value
+always overrides a default:
+
+    ansible-playbook $(scripts/inventory-args ~/uc-inventories/example.org raw onboard/dev) \\
+      ingress/playbooks/05_admit.yml ...
+
+Paths are printed absolute, on one line. A path containing whitespace is
+refused, since the shell would split it. Exit status 2 on any refusal.
+"""
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parent.parent
+DEFAULTS = REPO / "inventory-defaults"
+# The stage kinds, and whether the client names an environment under them.
+KINDS = {"raw": False, "onboard": True, "normalized": True}
+
+
+def fail(message: str) -> None:
+    print(f"inventory-args: {message}", file=sys.stderr)
+    sys.exit(2)
+
+
+def stage_dirs(client: Path, stage: str) -> tuple[Path, Path]:
+    """Return (defaults directory, client directory) for one stage."""
+    parts = stage.strip("/").split("/")
+    kind = parts[0]
+    if kind not in KINDS:
+        fail(f"unknown stage {stage!r}: use raw, onboard/<environment> or "
+             f"normalized/<environment>")
+    if len(parts) != (2 if KINDS[kind] else 1) or "" in parts or ".." in parts:
+        fail(f"stage {stage!r} is not raw, onboard/<environment> or normalized/<environment>")
+    defaults = DEFAULTS / kind
+    if not defaults.is_dir():
+        fail(f"{defaults} is missing from this uc-controller checkout")
+    directory = client.joinpath(*parts)
+    if not directory.is_dir():
+        fail(f"the client inventory has no {stage}/ directory ({directory})")
+    return defaults, directory
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) < 2 or argv[0] in ("-h", "--help"):
+        print(__doc__.strip(), file=sys.stderr)
+        return 2
+    client = Path(argv[0]).expanduser()
+    if not client.is_dir():
+        fail(f"{argv[0]} is not a directory")
+    client = client.resolve()
+    stages = argv[1:]
+    if len(set(stages)) != len(stages):
+        fail("a stage is given twice")
+    defaults, clients = [], []
+    for stage in stages:
+        default_dir, client_dir = stage_dirs(client, stage)
+        if default_dir not in defaults:
+            defaults.append(default_dir)
+        clients.append(client_dir)
+    paths = [*defaults, *clients]
+    for path in paths:
+        if any(c.isspace() for c in str(path)):
+            fail(f"{path} contains whitespace, which the shell would split")
+    print(" ".join(f"-i {path}" for path in paths))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

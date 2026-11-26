@@ -1,0 +1,6 @@
+uc_client_inventory: true
+firewall_normalize_services:
+- name: 9100
+  protocol: tcp
+  sources:
+  - 198.51.100.0/24

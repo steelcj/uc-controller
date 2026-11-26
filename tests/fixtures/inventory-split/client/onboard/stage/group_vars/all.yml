@@ -1,0 +1,7 @@
+uc_client_inventory: true
+firewall_onboard_ssh:
+  port: 22
+  sources:
+  - 0.0.0.0/0
+onboard_initial_authorized_keys:
+- ssh-ed25519 EXAMPLE-PUBLIC-KEY-NOT-A-REAL-ONE initial@example.org

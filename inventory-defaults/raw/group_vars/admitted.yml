@@ -1,0 +1,46 @@
+---
+# inventory-defaults/raw/group_vars/admitted.yml
+#
+# Maintained by hand.
+# Raw nodes that meet the raw node contract, admitted by
+# ingress/playbooks/05_admit.yml into the client's raw/admitted.yml. They are
+# reached as the contract says: SSH as initial with the controller's key,
+# offered alone; sudo asks for the password of the batch the node was
+# built with, read through the uc_secret lookup.
+# ansible_host, ansible_port and raw_node_batch are set per host by the
+# generated inventory.
+#
+# Load the onboard stage too (scripts/inventory-args <client> raw onboard/dev),
+# whose client values define onboard_ssh_private_key_file.
+
+ansible_connection: ssh
+ansible_user: initial
+ansible_ssh_private_key_file: "{{ onboard_ssh_private_key_file }}"
+
+# Strict host key checking for this group only. ansible.cfg turns checking
+# off for the other sources, whose test nodes are rebuilt often; this
+# variable overrides it per host, so Ansible no longer adds
+# StrictHostKeyChecking=no. Keys are checked against the client inventory's
+# ssh/known_hosts alone, under the inventory hostname (HostKeyAlias), never
+# ~/.ssh/known_hosts.
+#
+# uc_known_hosts_file is set by the client inventory, on each stage's own
+# group, and resolves to the same file at every stage, so the two host key
+# settings mean the same wherever the host is: promote_node.py copies them
+# onto a host it promotes out of raw.
+ansible_ssh_host_key_checking: true
+ansible_ssh_common_args: >-
+  -o IdentitiesOnly=yes
+  -o StrictHostKeyChecking=yes
+  -o HostKeyAlias={{ inventory_hostname }}
+  -o UserKnownHostsFile={{ uc_known_hosts_file }}
+  -o GlobalKnownHostsFile=/dev/null
+  -o PasswordAuthentication=no
+  -o KbdInteractiveAuthentication=no
+
+# The become password is the password of the batch the node was built
+# with, read through uc_secret from ~/.secrets/uc/fleet/batches/<batch>.yml (see
+# en/docs/guides/batch-secrets.md). The lookup runs only when Ansible
+# becomes root. A host without raw_node_batch, or whose batch has no file,
+# fails here; there is no default.
+ansible_become_password: "{{ lookup('uc_secret', 'batches/' ~ raw_node_batch, key='initial_password') }}"

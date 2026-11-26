@@ -1,0 +1,3 @@
+incus:
+  hosts:
+    example-incus-01: {}

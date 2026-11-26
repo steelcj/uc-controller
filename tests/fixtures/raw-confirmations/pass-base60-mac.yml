@@ -1,0 +1,35 @@
+# pass-base60-mac.yml
+#
+# Unquoted values a YAML 1.1 safe loader would change: the MAC
+# 52:54:00:12:34:56 (a base 60 integer) and an all-digit machine_id (an
+# integer). Read as strings, they pass unchanged.
+# expect-value lines are checked by the test runner.
+#
+# expect-exit: 0
+# expect-value: macs = ["52:54:00:12:34:56"]
+# expect-value: machine_id = "12345678901234567890123456789012"
+deb13-vt-5678:
+  contract: 0.3.0
+  baseline: 0.4.0
+  timestamp: 2026-11-17T19:35:00-05:00
+  machine_id: 12345678901234567890123456789012
+  user: initial
+  sudo: true
+  sudo_nopasswd: false
+  ssh_port: 22
+  ssh_password_auth: false
+  ssh_host_keys:
+    - type: ssh-ed25519
+      fingerprint: SHA256:EXAMPLEexampleEXAMPLEexampleEXAMPLEexample0
+  firewall: foomuuri
+  firewall_active: true
+  python: /usr/bin/python3
+  interfaces:
+    - name: enp1s0
+      type: ethernet
+      mac: 52:54:00:12:34:56
+      state: up
+      default_route4: true
+      default_route6: false
+      ip: [10.0.0.5]
+      ip6: []

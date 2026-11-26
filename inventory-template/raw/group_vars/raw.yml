@@ -1,0 +1,8 @@
+---
+# raw/group_vars/raw.yml
+#
+# Values that differ by stage go on the stage's own group, never in all.yml.
+# The known hosts file is this repository's ssh/known_hosts at every stage.
+# It is built from inventory_dir, which is one level deep here (raw/) and two
+# for the other stages, and realpath gives every stage the same clean path.
+uc_known_hosts_file: "{{ (inventory_dir ~ '/../ssh/known_hosts') | ansible.builtin.realpath }}"

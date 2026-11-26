@@ -1,0 +1,8 @@
+# error-not-yaml.yml
+#
+# Not valid YAML: unreadable input.
+#
+# expect-exit: 2
+deb13-vt-a1b2:
+  contract: [0.3.0
+  user: initial

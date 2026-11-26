@@ -12,4 +12,4 @@ Documents under `en/docs/` carry their own versions, independent of the reposito
 
 ## Releases
 
-Cut and publish releases as described in [Cut and Publish a Release](en/docs/guides/releases/cut-and-publish-a-release.md). Tags and releases are never reused: a mistake is fixed in the next version.
+Cut and publish releases as described in [Cut and Publish a Release](en/docs/guides/releases/cut-and-publish-a-release.md). Tags and releases are never reused: a mistake is fixed in the next version. The one exception is recreating the repository to remove secrets or client data from its history: the new repository starts from the current files, with no history, and the old tags and releases go with the old repository.

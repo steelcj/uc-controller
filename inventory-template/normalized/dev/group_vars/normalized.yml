@@ -1,0 +1,7 @@
+---
+# normalized/<environment>/group_vars/normalized.yml
+#
+# Values that differ by stage go on the stage's own group, never in all.yml.
+# The known hosts file is this repository's ssh/known_hosts at every stage;
+# inventory_dir is two levels deep here (normalized/<environment>/).
+uc_known_hosts_file: "{{ (inventory_dir ~ '/../../ssh/known_hosts') | ansible.builtin.realpath }}"

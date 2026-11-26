@@ -1,0 +1,38 @@
+---
+# onboard/stage/group_vars/all.yml
+#
+# Facts about this client's onboard stage, stage environment, and no logic:
+# the onboard policy (umask, openssh hardening, the initial user) is in
+# uc-controller's inventory-defaults/onboard/. Replace every CHANGE-ME value.
+# A value in all.yml must mean the same at every stage.
+
+uc_client_inventory: true
+
+# --- connection contract -------------------------------------------------
+# Controller-side private key for the initial user, as a path on the
+# controller. 10_onboard.yml uses it when it switches a node to SSH, and
+# writes it onto each promoted host as ansible_ssh_private_key_file.
+onboard_ssh_private_key_file: ~/.ssh/CHANGE-ME-initial-id_ed25519
+
+# The public keys installed for the initial user, as single lines.
+onboard_initial_authorized_keys:
+  - "ssh-ed25519 CHANGE-ME initial@controller"
+
+# --- locale (robertdebock.locale) ------------------------------------------
+locale_lang: en_CA.UTF-8          # must be available on the node
+locale_timezone: America/Toronto  # Etc/UTC to keep servers on UTC
+
+# --- ntp (robertdebock.ntp) ------------------------------------------------
+ntp_timezone: America/Toronto     # keep in step with locale_timezone
+
+# --- firewall (steelcj.foomuuri) ------------------------------------------
+# SSH into the node, written to the Foomuuri base fragment 10-base as
+# foomuuri_ssh_port and foomuuri_ssh_sources. It replaces uc-node's bootstrap
+# rule at onboarding, and is refused without SSH. Empty sources mean any
+# address, IPv4 or IPv6. Keep the port at 22 for now: see ROADMAP.md in
+# uc-controller. (Until the switch to steelcj.foomuuri, uc-controller applies
+# this with shared/roles/uc_firewall.)
+firewall_onboard_ssh:
+  port: 22
+  sources:
+    - 0.0.0.0/0  # TODO: narrow the IPv4 sources for SSH on stage

@@ -1,0 +1,299 @@
+---
+# ingress/playbooks/tasks/admit_candidate.yml
+#
+# Steps 1 to 5 of 05_admit.yml for one candidate address, on the controller.
+# Read-only towards the node: it runs ssh-keyscan and one cat as initial.
+# Appends one result to admit_results:
+#
+#   address, hostname, outcome, message, findings (non-failing notes and
+#   warnings), line (one line for the report), and, when admitted, entry
+#   (the host's vars for admitted.yml), known_hosts (its key lines under the
+#   hostname) and python (the reported interpreter).
+#
+# Outcomes: admitted, known, refused (breaks the contract, host keys differ
+# from the confirmation, or, for a known node, from ssh/known_hosts), stopped
+# (reinstall, name collision, known under another name), not-contract (no
+# SSH, or the controller key or confirmation is refused).
+# Every step after the first runs only while the outcome is pending.
+
+- name: "{{ candidate }}: start"
+  ansible.builtin.set_fact:
+    admit_one:
+      address: "{{ candidate }}"
+      hostname: ""
+      outcome: pending
+      message: ""
+      findings: []
+    admit_keys_file: "{{ admit_tmp.path }}/{{ candidate | regex_replace('[^A-Za-z0-9.-]', '_') }}.keys"
+    # The fingerprint read at this node's console, or none.
+    admit_expected: "{{ (admit_expected_by_address | default({})).get(candidate, '') }}"
+
+# 1. Host keys, into a temporary file only.
+- name: "{{ candidate }}: fetch the SSH host keys"
+  ansible.builtin.command:
+    argv: [ssh-keyscan, -T, "5", -p, "{{ admit_port }}", "{{ candidate }}"]
+  register: admit_scan
+  changed_when: false
+  failed_when: false
+
+- name: "{{ candidate }}: no SSH server"
+  ansible.builtin.set_fact:
+    admit_one: "{{ admit_one | combine({'outcome': 'not-contract',
+                   'message': 'no SSH server answered on port ' ~ admit_port}) }}"
+  when: admit_scan.stdout_lines | reject('match', '^#') | list | length == 0
+
+- name: "{{ candidate }}: keep the scanned keys for this connection only"
+  ansible.builtin.copy:
+    dest: "{{ admit_keys_file }}"
+    content: "{{ admit_scan.stdout }}\n"
+    mode: "0600"
+  when: admit_one.outcome == 'pending'
+
+# 2. The confirmation, read as initial with the controller's key alone,
+# trusting only the scanned keys. -F /dev/null ignores ~/.ssh/config.
+- name: "{{ candidate }}: read the confirmation as {{ admit_user }}"
+  ansible.builtin.command:
+    argv:
+      - ssh
+      - -F
+      - /dev/null
+      - -o
+      - BatchMode=yes
+      - -o
+      - IdentitiesOnly=yes
+      - -o
+      - PasswordAuthentication=no
+      - -o
+      - KbdInteractiveAuthentication=no
+      - -o
+      - StrictHostKeyChecking=yes
+      - -o
+      - "UserKnownHostsFile={{ admit_keys_file }}"
+      - -o
+      - GlobalKnownHostsFile=/dev/null
+      - -o
+      - ConnectTimeout=10
+      - -i
+      - "{{ admit_key }}"
+      - -p
+      - "{{ admit_port }}"
+      - -l
+      - "{{ admit_user }}"
+      - "{{ candidate }}"
+      - cat /var/lib/raw-node/confirmation.yml
+  register: admit_read
+  changed_when: false
+  failed_when: false
+  when: admit_one.outcome == 'pending'
+
+- name: "{{ candidate }}: not a contract node"
+  ansible.builtin.set_fact:
+    admit_one: >-
+      {{ admit_one | combine({'outcome': 'not-contract', 'message':
+         ('SSH as ' ~ admit_user ~ ' with the controller key failed: '
+          if admit_read.rc == 255 else 'no readable confirmation: ')
+         ~ (admit_read.stderr_lines | last | default('rc ' ~ admit_read.rc))}) }}
+  when: admit_one.outcome == 'pending' and admit_read.rc != 0
+
+# 3. The contract check.
+- name: "{{ candidate }}: check the confirmation against the raw node contract"
+  ansible.builtin.command:
+    argv:
+      - "{{ admit_python }}"
+      - "{{ admit_scripts }}/check_raw_confirmation.py"
+      - "-"
+      - --user
+      - "{{ admit_user }}"
+      - --port
+      - "{{ admit_port }}"
+      - --compact
+    stdin: "{{ admit_read.stdout }}"
+  register: admit_check
+  changed_when: false
+  failed_when: admit_check.rc not in [0, 1, 2]
+  when: admit_one.outcome == 'pending'
+
+- name: "{{ candidate }}: read the result"
+  ansible.builtin.set_fact:
+    admit_report: "{{ admit_check.stdout | from_json }}"
+    admit_one: >-
+      {{ admit_one | combine({
+           'hostname': (admit_check.stdout | from_json)['values'].hostname | default('', true),
+           'findings': (admit_check.stdout | from_json).findings | rejectattr('severity', 'eq', 'fail') | list}) }}
+  when: admit_one.outcome == 'pending'
+
+- name: "{{ candidate }}: refuse a confirmation that breaks the contract"
+  ansible.builtin.set_fact:
+    admit_one: >-
+      {{ admit_one | combine({'outcome': 'refused', 'message':
+         (admit_report.error | default(''))
+         ~ (admit_fails | map(attribute='clause') | zip(
+              admit_fails | map(attribute='field'), admit_fails | map(attribute='message'))
+            | map('join', ' ') | join('; '))}) }}
+  vars:
+    admit_fails: "{{ admit_report.findings | selectattr('severity', 'eq', 'fail') | list }}"
+  when: admit_one.outcome == 'pending' and admit_report.result != 'pass'
+
+# RN-ACC-08 cannot be measured on the node: 05_admit.yml measured the batch
+# passphrase on the controller (admit_batch_short).
+- name: "{{ candidate }}: report a batch passphrase under 15 characters"
+  ansible.builtin.set_fact:
+    admit_one: >-
+      {{ admit_one | combine({'findings': admit_one.findings + [{
+           'severity': 'warning', 'clause': 'RN-ACC-08', 'field': 'initial_password',
+           'message': 'batch ' ~ admit_batch ~ ' has a passphrase under 15 characters; '
+                      'RN-ACC-08 is not met'}]}) }}
+  when: admit_one.outcome == 'pending' and admit_batch_short | bool
+
+# 4. Host keys: the confirmation must list exactly the keys the node presented.
+- name: "{{ candidate }}: fingerprint the scanned keys"
+  ansible.builtin.command:
+    argv: [ssh-keygen, -l, -E, sha256, -f, "{{ admit_keys_file }}"]
+  register: admit_fingerprints
+  changed_when: false
+  when: admit_one.outcome == 'pending'
+
+- name: "{{ candidate }}: compare host keys"
+  ansible.builtin.set_fact:
+    admit_scanned: "{{ admit_fingerprints.stdout | regex_findall('SHA256:[A-Za-z0-9+/]+') | unique | sort }}"
+    admit_confirmed: "{{ admit_report['values'].ssh_host_keys | map(attribute='fingerprint') | unique | sort }}"
+  when: admit_one.outcome == 'pending'
+
+- name: "{{ candidate }}: refuse when the host keys differ"
+  ansible.builtin.set_fact:
+    admit_one: >-
+      {{ admit_one | combine({'outcome': 'refused', 'message':
+         'host keys differ: presented ' ~ (admit_scanned | join(', '))
+         ~ '; confirmation lists ' ~ (admit_confirmed | join(', '))}) }}
+  when: admit_one.outcome == 'pending' and admit_scanned != admit_confirmed
+
+- name: "{{ candidate }}: refuse when the console fingerprint is not among them"
+  ansible.builtin.set_fact:
+    admit_one: >-
+      {{ admit_one | combine({'outcome': 'refused', 'message':
+         'the console fingerprint ' ~ admit_expected ~ ' is not among the host keys '
+         ~ (admit_scanned | join(', '))}) }}
+  when:
+    - admit_one.outcome == 'pending'
+    - admit_expected | length > 0
+    - admit_expected not in admit_scanned
+
+# 5. Identity. Another candidate of this run may be the same node at
+# another address, before anything is written.
+- name: "{{ candidate }}: the same node at another address in this run"
+  ansible.builtin.set_fact:
+    admit_one: >-
+      {{ admit_one | combine({'outcome': 'known', 'message': admit_one.hostname
+         ~ ' is admitted in this run at another address'}) }}
+  when:
+    - admit_one.outcome == 'pending'
+    - admit_one.hostname in (admit_results | selectattr('outcome', 'eq', 'admitted') | map(attribute='hostname'))
+
+- name: "{{ candidate }}: match the identity against every stage inventory"
+  ansible.builtin.command:
+    argv: >-
+      {{ [admit_python, admit_scripts ~ '/match_raw_identity.py',
+          '--inventory', admit_root,
+          '--hostname', admit_one.hostname,
+          '--machine-id', admit_report['values'].machine_id, '--compact']
+         + (admit_report['values'].macs | map('regex_replace', '^', '--mac=') | list) }}
+  register: admit_match
+  changed_when: false
+  when: admit_one.outcome == 'pending'
+
+- name: "{{ candidate }}: apply the identity decision"
+  ansible.builtin.set_fact:
+    admit_one: >-
+      {{ admit_one | combine({
+           'outcome': {'new': 'pending', 'known': 'known'}.get((admit_match.stdout | from_json).decision, 'stopped'),
+           'message': (admit_match.stdout | from_json).message}) }}
+  when: admit_one.outcome == 'pending'
+
+# A known node must still present exactly the keys trusted at its admission.
+# They are looked up in ssh/known_hosts under the inventory hostname, the
+# name the strict connection uses as HostKeyAlias. Keys are compared as type
+# and SHA256 fingerprint, both from ssh-keygen -l, so a key type present on
+# one side only is a difference too. No recorded keys is a refusal.
+- name: "{{ candidate }}: fingerprint the keys recorded in ssh/known_hosts"
+  ansible.builtin.command:
+    argv: [ssh-keygen, -l, -E, sha256, -F, "{{ admit_one.hostname }}", -f, "{{ admit_known_hosts }}"]
+  register: admit_recorded
+  changed_when: false
+  failed_when: admit_recorded.rc not in [0, 1]
+  when:
+    - admit_one.outcome == 'known'
+    - admit_match is not skipped
+
+- name: "{{ candidate }}: compare the presented keys with ssh/known_hosts"
+  ansible.builtin.set_fact:
+    admit_presented_typed: >-
+      {{ admit_fingerprints.stdout_lines | select('match', '^[0-9]+ SHA256:')
+         | map('regex_replace', '^[0-9]+ (SHA256:[A-Za-z0-9+/]+) .*[(](\S+)[)]$', '\2 \1')
+         | unique | sort }}
+    # With -F, ssh-keygen prints "<host> <TYPE> SHA256:..." instead.
+    admit_recorded_typed: >-
+      {{ admit_recorded.stdout_lines | reject('match', '^#') | select('search', ' SHA256:')
+         | map('regex_replace', '^\S+ (\S+) (SHA256:[A-Za-z0-9+/]+)\s*$', '\1 \2')
+         | unique | sort }}
+  when:
+    - admit_one.outcome == 'known'
+    - admit_match is not skipped
+
+- name: "{{ candidate }}: refuse a known node whose host keys changed"
+  ansible.builtin.set_fact:
+    admit_one: >-
+      {{ admit_one | combine({'outcome': 'refused', 'message':
+         ('no host keys are recorded for ' ~ admit_one.hostname ~ ' in ssh/known_hosts'
+          if admit_recorded_typed | length == 0 else
+          'host keys differ from ssh/known_hosts for ' ~ admit_one.hostname
+          ~ ': presented ' ~ (admit_presented_typed | join(', '))
+          ~ '; recorded ' ~ (admit_recorded_typed | join(', ')))
+         ~ '. If the change is expected, check the new fingerprint at the console, '
+         ~ 'remove the node from its inventory and its keys with ssh-keygen -R '
+         ~ admit_one.hostname ~ ' -f ' ~ admit_known_hosts ~ ', and admit it again'}) }}
+  when:
+    - admit_one.outcome == 'known'
+    - admit_match is not skipped
+    - admit_presented_typed != admit_recorded_typed or admit_recorded_typed | length == 0
+
+- name: "{{ candidate }}: warn that the host key was trusted on first use"
+  ansible.builtin.set_fact:
+    admit_one: >-
+      {{ admit_one | combine({'findings': admit_one.findings + [{
+           'severity': 'warning', 'clause': 'PA-HOST-01', 'field': 'ssh_host_keys',
+           'message': 'host key trusted on first use: no fingerprint read at the '
+                      'console was given for this address'}]}) }}
+  when: admit_one.outcome == 'pending' and admit_expected | length == 0
+
+# 6, first half: what admission writes. The play writes it for all
+# candidates at once.
+- name: "{{ candidate }}: admit"
+  ansible.builtin.set_fact:
+    admit_one: >-
+      {{ admit_one | combine({
+           'outcome': 'admitted',
+           'python': admit_report['values'].python | default('', true),
+           'entry': {
+             'ansible_host': candidate,
+             'ansible_port': admit_port | int,
+             'raw_node_contract': admit_report['values'].contract,
+             'raw_node_baseline': admit_report['values'].baseline,
+             'raw_node_machine_id': admit_report['values'].machine_id,
+             'raw_node_macs': admit_report['values'].macs,
+             'raw_node_batch': admit_batch,
+             'raw_node_admitted': now().astimezone().isoformat(timespec='seconds')},
+           'known_hosts': admit_scan.stdout_lines | reject('match', '^#') | reject('equalto', '')
+                          | map('regex_replace', '^\S+\s+', admit_one.hostname ~ ' ') | list}) }}
+  when: admit_one.outcome == 'pending'
+
+- name: "{{ candidate }}: record the result"
+  ansible.builtin.set_fact:
+    admit_results: >-
+      {{ admit_results + [admit_one | combine({'line':
+           candidate ~ ': ' ~ admit_one.outcome
+           ~ ((' ' ~ admit_one.hostname) if admit_one.hostname else '')
+           ~ ((' - ' ~ admit_one.message) if admit_one.message else '')
+           ~ (admit_one.findings | map(attribute='severity') | zip(
+                admit_one.findings | map(attribute='clause'),
+                admit_one.findings | map(attribute='message'))
+              | map('join', ' ') | map('regex_replace', '^', '; ') | join(''))})] }}

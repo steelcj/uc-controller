@@ -1,0 +1,8 @@
+# raw/discovered.yml
+#
+# Generated inventory, written by ingress/playbooks/00_discover.yml in
+# uc-controller and overwritten on every subnet scan. promote_node.py removes
+# a host from it when promoting that host. Committed. Do not edit by hand.
+# Names are provisional (disc-<ip>) until onboarding.
+discovered:
+  hosts: {}

@@ -1,0 +1,42 @@
+---
+# inventory-defaults/onboard/group_vars/all.yml
+#
+# Maintained by hand. The onboard stage's policy: how every node is set up,
+# for every client. The values that describe a client, an operator or an
+# environment (the controller key, locale, time zone, firewall rules and the
+# initial user's public key) are in the client inventory's
+# onboard/<environment>/group_vars/all.yml, never here.
+#
+# Only values we deliberately choose are set here. Every other role variable
+# keeps its upstream default, which is the point of using these roles. A value
+# here means the same at every stage, since a run that combines stages merges
+# their all groups.
+
+# --- umask (steelcj.umask) -------------------------------------------------
+# System-wide tight umask, applied before the initial user is created so its
+# home directory is created 0750. umask_users: [] skips the per-user .bashrc
+# step in favour of the system-wide login.defs / profile.d config.
+umask: "0027"
+umask_system: true
+umask_home_mode: "0750"
+umask_users: []
+
+# --- openssh (robertdebock.openssh) ----------------------------------------
+# Harden sshd to key-only, no root login. Safe during onboarding because this
+# stage runs over the incus connection, not ssh, so a restart cannot lock us
+# out, and the initial user is created with a key before we switch to ssh.
+openssh_permit_root_login: "no"
+openssh_password_authentication: "no"
+openssh_challenge_response_authentication: "no"
+openssh_x11_forwarding: "no"
+
+# --- users (robertdebock.users) --------------------------------------------
+# Creates the initial management user with the client's key and passwordless
+# sudo. onboard_initial_authorized_keys, a list of public keys, is set by the
+# client inventory. NOPASSWD: ALL conflicts with the privileged access policy;
+# the ROADMAP records it.
+users:
+  - name: initial
+    comment: Ansible management user
+    sudo_options: "ALL=(ALL) NOPASSWD: ALL"
+    authorized_keys: "{{ onboard_initial_authorized_keys }}"

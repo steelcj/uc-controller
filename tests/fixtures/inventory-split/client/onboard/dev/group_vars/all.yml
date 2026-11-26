@@ -1,0 +1,10 @@
+uc_client_inventory: true
+onboard_ssh_private_key_file: ~/.ssh/example-initial-id_ed25519
+locale_lang: en_US.UTF-8
+locale_timezone: America/Toronto
+ntp_timezone: America/Toronto
+firewall_onboard_ssh:
+  port: 22
+  sources: []
+onboard_initial_authorized_keys:
+- ssh-ed25519 EXAMPLE-PUBLIC-KEY-NOT-A-REAL-ONE initial@example.org

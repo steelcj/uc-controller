@@ -1,0 +1,285 @@
+#!/usr/bin/env ansible-playbook
+---
+# Make raw nodes manageable.
+#
+# A raw node is reached however discovery left it: an Incus instance over the
+# incus connection as root, or a bare-metal/VPS node over SSH as root. Neither
+# has the "initial" user or sshd-as-initial yet; creating them is this stage's
+# job. So the onboard plays run over that root connection, and only at the end
+# is the connection switched to SSH as "initial" for the stages that follow.
+#
+# The connection and user for each raw node come from its inventory
+# (inventory-defaults/raw/group_vars/incus.yml sets ansible_connection and
+# ansible_user for the Incus group). This playbook carries those through
+# promotion rather than assuming SSH.
+#
+# Usage, with the client inventory's raw stage and the onboard environment
+# that promoted nodes are written into:
+#
+#   ansible-playbook $(scripts/inventory-args ~/uc-inventories/example.org raw onboard/dev) \
+#     ingress/playbooks/10_onboard.yml
+
+# Raw nodes admitted by 05_admit.yml (the admitted group) meet the raw node
+# contract and are reached as initial with a password for sudo. This
+# playbook still onboards over a root connection, so it leaves them out.
+- name: Require a client inventory
+  hosts: localhost
+  gather_facts: false
+  become: false
+  tasks:
+    - name: Require a client inventory, and find its root
+      ansible.builtin.import_tasks: ../../shared/tasks/require-client-inventory.yml
+
+- name: Leave out admitted raw contract nodes
+  hosts: localhost
+  gather_facts: false
+  become: false
+  tasks:
+    - name: Say that admitted nodes are not onboarded here
+      ansible.builtin.debug:
+        msg: "Skipping admitted nodes ({{ groups['admitted'] | join(', ') }}): onboarding contract nodes comes in a later kickoff."
+      when: groups['admitted'] | default([]) | length > 0
+
+- name: Confirm raw nodes are reachable and promote them
+  hosts: raw:!admitted
+  gather_facts: no
+  become: no
+
+  tasks:
+    # Re-onboarding guard. Onboarding is one-shot, and an onboarded Incus
+    # instance stays in raw for as long as it runs, because the plugin lists
+    # it. If the initial user already exists, the node has been onboarded:
+    # say so and end the play for that host only. raw needs no Python, and an
+    # unreachable node is left to the readiness probe below.
+#    - name: check whether the node is already onboarded
+#      ansible.builtin.raw: id initial
+#      register: onboarded_probe
+#      failed_when: false
+#      changed_when: false
+#      ignore_unreachable: true
+
+    - name: report a node that is already onboarded
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }} is already onboarded (the initial user
+          exists); skipping it. Restore it to its raw snapshot and demote its
+          inventory entry to onboard it again.
+      when: onboarded_probe.rc | default(1) == 0
+
+    - name: end the play for a node that is already onboarded
+      ansible.builtin.meta: end_host
+      when: onboarded_probe.rc | default(1) == 0
+
+    # The last play writes each promoted host into the onboard environment
+    # loaded with -i, so exactly one must be loaded. It comes from the -i
+    # sources, not from playbook_dir, so it does not depend on where this
+    # file lives.
+    - name: require one onboard environment and the key file
+      ansible.builtin.assert:
+        that:
+          - hostvars['localhost'].uc_client_stages | select('match', '^onboard/') | list | length == 1
+          - onboard_ssh_private_key_file is defined
+        fail_msg: >-
+          Load the client inventory's raw stage and exactly one onboard
+          environment, for example scripts/inventory-args <client> raw onboard/dev,
+          so the promoted nodes have one destination and onboard_ssh_private_key_file
+          is defined.
+        quiet: true
+
+    # raw runs over whatever connection the node uses and needs no Python, so
+    # it is a readiness probe that works for both Incus (already up) and an
+    # SSH root node (retried until sshd answers). This replaces the old
+    # wait_for port 22, which a raw Incus node without sshd can never pass.
+    - name: wait for the node to accept a connection
+      ansible.builtin.raw: 'true'
+      register: probe
+      retries: 10
+      delay: 6
+      until: probe is succeeded
+      changed_when: false
+
+    # Promoted nodes join two in-memory groups. onboarding holds only the
+    # nodes promoted in this run, and the later plays here target it, so a
+    # node already listed in the onboard inventory's onboarded group is not
+    # touched again. onboarded is what 20_normalize.yml targets when it is
+    # chained in the same run through site.yml.
+    #
+    # add_host runs once per play, so loop over ansible_play_hosts to promote
+    # every node still active in the play. The connection vars are carried
+    # across with default(omit) so an Incus node keeps its incus connection and
+    # an SSH node keeps the ansible_host from its inventory.
+    - name: promote reachable nodes to onboarded
+      ansible.builtin.add_host:
+        name: "{{ item }}"
+        groups:
+          - onboarding
+          - onboarded
+          - "{{ target_group | default('ungrouped') }}"
+        ansible_connection: "{{ hostvars[item].ansible_connection | default(omit) }}"
+        ansible_user: "{{ hostvars[item].ansible_user | default(omit) }}"
+        ansible_host: "{{ hostvars[item].ansible_host | default(omit) }}"
+      loop: "{{ ansible_play_hosts }}"
+      # add_host changes only the in-memory inventory; nothing on the node
+      # changes, so it does not count towards the run's changed total.
+      changed_when: false
+
+- name: Bootstrap Python onto onboarded nodes
+  hosts: onboarding
+  gather_facts: no          # Python is not present yet; bootstrap installs it.
+  become: no                # Already root over the incus/ssh-root connection.
+
+  vars:
+    # sudo may not be installed on a minimal image, and it is not needed while
+    # the connection is already root. The later ssh-as-initial stages turn
+    # become back on.
+    bootstrap_become: false
+
+  roles:
+    # needs_python_bootstrap defaults to true in raw/group_vars/all.yml. A
+    # source opts out in its own group_vars only when its images ship both
+    # Python and sudo; the users role later in this playbook needs sudo.
+    - role: robertdebock.bootstrap
+      when: needs_python_bootstrap | default(true) | bool
+
+- name: Converge the onboard baseline
+  hosts: onboarding
+  gather_facts: no          # Gathered fresh by the setup pre_task below.
+  become: no                # Still root over the root connection.
+
+  # Always gather fresh facts here, never from the cache. Instance names are
+  # reused across rebuilds, and the SSH switch below takes the node's address
+  # from these facts; under gathering = smart a cached fact from an earlier
+  # instance of the same name could point at a stale address. Python is
+  # present now, installed by bootstrap above.
+  pre_tasks:
+    - name: gather fresh facts
+      ansible.builtin.setup:
+
+  # Firewall values come from the client inventory, one variable per stage,
+  # shaped for steelcj.foomuuri. Until the switch to that role, the vars file
+  # turns the stages listed in uc_firewall_stages into the firewall_rules list
+  # shared/roles/uc_firewall applies. Onboard applies only
+  # firewall_onboard_ssh, from onboard/<env>/group_vars/all.yml.
+  vars_files:
+    - ../../shared/vars/uc_firewall_interim.yml
+
+  vars:
+    uc_firewall_stages: [onboard]
+
+  # No sudo pre_task is needed: robertdebock.bootstrap already installs sudo
+  # (its Debian package set is "python3 sudo gnupg python3-apt"), which is why
+  # the users role can rely on visudo and write /etc/sudoers.d/initial.
+
+  roles:
+    # Set a tight system-wide umask before any user is created, so the initial
+    # user's home directory is created with the intended permissions. The umask
+    # values live in inventory-defaults/onboard/group_vars/all.yml.
+    - role: steelcj.umask
+    - role: robertdebock.epel
+    - role: robertdebock.update
+    - role: robertdebock.locale
+    - role: robertdebock.auto_update
+    - role: robertdebock.cron
+    # Containers take their clock from the host and usually cannot set time,
+    # so skip ntp there. This also sidesteps Debian trixie dropping the 'ntp'
+    # package; real VMs and bare metal on trixie need a time-sync rethink
+    # (chrony or systemd-timesyncd), tracked separately.
+    - role: robertdebock.ntp
+      when: ansible_facts['virtualization_type'] | default('') not in ['lxc', 'lxd', 'incus', 'docker', 'podman', 'systemd-nspawn', 'container', 'openvz']
+    - role: robertdebock.openssh      # installs and hardens sshd
+    - role: robertdebock.fail2ban
+    - role: uc_firewall               # applies firewall_rules; refuses without the SSH rule
+    - role: robertdebock.users        # creates the initial user + sudo + key
+
+- name: Switch onboarded nodes to SSH as the initial user
+  hosts: onboarding
+  gather_facts: no
+  become: no
+
+  tasks:
+    # After this play the node is reached over SSH as initial, which is what
+    # 20_normalize.yml and later stages expect. The management address is the
+    # fact gathered in the previous play; fall back to any inventory
+    # ansible_host, then the inventory name.
+    - name: re-target the node over SSH as initial
+      ansible.builtin.add_host:
+        name: "{{ item }}"
+        groups:
+          - onboarded
+        ansible_connection: ssh
+        ansible_user: initial
+        ansible_ssh_private_key_file: "{{ onboard_ssh_private_key_file }}"
+        # Offer only the key above. Otherwise agent keys are tried first, can
+        # exhaust sshd's MaxAuthTries, and get the controller banned by fail2ban.
+        ansible_ssh_common_args: "-o IdentitiesOnly=yes"
+        ansible_host: >-
+          {{
+            hostvars[item].ansible_default_ipv4.address
+            | default(hostvars[item].ansible_host)
+            | default(item)
+          }}
+      loop: "{{ ansible_play_hosts }}"
+
+- name: Confirm SSH as the initial user works
+  hosts: onboarding
+  gather_facts: no
+  become: yes               # initial has passwordless sudo
+
+  tasks:
+    - name: wait for SSH to answer as initial
+      ansible.builtin.wait_for_connection:
+        timeout: 60
+
+    - name: confirm sudo works for initial
+      ansible.builtin.command: id
+      changed_when: false
+      register: initial_id
+
+    - name: show who we are now
+      ansible.builtin.debug:
+        msg: "{{ inventory_hostname }}: {{ initial_id.stdout }}"
+
+- name: Persist the promotion to the onboard inventory
+  hosts: onboarding
+  gather_facts: no
+  become: no
+
+  vars:
+    # The script is resolved on the controller against the directory
+    # ansible-playbook was started from, the uc-controller checkout. The
+    # client inventory and its stages come from the -i sources.
+    promote_script: "{{ uc_scripts_dir | default('scripts') | ansible.builtin.realpath }}/promote_node.py"
+    promote_inventory: "{{ hostvars['localhost'].uc_client_root }}"
+    promote_from: raw
+    promote_to: "{{ hostvars['localhost'].uc_client_stages | select('match', '^onboard/') | first }}"
+
+  tasks:
+    # promote_node.py is the only code that writes hosts.yml entries. One
+    # run_once task looping over the play's hosts serializes the writes, so
+    # several nodes finishing together cannot race on the same file. become
+    # is off because ansible.cfg enables it globally and this writes to the
+    # operator's own working tree. The commit is left to the operator.
+    # The key path comes from the inventory variable, not from
+    # ansible_ssh_private_key_file, which Ansible expands to an absolute path
+    # once connected; the unexpanded ~/ form stays valid on other controllers.
+    # expand_argument_vars is off because the command module otherwise expands
+    # ~ in arguments before the script sees them.
+    - name: write each promoted host and its connection contract
+      ansible.builtin.command:
+        expand_argument_vars: false
+        argv: >-
+          {{
+            [ansible_playbook_python, promote_script,
+             '--inventory', promote_inventory,
+             '--from', promote_from,
+             '--to', promote_to,
+             '--host', item,
+             '--address', hostvars[item].ansible_host,
+             '--key-file', hostvars[item].onboard_ssh_private_key_file,
+             '--no-commit']
+            + (['--group', target_group] if target_group is defined else [])
+          }}
+      loop: "{{ ansible_play_hosts }}"
+      run_once: true
+      delegate_to: localhost
+      become: no

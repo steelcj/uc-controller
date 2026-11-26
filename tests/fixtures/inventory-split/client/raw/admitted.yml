@@ -1,0 +1,12 @@
+admitted:
+  hosts:
+    example-vt-0001:
+      ansible_host: 203.0.113.10
+      ansible_port: 22
+      raw_node_contract: 0.3.0
+      raw_node_baseline: 0.4.0
+      raw_node_machine_id: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      raw_node_macs:
+      - '52:54:00:00:00:01'
+      raw_node_batch: raw-1970-01-01-01
+      raw_node_admitted: '2026-11-18T01:00:00-05:00'

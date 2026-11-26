@@ -1,0 +1,27 @@
+---
+# tasks file for umask
+
+- name: Import assert.yml
+  ansible.builtin.import_tasks:
+    file: assert.yml
+  run_once: true
+  delegate_to: localhost
+
+# Run before any users are created (see system.yml) so new home directories
+# get the intended permissions.
+- name: Configure the system-wide umask
+  ansible.builtin.include_tasks:
+    file: system.yml
+  when:
+    - umask_system | bool
+
+- name: Set umask
+  ansible.builtin.lineinfile:
+    path: ~/.bashrc
+    line: "umask {{ umask }}"
+    regexp: '^umask\s+\d+'
+    create: true
+    mode: "0644"
+  become: true
+  become_user: "{{ item }}"
+  loop: "{{ umask_users }}"

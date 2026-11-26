@@ -1,0 +1,10 @@
+# raw/admitted.yml
+#
+# Generated inventory, written only by ingress/playbooks/05_admit.yml in
+# uc-controller, which adds each raw node it admits and keeps the ones
+# already here. promote_node.py removes a host from it when promoting that
+# host. Committed. Do not edit by hand. Connection settings come from
+# uc-controller's inventory-defaults/raw/group_vars/admitted.yml; host keys
+# are in ssh/known_hosts.
+admitted:
+  hosts: {}

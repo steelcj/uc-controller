@@ -1,0 +1,12 @@
+---
+# yamllint settings for this client inventory, used by .githooks/pre-commit.
+# Several files here are written by uc-controller's playbooks and scripts,
+# which emit no document start and do not indent sequences, so neither is
+# required.
+extends: default
+rules:
+  document-start: disable
+  indentation:
+    indent-sequences: consistent
+  line-length:
+    max: 120

@@ -1,0 +1,7 @@
+#!/bin/sh
+# Refuse a commit that would put logic or secrets into this client inventory,
+# with uc-controller's check, then lint the YAML. Set UC_CONTROLLER to a
+# uc-controller checkout; see its en/docs/guides/client-inventories.md.
+set -eu
+"${UC_CONTROLLER:?set UC_CONTROLLER to the uc-controller checkout}/scripts/check_inventory.py" .
+yamllint .
