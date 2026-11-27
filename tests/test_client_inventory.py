@@ -208,7 +208,7 @@ class CheckInventory(TempDir):
         result = self.check()
         self.assertEqual(result.returncode, 0, result.stderr)
 
-    def admit(self, host="example-vt-0001", known=True, **host_vars):
+    def admit(self, host="deb13-vt-0001.example.org", known=True, **host_vars):
         host_vars = {"ansible_host": "203.0.113.10", "raw_node_batch": "raw-1970-01-01-01", **host_vars}
         write_yaml(self.client / "raw/admitted.yml", {"admitted": {"hosts": {host: host_vars}}})
         if known:
@@ -307,14 +307,14 @@ class CheckInventory(TempDir):
             with self.subTest(host_vars=host_vars):
                 (self.client / "ssh/known_hosts").write_text("")
                 self.admit(**host_vars)
-                self.assert_refused("admitted host example-vt-0001 has no raw_node_batch")
+                self.assert_refused("admitted host deb13-vt-0001.example.org has no raw_node_batch")
         write_yaml(self.client / "raw/admitted.yml",
-                   {"admitted": {"hosts": {"example-vt-0002": None}}})
-        self.assert_refused("admitted host example-vt-0002 has no raw_node_batch")
+                   {"admitted": {"hosts": {"deb13-vt-0002.example.org": None}}})
+        self.assert_refused("admitted host deb13-vt-0002.example.org has no raw_node_batch")
 
     def test_admitted_host_needs_its_host_keys(self):
         self.admit(known=False)
-        self.assert_refused("admitted host example-vt-0001 has no entry in ssh/known_hosts")
+        self.assert_refused("admitted host deb13-vt-0001.example.org has no entry in ssh/known_hosts")
         self.admit()
         self.assert_clean()
 
@@ -324,7 +324,39 @@ class CheckInventory(TempDir):
         known = self.client / "ssh/known_hosts"
         run(["ssh-keygen", "-H", "-f", known])
         Path(f"{known}.old").unlink()
-        self.assertNotIn("example-vt-0001", known.read_text())
+        self.assertNotIn("deb13-vt-0001.example.org", known.read_text())
+        self.assert_clean()
+
+    def test_an_admitted_host_is_named_by_its_fully_qualified_domain_name(self):
+        for host in ("dev", "dev.example", "Dev.example.org", "dev_1.example.org",
+                     "dev.example.org.", "-dev.example.org", f"{'a' * 64}.example.org"):
+            with self.subTest(host=host):
+                (self.client / "ssh/known_hosts").write_text("")
+                self.admit(host)
+                self.assert_refused(f"admitted host {host} is not named by a fully qualified domain name")
+        for host in ("dev.example.org", "deb13-vt-0001.example.net", "dev.stage.example.com"):
+            with self.subTest(host=host):
+                (self.client / "ssh/known_hosts").write_text("")
+                self.admit(host)
+                self.assert_clean()
+
+    def test_a_host_from_admission_keeps_its_name_at_every_stage(self):
+        self.admit("dev.example.org")
+        admitted_vars = {"ansible_host": "203.0.113.10", "raw_node_batch": "raw-1970-01-01-01"}
+        for stage, group in (("onboard/dev", "onboarded"), ("normalized/stage", "normalized")):
+            with self.subTest(stage=stage):
+                path = write_yaml(self.client / stage / "hosts.yml",
+                                  {group: {"hosts": {"stage": dict(admitted_vars)}},
+                                   "webservers": {"hosts": {"stage": None}}})
+                self.assert_refused(f"{stage}/hosts.yml: host stage came through admission, and is "
+                                    "not named by a fully qualified domain name")
+                self.assertEqual(self.check().stderr.count("host stage came through admission"), 1)
+                write_yaml(path, {group: {"hosts": {"stage.example.org": dict(admitted_vars)}}})
+                self.assert_clean()
+        # Hosts from the Incus plugin or a subnet scan keep the names they arrive with.
+        write_yaml(self.client / "onboard/dev/hosts.yml", {"onboarded": {"hosts": {
+            "dev-example-org": {"ansible_host": "10.0.0.21", "uc_origin": "plugin"},
+            "disc-203-0-113-20": {"ansible_host": "203.0.113.20"}}}})
         self.assert_clean()
 
     def test_invalid_yaml(self):
@@ -341,7 +373,7 @@ class KnownHostsFile(TempDir):
     """uc_known_hosts_file resolves to the client's ssh/known_hosts for every host,
     with each stage on its own and in the combined runs the playbooks use."""
 
-    HOSTS = {"raw": "example-vt-0001", "onboard/dev": "example-onb-dev",
+    HOSTS = {"raw": "deb13-vt-0001.example.org", "onboard/dev": "example-onb-dev",
              "onboard/stage": "example-onb-stage", "normalized/dev": "example-norm-dev",
              "normalized/stage": "example-norm-stage"}
 

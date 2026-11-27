@@ -14,7 +14,12 @@ problem it finds, when:
   private key block;
 - a YAML file uses a lookup (lookup, query, q, or uc_secret) in a template;
 - an admitted host in raw/admitted.yml has no raw_node_batch, or no entry in
-  ssh/known_hosts under its inventory name.
+  ssh/known_hosts under its inventory name;
+- a host that came through admission is not named by a fully qualified
+  domain name: every host in raw/admitted.yml, and every host in an
+  onboard/<env>/ or normalized/<env>/ hosts.yml that carries raw_node_batch.
+  Hosts from the Incus plugin or a subnet scan keep the names they arrive
+  with, and are not checked.
 
 The template's .githooks/pre-commit runs it before every commit. It checks
 the working tree. Exit status 0 when the inventory is clean, 1 when it is
@@ -45,6 +50,17 @@ PRIVATE_KEY = re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----")
 TEMPLATE = re.compile(r"\{\{.*?\}\}|\{%.*?%\}", re.S)
 LOOKUP = re.compile(r"\b(?:lookup|query|q)\s*\(|\buc_secret\b")
 YAML_SUFFIXES = (".yml", ".yaml")
+
+# A fully qualified domain name, as 05_admit.yml names an admitted host: a
+# hostname label in front of a domain, where the domain follows the rule
+# uc-node's build.yml applies to client_domain: DNS labels of lowercase
+# letters, digits and hyphens, at least two, at most 253 characters.
+LABEL = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+FQDN = re.compile(rf"^{LABEL}(?:\.{LABEL}){{2,}}$")
+
+
+def is_fqdn(name: str) -> bool:
+    return len(name) <= 253 and FQDN.match(name) is not None
 
 
 def files(root: Path) -> list[Path]:
@@ -158,6 +174,28 @@ def check(root: Path) -> list[str]:
                     problem(admitted, f"admitted host {host} has no raw_node_batch")
                 if not has_known_host(known_hosts, str(host)):
                     problem(admitted, f"admitted host {host} has no entry in ssh/known_hosts")
+                if not is_fqdn(str(host)):
+                    problem(admitted, f"admitted host {host} is not named by a fully qualified "
+                                      "domain name, such as dev.example.org")
+
+    # Promotion and demotion carry the admitted name unchanged, so a host
+    # with raw_node_batch at a later stage keeps it too.
+    for hosts_file in sorted([*root.glob("onboard/*/hosts.yml"), *root.glob("normalized/*/hosts.yml")]):
+        try:
+            data = yaml.safe_load(hosts_file.read_text(encoding="utf-8")) or {}
+        except yaml.YAMLError:
+            continue   # already reported above
+        named = set()
+        for _group, body in groups_in(data):
+            hosts = body.get("hosts")
+            if not isinstance(hosts, dict):
+                continue
+            for host, host_vars in hosts.items():
+                if (isinstance(host_vars, dict) and "raw_node_batch" in host_vars
+                        and not is_fqdn(str(host)) and host not in named):
+                    named.add(host)
+                    problem(hosts_file, f"host {host} came through admission, and is not named by "
+                                        "a fully qualified domain name, such as dev.example.org")
     return problems
 
 

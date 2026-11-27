@@ -87,7 +87,7 @@ class InventorySplit(unittest.TestCase):
                 self.assertEqual(yaml.safe_load(result.stdout), expected)
 
     def test_users_resolves_to_the_same_key(self):
-        hosts = ["example-vt-0001", "example-onb-dev", "disc-203-0-113-20", "example-incus-01"]
+        hosts = ["deb13-vt-0001.example.org", "example-onb-dev", "disc-203-0-113-20", "example-incus-01"]
         result = subprocess.run(
             ["ansible", ",".join(hosts), *self.inventory_args("raw", "onboard/dev"),
              "-m", "ansible.builtin.debug", "-a", "var=users",

@@ -22,13 +22,16 @@ import yaml
 
 REPO = Path(__file__).resolve().parent.parent
 
+# The register's machine IDs, 19700101...ab<host number>.
+ID_1, ID_2, ID_3, ID_4 = (f"19700101{'0' * 20}ab{n:02d}" for n in (1, 2, 3, 4))
+
 ADMITTED = {
     "ansible_host": "192.0.2.10",
     "ansible_port": 22,
     "raw_node_contract": "0.3.0",
     "raw_node_baseline": "0.4.0",
-    "raw_node_machine_id": "a" * 32,
-    "raw_node_macs": ["52:54:00:00:00:01"],
+    "raw_node_machine_id": ID_1,
+    "raw_node_macs": ["02:00:00:ab:00:01"],
     "raw_node_batch": "raw-1970-01-01-01",
     "raw_node_admitted": "2026-11-18T01:00:00-05:00",
 }
@@ -47,7 +50,7 @@ class TempRepo(unittest.TestCase):
                                str(self.client)], capture_output=True, text=True)
         self.assertEqual(made.returncode, 0, made.stderr)
         (self.client / "raw/incus.yml").unlink()
-        self.write("raw/admitted.yml", {"admitted": {"hosts": {"node-vt-0001": dict(ADMITTED)}}})
+        self.write("raw/admitted.yml", {"admitted": {"hosts": {"deb13-vt-0001.example.org": dict(ADMITTED)}}})
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -64,8 +67,8 @@ class TempRepo(unittest.TestCase):
 
 
 class IdentityDecisions(TempRepo):
-    def decide(self, hostname, machine_id, *macs):
-        args = ["--inventory", str(self.client), "--hostname", hostname, "--machine-id", machine_id]
+    def decide(self, name, machine_id, *macs):
+        args = ["--inventory", str(self.client), "--name", name, "--machine-id", machine_id]
         for mac in macs:
             args += ["--mac", mac]
         result = self.run_script("match_raw_identity.py", *args)
@@ -73,60 +76,70 @@ class IdentityDecisions(TempRepo):
         return json.loads(result.stdout)
 
     def test_the_client_inventory_is_required(self):
-        result = self.run_script("match_raw_identity.py", "--hostname", "x", "--machine-id", "y")
+        result = self.run_script("match_raw_identity.py", "--name", "x", "--machine-id", "y")
         self.assertEqual(result.returncode, 2)
         self.assertIn("--inventory", result.stderr)
 
     def test_new(self):
-        outcome = self.decide("node-vt-0002", "b" * 32, "52:54:00:00:00:02")
+        outcome = self.decide("deb13-vt-0002.example.org", ID_2, "02:00:00:ab:00:02")
         self.assertEqual((outcome["decision"], outcome["admit"]), ("new", True))
 
     def test_known(self):
-        outcome = self.decide("node-vt-0001", "a" * 32, "52:54:00:00:00:01")
+        outcome = self.decide("deb13-vt-0001.example.org", ID_1, "02:00:00:ab:00:01")
         self.assertEqual((outcome["decision"], outcome["admit"]), ("known", False))
         self.assertEqual(outcome["matches"][0]["file"], "raw/admitted.yml")
 
     def test_reinstall_in_raw(self):
-        outcome = self.decide("node-vt-0001", "c" * 32, "52:54:00:00:00:01")
+        outcome = self.decide("deb13-vt-0001.example.org", ID_3, "02:00:00:ab:00:01")
         self.assertEqual(outcome["decision"], "reinstall")
-        self.assertIn(f"remove node-vt-0001 from {self.client}/raw/admitted.yml", outcome["message"])
-        self.assertIn(f"ssh-keygen -R node-vt-0001 -f {self.client}/ssh/known_hosts",
+        self.assertIn(f"remove deb13-vt-0001.example.org from {self.client}/raw/admitted.yml", outcome["message"])
+        self.assertIn(f"ssh-keygen -R deb13-vt-0001.example.org -f {self.client}/ssh/known_hosts",
                       outcome["message"])
 
     def test_reinstall_in_onboard_says_what_to_demote(self):
         self.write("raw/admitted.yml", {"admitted": {"hosts": {}}})
-        self.write("onboard/dev/hosts.yml", {"onboarded": {"hosts": {"node-vt-0001": dict(ADMITTED)}}})
-        outcome = self.decide("node-vt-0001", "c" * 32, "52:54:00:00:00:01")
+        self.write("onboard/dev/hosts.yml", {"onboarded": {"hosts": {"deb13-vt-0001.example.org": dict(ADMITTED)}}})
+        outcome = self.decide("deb13-vt-0001.example.org", ID_3, "02:00:00:ab:00:01")
         self.assertEqual(outcome["decision"], "reinstall")
         self.assertIn(f"demote_node.py --inventory {self.client} --from onboard/dev --to raw "
-                      "--host node-vt-0001", outcome["message"])
+                      "--host deb13-vt-0001.example.org", outcome["message"])
 
     def test_collision(self):
-        outcome = self.decide("node-vt-0001", "c" * 32, "52:54:00:00:00:09")
+        outcome = self.decide("deb13-vt-0001.example.org", ID_3, "02:00:00:ab:00:09")
         self.assertEqual(outcome["decision"], "collision")
 
     def test_collision_with_a_host_without_identifiers(self):
-        self.write("normalized/dev/hosts.yml", {"normalized": {"hosts": {"deb13": {"ansible_host": "203.0.113.2"}}}})
-        outcome = self.decide("deb13", "c" * 32, "52:54:00:00:00:09")
+        self.write("normalized/dev/hosts.yml", {"normalized": {"hosts": {"dev.example.org": {"ansible_host": "203.0.113.2"}}}})
+        outcome = self.decide("dev.example.org", ID_3, "02:00:00:ab:00:09")
         self.assertEqual(outcome["decision"], "collision")
 
     def test_known_under_another_name(self):
-        for args in (("node-vt-0009", "a" * 32, "52:54:00:00:00:09"),
-                     ("node-vt-0009", "c" * 32, "52:54:00:00:00:01")):
+        for args in (("deb13-vt-0009.example.org", ID_1, "02:00:00:ab:00:09"),
+                     ("deb13-vt-0009.example.org", ID_3, "02:00:00:ab:00:01")):
             with self.subTest(args=args):
                 outcome = self.decide(*args)
                 self.assertEqual(outcome["decision"], "conflict")
-                self.assertIn("node-vt-0001", outcome["message"])
+                self.assertIn("deb13-vt-0001.example.org", outcome["message"])
 
     def test_host_vars_count(self):
         self.write("raw/admitted.yml", {"admitted": {"hosts": {}}})
-        self.write("onboard/dev/host_vars/node-vt-0001.yml", {"raw_node_machine_id": "a" * 32})
-        outcome = self.decide("node-vt-0001", "a" * 32)
+        self.write("onboard/dev/host_vars/deb13-vt-0001.example.org.yml", {"raw_node_machine_id": ID_1})
+        outcome = self.decide("deb13-vt-0001.example.org", ID_1)
         self.assertEqual(outcome["decision"], "known")
 
+    def test_names_are_compared_whole(self):
+        # The same hostname in another domain is another name.
+        outcome = self.decide("deb13-vt-0001.example.net", ID_2, "02:00:00:ab:00:02")
+        self.assertEqual(outcome["decision"], "new")
+        # A node admitted under its hostname alone is known by its identity.
+        self.write("raw/admitted.yml", {"admitted": {"hosts": {"dev": dict(ADMITTED)}}})
+        outcome = self.decide("dev.example.org", ID_1, "02:00:00:ab:00:01")
+        self.assertEqual(outcome["decision"], "conflict")
+        self.assertIn("dev (machine_id and mac, raw/admitted.yml)", outcome["message"])
+
     def test_the_client_repositorys_git_directory_is_not_read(self):
-        self.write(".git/stray.yml", {"admitted": {"hosts": {"node-vt-0007": {"raw_node_machine_id": "d" * 32}}}})
-        outcome = self.decide("node-vt-0008", "d" * 32)
+        self.write(".git/stray.yml", {"admitted": {"hosts": {"deb13-vt-0007.example.org": {"raw_node_machine_id": ID_4}}}})
+        outcome = self.decide("deb13-vt-0008.example.org", ID_4)
         self.assertEqual(outcome["decision"], "new")
 
 
@@ -141,16 +154,16 @@ class PromoteAndReset(TempRepo):
         return onboard["onboarded"]["hosts"][host]
 
     def test_promote_moves_an_admitted_host_out_of_raw(self):
-        result = self.promote("node-vt-0001")
+        result = self.promote("deb13-vt-0001.example.org")
         self.assertEqual(result.returncode, 0, result.stderr)
         admitted = self.client / "raw/admitted.yml"
         text = admitted.read_text()
         self.assertTrue(text.startswith("# raw/admitted.yml"))
         self.assertTrue(text.startswith((REPO / "inventory-template/raw/admitted.yml").read_text()
                                         .split("admitted:\n")[0]))
-        self.assertNotIn("node-vt-0001", text)
-        entry = self.onboarded("node-vt-0001")
-        self.assertEqual(entry["raw_node_machine_id"], "a" * 32)
+        self.assertNotIn("deb13-vt-0001.example.org", text)
+        entry = self.onboarded("deb13-vt-0001.example.org")
+        self.assertEqual(entry["raw_node_machine_id"], ID_1)
         self.assertEqual(entry["raw_node_batch"], "raw-1970-01-01-01")
         self.assertEqual(entry["ansible_user"], "initial")
         self.assertNotIn("uc_origin", entry)
@@ -170,7 +183,7 @@ class PromoteAndReset(TempRepo):
     def test_a_promoted_inventory_passes_the_client_checks(self):
         self.write("raw/discovered.yml", {"discovered": {"hosts": {
             "disc-192-0-2-20": {"ansible_host": "192.0.2.20", "name_provisional": True}}}})
-        for host in ("node-vt-0001", "disc-192-0-2-20"):
+        for host in ("deb13-vt-0001.example.org", "disc-192-0-2-20"):
             self.assertEqual(self.promote(host).returncode, 0)
         check = self.run_script("check_inventory.py", str(self.client))
         self.assertEqual(check.returncode, 0, check.stderr)
@@ -179,14 +192,43 @@ class PromoteAndReset(TempRepo):
                                   cwd=self.client, capture_output=True, text=True)
             self.assertEqual(lint.returncode, 0, lint.stdout + lint.stderr)
 
+    def test_promotion_and_demotion_keep_the_name(self):
+        name = "deb13-vt-0001.example.org"
+        moves = [("promote_node.py", "raw", "onboard/dev", ["--key-file", "~/.ssh/key"]),
+                 ("promote_node.py", "onboard/dev", "normalized/dev", []),
+                 ("demote_node.py", "normalized/dev", "onboard/dev", []),
+                 ("promote_node.py", "onboard/dev", "normalized/dev", [])]
+        for script, source, dest, extra in moves:
+            with self.subTest(move=f"{source} -> {dest}"):
+                result = self.run_script(script, "--inventory", str(self.client), "--from", source,
+                                         "--to", dest, "--host", name, "--no-commit", *extra)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                hosts = yaml.safe_load((self.client / dest / "hosts.yml").read_text())
+                group = "onboarded" if dest.startswith("onboard") else "normalized"
+                self.assertEqual(list(hosts[group]["hosts"]), [name])
+                self.assertEqual(hosts[group]["hosts"][name]["raw_node_batch"], "raw-1970-01-01-01")
+                left = yaml.safe_load((self.client / source / "hosts.yml").read_text()) if source != "raw" \
+                    else yaml.safe_load((self.client / "raw/admitted.yml").read_text())
+                self.assertNotIn(name, str(left))
+        # The client checks pass with the name at the normalized stage, its
+        # host keys still under it in ssh/known_hosts.
+        (self.client / "ssh/known_hosts").write_text(
+            f"{name} ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleExampleExampleExampleExampleExampl\n")
+        check = self.run_script("check_inventory.py", str(self.client))
+        self.assertEqual(check.returncode, 0, check.stderr)
+        result = self.run_script("demote_node.py", "--inventory", str(self.client), "--from",
+                                 "normalized/dev", "--to", "raw", "--host", name, "--no-commit")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn(name, (self.client / "normalized/dev/hosts.yml").read_text())
+
     def test_stages_are_named_not_given_as_paths(self):
         for stages in (("raw", "onboard"), ("raw", "inventories/onboard/dev"), ("raw", "onboard/prod")):
             with self.subTest(stages=stages):
                 result = self.run_script("promote_node.py", "--inventory", str(self.client),
                                          "--from", stages[0], "--to", stages[1],
-                                         "--host", "node-vt-0001", "--no-commit")
+                                         "--host", "deb13-vt-0001.example.org", "--no-commit")
                 self.assertNotEqual(result.returncode, 0)
-        self.assertIn("node-vt-0001", (self.client / "raw/admitted.yml").read_text())
+        self.assertIn("deb13-vt-0001.example.org", (self.client / "raw/admitted.yml").read_text())
 
     def test_promote_without_strict_settings_is_unchanged(self):
         self.write("raw/discovered.yml", {"discovered": {"hosts": {
@@ -212,8 +254,8 @@ class PromoteAndReset(TempRepo):
     def test_reset_clears_admitted(self):
         dry = self.run_script("reset_inventories.py", "--inventory", str(self.client),
                               "--dry-run", "--keep-facts")
-        self.assertIn("Would clear raw/admitted.yml: node-vt-0001", dry.stdout)
-        self.assertIn("node-vt-0001", (self.client / "raw/admitted.yml").read_text())
+        self.assertIn("Would clear raw/admitted.yml: deb13-vt-0001.example.org", dry.stdout)
+        self.assertIn("deb13-vt-0001.example.org", (self.client / "raw/admitted.yml").read_text())
         done = self.run_script("reset_inventories.py", "--inventory", str(self.client), "--keep-facts")
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertIn(f"ssh-keygen -R <host> -f {self.client}/ssh/known_hosts", done.stdout)
@@ -224,7 +266,7 @@ class PromoteAndReset(TempRepo):
         result = self.run_script("reset_inventories.py", "--inventory", str(self.client),
                                  "--keep-raw", "--keep-facts")
         self.assertNotIn("admitted.yml", result.stdout)
-        self.assertIn("node-vt-0001", (self.client / "raw/admitted.yml").read_text())
+        self.assertIn("deb13-vt-0001.example.org", (self.client / "raw/admitted.yml").read_text())
 
     def test_reset_needs_the_client_inventory(self):
         result = self.run_script("reset_inventories.py", "--keep-facts")

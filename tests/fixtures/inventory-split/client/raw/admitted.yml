@@ -1,6 +1,6 @@
 admitted:
   hosts:
-    example-vt-0001:
+    deb13-vt-0001.example.org:
       ansible_host: 203.0.113.10
       ansible_port: 22
       raw_node_contract: 0.3.0

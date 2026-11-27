@@ -121,6 +121,20 @@ CONFIRMATION = """\
       ip6: []
 """
 
+# The domain the stand-in nodes are admitted in, unless a test says otherwise.
+DOMAIN = "example.org"
+
+
+def machine_id(number: int) -> str:
+    """The register's machine ID for host number."""
+    return f"19700101{'0' * 20}ab{number:02d}"
+
+
+def mac(number: int) -> str:
+    """The register's MAC address for host number."""
+    return f"02:00:00:ab:00:{number:02d}"
+
+
 COPY = ["ansible.cfg", "scripts", "shared", "ingress/playbooks/05_admit.yml", "ingress/playbooks/tasks",
         "inventory-defaults", "inventory-template"]
 
@@ -172,12 +186,12 @@ class AdmitPlaybook(unittest.TestCase):
 
         cls.root = root
         cls.nodes = {}
-        cls.add_node("203.0.113.10", "test-vt-0001", "aa", mac="52:54:00:00:00:01", python="/usr/bin/python3")
+        cls.add_node("203.0.113.10", "deb13-vt-0001", 1, python="/usr/bin/python3")
         cls.nodes["203.0.113.11"] = cls.nodes["203.0.113.10"]   # the same node, a second address
-        cls.add_node("203.0.113.20", "test-vt-0002", "bb", mac="52:54:00:00:00:02", refuse_key=True)
-        cls.add_node("203.0.113.30", "test-vt-0003", "cc", mac="52:54:00:00:00:03", sudo_nopasswd="true")
-        cls.add_node("203.0.113.40", "test-vt-0004", "dd", mac="52:54:00:00:00:04", wrong_fingerprint=True)
-        cls.add_node("203.0.113.50", "test-vt-0005", "ee", mac="52:54:00:00:00:05", python="")
+        cls.add_node("203.0.113.20", "deb13-vt-0002", 2, refuse_key=True)
+        cls.add_node("203.0.113.30", "deb13-vt-0003", 3, sudo_nopasswd="true")
+        cls.add_node("203.0.113.40", "deb13-vt-0004", 4, wrong_fingerprint=True)
+        cls.add_node("203.0.113.50", "deb13-vt-0005", 5, python="")
         cls.nodes["203.0.113.99"] = {}   # no SSH
         cls.save_nodes()
 
@@ -201,8 +215,10 @@ class AdmitPlaybook(unittest.TestCase):
         return result.stdout.split()
 
     @classmethod
-    def add_node(cls, address, hostname, seed, mac, python="/usr/bin/python3",
+    def add_node(cls, address, hostname, number, python="/usr/bin/python3",
                  refuse_key=False, sudo_nopasswd="false", wrong_fingerprint=False):
+        """A stand-in node. Its machine ID and MAC address are the register's
+        for host number, 19700101...ab<number> and 02:00:00:ab:00:<number>."""
         keys, entries = [], []
         for kind in ("ed25519", "ecdsa"):
             path = cls.root / f"{hostname}_{address}_{kind}"
@@ -216,10 +232,10 @@ class AdmitPlaybook(unittest.TestCase):
                 fingerprint = "SHA256:" + "A" * 43
             key_type = pub.read_text().split()[0]
             entries.append(f'    - type: "{key_type}"\n      fingerprint: "{fingerprint}"')
-        confirmation = cls.root / f"{hostname}.yml"
+        confirmation = cls.root / f"{hostname}_{address}.yml"
         confirmation.write_text(CONFIRMATION.format(
-            hostname=hostname, machine_id=(seed * 16), sudo_nopasswd=sudo_nopasswd,
-            host_keys="\n".join(entries), python=python, mac=mac, address=address))
+            hostname=hostname, machine_id=machine_id(number), sudo_nopasswd=sudo_nopasswd,
+            host_keys="\n".join(entries), python=python, mac=mac(number), address=address))
         cls.nodes[address] = {"keys": keys, "confirmation": str(confirmation),
                               "refuse_key": refuse_key}
 
@@ -231,11 +247,17 @@ class AdmitPlaybook(unittest.TestCase):
         result = self.run_cmd(
             ["ansible-playbook", *self.raw_onboard, "ingress/playbooks/05_admit.yml",
              "-e", f"onboard_ssh_private_key_file={self.client_key}",
-             "-e", f"admit_batch_id={self.batch}", *extra],
+             "-e", f"admit_batch_id={self.batch}", *self.domain(extra), *extra],
             check=False, extra_env=extra_env)
         # The YAML callback wraps long report lines; compare on single spaces.
         result.stdout = " ".join(result.stdout.split())
         return result
+
+    @staticmethod
+    def domain(extra) -> list[str]:
+        """-e admit_client_domain=example.org, unless the test gives its own."""
+        given = any(str(arg).startswith("admit_client_domain=") for arg in extra)
+        return [] if given else ["-e", f"admit_client_domain={DOMAIN}"]
 
     def admitted(self) -> dict:
         path = self.client / "raw/admitted.yml"
@@ -269,29 +291,29 @@ class AdmitPlaybook(unittest.TestCase):
         self.assertEqual(result.returncode, 2, out[-3000:])
         self.assertIn("Refused or stopped: 203.0.113.30 refused, 203.0.113.40 refused", out)
         self.assertLess(out.index("Report every candidate"), out.index("Refused or stopped"))
-        self.assertIn("203.0.113.10: admitted test-vt-0001", out)
+        self.assertIn("203.0.113.10: admitted deb13-vt-0001.example.org", out)
         self.assertIn("PA-HOST-01 host key trusted on first use", out)
-        self.assertIn("203.0.113.11: known test-vt-0001", out)
+        self.assertIn("203.0.113.11: known deb13-vt-0001.example.org", out)
         self.assertIn("203.0.113.20: not-contract", out)
         self.assertIn("Permission denied (publickey)", out)
-        self.assertIn("203.0.113.30: refused test-vt-0003 - RN-ACC-07 sudo_nopasswd", out)
-        self.assertIn("203.0.113.40: refused test-vt-0004 - host keys differ", out)
+        self.assertIn("203.0.113.30: refused deb13-vt-0003.example.org - RN-ACC-07 sudo_nopasswd", out)
+        self.assertIn("203.0.113.40: refused deb13-vt-0004.example.org - host keys differ", out)
         self.assertIn("203.0.113.99: not-contract - no SSH server answered", out)
 
         hosts = self.admitted()
-        self.assertEqual(list(hosts), ["test-vt-0001"])
-        entry = hosts["test-vt-0001"]
+        self.assertEqual(list(hosts), ["deb13-vt-0001.example.org"])
+        entry = hosts["deb13-vt-0001.example.org"]
         self.assertEqual(entry["ansible_host"], "203.0.113.10")
         self.assertEqual(entry["ansible_port"], 22)
         self.assertEqual(entry["raw_node_contract"], "0.3.0")
         self.assertEqual(entry["raw_node_baseline"], "0.4.0")
-        self.assertEqual(entry["raw_node_machine_id"], "aa" * 16)
-        self.assertEqual(entry["raw_node_macs"], ["52:54:00:00:00:01"])
+        self.assertEqual(entry["raw_node_machine_id"], machine_id(1))
+        self.assertEqual(entry["raw_node_macs"], [mac(1)])
         self.assertEqual(entry["raw_node_batch"], self.batch)
         self.assertRegex(str(entry["raw_node_admitted"]), r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d[+-]\d\d:\d\d$")
         known = self.known_hosts()
-        self.assertIn("# BEGIN test-vt-0001, admitted by 05_admit.yml", known)
-        self.assertEqual(sum(1 for l in known.splitlines() if l.startswith("test-vt-0001 ")), 2)
+        self.assertIn("# BEGIN deb13-vt-0001.example.org, admitted by 05_admit.yml", known)
+        self.assertEqual(sum(1 for l in known.splitlines() if l.startswith("deb13-vt-0001.example.org ")), 2)
         # The file starts with the template's own header, and the client
         # inventory passes its checks with the admitted host in it.
         template = (REPO / "inventory-template/raw/admitted.yml").read_text().split("admitted:\n")[0]
@@ -302,18 +324,18 @@ class AdmitPlaybook(unittest.TestCase):
         before = (self.admitted(), self.known_hosts())
         again = self.admit("-e", "admit_addresses=203.0.113.10")
         self.assertEqual(again.returncode, 0, again.stdout[-2000:])
-        self.assertIn("203.0.113.10: known test-vt-0001 - test-vt-0001 is already known", again.stdout)
+        self.assertIn("203.0.113.10: known deb13-vt-0001.example.org - deb13-vt-0001.example.org is already known", again.stdout)
         self.assertNotIn("PA-HOST-01", again.stdout)   # first use is warned of only on admission
         self.assertEqual((self.admitted(), self.known_hosts()), before)
 
         # 3. The strict connection refuses a changed host key, and accepts it restored.
         path = self.client / "ssh/known_hosts"
         original = path.read_text()
-        line = next(l for l in original.splitlines() if l.startswith("test-vt-0001 ssh-ed25519 "))
+        line = next(l for l in original.splitlines() if l.startswith("deb13-vt-0001.example.org ssh-ed25519 "))
         key = line.split()[2]
         changed = key[:-6] + ("A" if key[-6] != "A" else "B") + key[-5:]
         path.write_text(original.replace(key, changed))
-        ping = ["ansible", *self.raw_onboard, "test-vt-0001",
+        ping = ["ansible", *self.raw_onboard, "deb13-vt-0001.example.org",
                 "-m", "ansible.builtin.raw", "-a", "true",
                 "-e", f"onboard_ssh_private_key_file={self.client_key}"]
         refused = self.run_cmd(ping, check=False)
@@ -327,42 +349,42 @@ class AdmitPlaybook(unittest.TestCase):
                             extra_env={"FAKE_ANSIBLE": "fail"})
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("Not admitted, confirmation failed", result.stdout)
-        self.assertNotIn("test-vt-0005", self.admitted())
-        self.assertNotIn("test-vt-0005", self.known_hosts())
+        self.assertNotIn("deb13-vt-0005.example.org", self.admitted())
+        self.assertNotIn("deb13-vt-0005.example.org", self.known_hosts())
 
     def test_3_console_fingerprint(self):
         wrong = self.admit("-e", "admit_addresses=203.0.113.50",
                            "-e", "admit_expected_fingerprint=SHA256:" + "B" * 43)
-        self.assertIn("203.0.113.50: refused test-vt-0005 - the console fingerprint", wrong.stdout)
+        self.assertIn("203.0.113.50: refused deb13-vt-0005.example.org - the console fingerprint", wrong.stdout)
         self.assertEqual(wrong.returncode, 2)
-        self.assertNotIn("test-vt-0005", self.admitted())
+        self.assertNotIn("deb13-vt-0005.example.org", self.admitted())
         pub = self.nodes["203.0.113.50"]["keys"][0]
         right = subprocess.run(["ssh-keygen", "-l", "-E", "sha256", "-f", pub],
                                capture_output=True, text=True).stdout.split()[1]
         good = self.admit("-e", "admit_addresses=203.0.113.50",
                           "-e", f"admit_expected_fingerprint={right}")
         self.assertEqual(good.returncode, 0, good.stdout[-2000:])
-        self.assertIn("203.0.113.50: admitted test-vt-0005", good.stdout)
+        self.assertIn("203.0.113.50: admitted deb13-vt-0005.example.org", good.stdout)
         self.assertNotIn("PA-HOST-01 host key trusted on first use", good.stdout)
-        self.assertIn("test-vt-0005", self.admitted())
-        self.assertIn("test-vt-0001", self.admitted())
+        self.assertIn("deb13-vt-0005.example.org", self.admitted())
+        self.assertIn("deb13-vt-0001.example.org", self.admitted())
 
     def test_7_promoted_node_keeps_strict_host_key_checking(self):
         promoted = self.run_cmd(
             [sys.executable, "scripts/promote_node.py", "--inventory", str(self.client),
-             "--from", "raw", "--to", "onboard/dev", "--host", "test-vt-0001",
+             "--from", "raw", "--to", "onboard/dev", "--host", "deb13-vt-0001.example.org",
              "--key-file", str(self.client_key), "--no-commit"], check=False)
         self.assertEqual(promoted.returncode, 0, promoted.stderr)
-        self.assertNotIn("test-vt-0001", self.admitted())
+        self.assertNotIn("deb13-vt-0001.example.org", self.admitted())
         self.check_inventory()
         # Only the onboard stage: no admitted group_vars apply any more, and
         # uc_known_hosts_file comes from the onboarded group.
-        ping = ["ansible", *self.inventory_args("onboard/dev"), "test-vt-0001",
+        ping = ["ansible", *self.inventory_args("onboard/dev"), "deb13-vt-0001.example.org",
                 "-m", "ansible.builtin.raw", "-a", "true"]
         self.assertEqual(self.run_cmd(ping, check=False).returncode, 0)
         path = self.client / "ssh/known_hosts"
         original = path.read_text()
-        line = next(l for l in original.splitlines() if l.startswith("test-vt-0001 ssh-ed25519 "))
+        line = next(l for l in original.splitlines() if l.startswith("deb13-vt-0001.example.org ssh-ed25519 "))
         key = line.split()[2]
         path.write_text(original.replace(key, key[:-6] + ("A" if key[-6] != "A" else "B") + key[-5:]))
         try:
@@ -384,20 +406,20 @@ class AdmitPlaybook(unittest.TestCase):
         finally:
             discovered.unlink()
         self.assertEqual(result.returncode, 0, result.stdout[-2000:])
-        self.assertIn("203.0.113.10: known test-vt-0001", result.stdout)
+        self.assertIn("203.0.113.10: known deb13-vt-0001.example.org", result.stdout)
         self.assertIn("203.0.113.20: not-contract", result.stdout)
         self.assertIn("203.0.113.99: not-contract", result.stdout)
 
     def test_5_short_batch_reported_against_rn_acc_08(self):
-        self.add_node("203.0.113.60", "test-vt-0006", "ff", mac="52:54:00:00:00:06")
+        self.add_node("203.0.113.60", "deb13-vt-0006", 6)
         self.save_nodes()
         result = self.admit("-e", "admit_addresses=203.0.113.60",
                             "-e", "admit_batch_id=raw-1970-01-01-02")
         self.assertEqual(result.returncode, 0, result.stdout[-2000:])
-        self.assertIn("203.0.113.60: admitted test-vt-0006", result.stdout)
+        self.assertIn("203.0.113.60: admitted deb13-vt-0006.example.org", result.stdout)
         self.assertIn("warning RN-ACC-08 batch raw-1970-01-01-02 has a passphrase under "
                       "15 characters", result.stdout)
-        self.assertEqual(self.admitted()["test-vt-0006"]["raw_node_batch"], "raw-1970-01-01-02")
+        self.assertEqual(self.admitted()["deb13-vt-0006.example.org"]["raw_node_batch"], "raw-1970-01-01-02")
         self.assertNotIn("abc123", result.stdout + result.stderr)
 
     def test_6_batch_must_have_a_file(self):
@@ -414,11 +436,11 @@ class AdmitPlaybook(unittest.TestCase):
             self.assertNotIn(secret, result.stdout + result.stderr)
 
     def test_9_known_node_with_changed_host_keys_is_refused(self):
-        """test-vt-0005 (admitted in test_3) against altered records in ssh/known_hosts."""
+        """deb13-vt-0005.example.org (admitted in test_3) against altered records in ssh/known_hosts."""
         path = self.client / "ssh/known_hosts"
         original = path.read_text()
         lines = original.splitlines()
-        mine = [l for l in lines if l.startswith("test-vt-0005 ")]
+        mine = [l for l in lines if l.startswith("deb13-vt-0005.example.org ")]
         self.assertEqual(len(mine), 2)
         ed = next(l for l in mine if " ssh-ed25519 " in l)
         key = ed.split()[2]
@@ -426,15 +448,15 @@ class AdmitPlaybook(unittest.TestCase):
         extra_key = self.root / "extra_rsa"
         subprocess.run(["ssh-keygen", "-q", "-t", "rsa", "-b", "2048", "-N", "", "-f", str(extra_key)],
                        check=True)
-        extra = "test-vt-0005 " + " ".join(Path(f"{extra_key}.pub").read_text().split()[:2])
+        extra = "deb13-vt-0005.example.org " + " ".join(Path(f"{extra_key}.pub").read_text().split()[:2])
 
         cases = {
             "one key changed": "\n".join(changed if l == ed else l for l in lines),
             "a type presented but not recorded": "\n".join(
-                l for l in lines if not (l.startswith("test-vt-0005 ") and " ecdsa-" in l)),
+                l for l in lines if not (l.startswith("deb13-vt-0005.example.org ") and " ecdsa-" in l)),
             "a type recorded but not presented": "\n".join(
                 lines + [extra]) if not original.endswith("\n") else original + extra + "\n",
-            "no keys recorded": "\n".join(l for l in lines if not l.startswith("test-vt-0005 ")),
+            "no keys recorded": "\n".join(l for l in lines if not l.startswith("deb13-vt-0005.example.org ")),
         }
         before = self.admitted()
         try:
@@ -444,33 +466,33 @@ class AdmitPlaybook(unittest.TestCase):
                     written = path.read_text()
                     result = self.admit("-e", "admit_addresses=203.0.113.50")
                     self.assertEqual(result.returncode, 2, result.stdout[-2000:])
-                    self.assertIn("203.0.113.50: refused test-vt-0005 - ", result.stdout)
-                    expected = ("no host keys are recorded for test-vt-0005"
+                    self.assertIn("203.0.113.50: refused deb13-vt-0005.example.org - ", result.stdout)
+                    expected = ("no host keys are recorded for deb13-vt-0005.example.org"
                                 if name == "no keys recorded"
-                                else "host keys differ from ssh/known_hosts for test-vt-0005")
+                                else "host keys differ from ssh/known_hosts for deb13-vt-0005.example.org")
                     self.assertIn(expected, result.stdout)
-                    self.assertIn(f"ssh-keygen -R test-vt-0005 -f {path}", result.stdout)
+                    self.assertIn(f"ssh-keygen -R deb13-vt-0005.example.org -f {path}", result.stdout)
                     self.assertEqual(path.read_text(), written)   # nothing rewritten
                     self.assertEqual(self.admitted(), before)
         finally:
             path.write_text(original)
         result = self.admit("-e", "admit_addresses=203.0.113.50")
-        self.assertIn("203.0.113.50: known test-vt-0005", result.stdout)
+        self.assertIn("203.0.113.50: known deb13-vt-0005.example.org", result.stdout)
 
-    # Named to sort last: it needs test-vt-0005, admitted in test_3.
+    # Named to sort last: it needs deb13-vt-0005.example.org, admitted in test_3.
     def test_x_exit_status(self):
         # Hosts without SSH or that refuse the controller key: exit 0.
         quiet = self.admit("-e", "admit_addresses=203.0.113.20,203.0.113.99")
         self.assertEqual(quiet.returncode, 0, quiet.stdout[-2000:])
         self.assertIn("203.0.113.20: not-contract", quiet.stdout)
         self.assertIn("203.0.113.99: not-contract", quiet.stdout)
-        # A stopped outcome: another node claims test-vt-0005's name. Exit 2.
-        self.add_node("203.0.113.70", "test-vt-0005", "99", mac="52:54:00:00:00:70")
+        # A stopped outcome: another node claims deb13-vt-0005.example.org's name. Exit 2.
+        self.add_node("203.0.113.70", "deb13-vt-0005", 70)
         self.save_nodes()
         before = (self.admitted(), self.known_hosts())
         stopped = self.admit("-e", "admit_addresses=203.0.113.70,203.0.113.99")
         self.assertEqual(stopped.returncode, 2, stopped.stdout[-2000:])
-        self.assertIn("203.0.113.70: stopped test-vt-0005", stopped.stdout)
+        self.assertIn("203.0.113.70: stopped deb13-vt-0005.example.org", stopped.stdout)
         self.assertIn("203.0.113.99: not-contract", stopped.stdout)
         self.assertIn("Refused or stopped: 203.0.113.70 stopped", stopped.stdout)
         self.assertEqual((self.admitted(), self.known_hosts()), before)
@@ -486,9 +508,9 @@ class AdmitPlaybook(unittest.TestCase):
         return f"@{path}"
 
     def test_y_candidates_file(self):
-        self.add_node("203.0.113.80", "test-vt-0008", "08", mac="52:54:00:00:00:80")
-        self.add_node("203.0.113.81", "test-vt-0009", "09", mac="52:54:00:00:00:81")
-        self.add_node("203.0.113.82", "test-vt-0010", "10", mac="52:54:00:00:00:82")
+        self.add_node("203.0.113.80", "deb13-vt-0008", 8)
+        self.add_node("203.0.113.81", "deb13-vt-0009", 9)
+        self.add_node("203.0.113.82", "deb13-vt-0010", 10)
         self.save_nodes()
 
         # Each node with the fingerprint read at its own console: admitted,
@@ -497,8 +519,8 @@ class AdmitPlaybook(unittest.TestCase):
             {"address": "203.0.113.80", "fingerprint": self.fingerprint("203.0.113.80")},
             {"address": "203.0.113.81", "fingerprint": self.fingerprint("203.0.113.81", "ecdsa")}]))
         self.assertEqual(good.returncode, 0, good.stdout[-2000:])
-        self.assertIn("203.0.113.80: admitted test-vt-0008", good.stdout)
-        self.assertIn("203.0.113.81: admitted test-vt-0009", good.stdout)
+        self.assertIn("203.0.113.80: admitted deb13-vt-0008.example.org", good.stdout)
+        self.assertIn("203.0.113.81: admitted deb13-vt-0009.example.org", good.stdout)
         self.assertNotIn("PA-HOST-01", good.stdout)
 
         # A fingerprint that does not belong to the node: refused, exit 2;
@@ -508,8 +530,8 @@ class AdmitPlaybook(unittest.TestCase):
             {"address": "203.0.113.80", "fingerprint": self.fingerprint("203.0.113.80")},
             {"address": "203.0.113.82", "fingerprint": self.fingerprint("203.0.113.80")}]))
         self.assertEqual(wrong.returncode, 2, wrong.stdout[-2000:])
-        self.assertIn("203.0.113.80: known test-vt-0008", wrong.stdout)
-        self.assertIn("203.0.113.82: refused test-vt-0010 - the console fingerprint", wrong.stdout)
+        self.assertIn("203.0.113.80: known deb13-vt-0008.example.org", wrong.stdout)
+        self.assertIn("203.0.113.82: refused deb13-vt-0010.example.org - the console fingerprint", wrong.stdout)
         self.assertEqual((self.admitted(), self.known_hosts()), before)
 
         # Rejected before anything is contacted.
@@ -533,7 +555,89 @@ class AdmitPlaybook(unittest.TestCase):
                 result = self.admit(*args)
                 self.assertEqual(result.returncode, 2, result.stdout[-1500:])
                 self.assertNotIn("fetch the SSH host keys", result.stdout)
-        self.assertNotIn("test-vt-0010", self.admitted())
+        self.assertNotIn("deb13-vt-0010.example.org", self.admitted())
+
+    def test_z_names(self):
+        """The admitted name is the fully qualified domain name, from the
+        confirmation's hostname and admit_client_domain."""
+        # No domain, or one that is not a domain: refused before anything is contacted.
+        for name, extra in {
+            "no domain": ["-e", "admit_client_domain=''"],
+            "one label": ["-e", "admit_client_domain=org"],
+            "upper case": ["-e", "admit_client_domain=Example.org"],
+            "trailing dot": ["-e", "admit_client_domain=example.org."],
+        }.items():
+            with self.subTest(case=name):
+                result = self.admit("-e", "admit_addresses=203.0.113.10", *extra)
+                self.assertEqual(result.returncode, 2, result.stdout[-1500:])
+                self.assertIn("Give the domain the nodes are named in", result.stdout)
+                self.assertNotIn("fetch the SSH host keys", result.stdout)
+
+        # One hostname in two domains: two nodes, two names, no collision.
+        self.add_node("203.0.113.90", "dev", 21)
+        self.add_node("203.0.113.91", "dev", 22)
+        # A hostname that makes no fully qualified domain name, and one with a dot.
+        self.add_node("203.0.113.92", "Dev", 23)
+        self.add_node("203.0.113.93", "dev.example.org", 24)
+        self.save_nodes()
+        org = self.admit("-e", "admit_addresses=203.0.113.90")
+        self.assertEqual(org.returncode, 0, org.stdout[-2000:])
+        self.assertIn("203.0.113.90: admitted dev.example.org - dev.example.org is new on every count",
+                      org.stdout)
+        net = self.admit("-e", "admit_addresses=203.0.113.91", "-e", "admit_client_domain=example.net")
+        self.assertEqual(net.returncode, 0, net.stdout[-2000:])
+        self.assertIn("203.0.113.91: admitted dev.example.net", net.stdout)
+        hosts = self.admitted()
+        self.assertEqual(hosts["dev.example.org"]["ansible_host"], "203.0.113.90")
+        self.assertEqual(hosts["dev.example.net"]["ansible_host"], "203.0.113.91")
+        self.assertNotIn("dev", hosts)
+        known = self.known_hosts()
+        for name in ("dev.example.org", "dev.example.net"):
+            self.assertIn(f"# BEGIN {name}, admitted by 05_admit.yml", known)
+            self.assertEqual(sum(1 for l in known.splitlines() if l.startswith(f"{name} ")), 2)
+        self.check_inventory()
+
+        # The same node in a third domain is known under its first name, and
+        # in the second domain, whose name another node holds, a collision.
+        again = self.admit("-e", "admit_addresses=203.0.113.90", "-e", "admit_client_domain=example.com")
+        self.assertEqual(again.returncode, 2, again.stdout[-2000:])
+        self.assertIn("203.0.113.90: stopped dev.example.com - dev.example.com is new, but its "
+                      "identity is known as: dev.example.org", again.stdout)
+        clash = self.admit("-e", "admit_addresses=203.0.113.90", "-e", "admit_client_domain=example.net")
+        self.assertEqual(clash.returncode, 2, clash.stdout[-2000:])
+        self.assertIn("203.0.113.90: stopped dev.example.net - another node is already called "
+                      "dev.example.net", clash.stdout)
+
+        before = (self.admitted(), self.known_hosts())
+        bad = self.admit("-e", "admit_addresses=203.0.113.92,203.0.113.93")
+        self.assertEqual(bad.returncode, 2, bad.stdout[-2000:])
+        self.assertIn("203.0.113.92: refused Dev.example.org - Dev.example.org is not a fully "
+                      "qualified domain name", bad.stdout)
+        self.assertIn("203.0.113.93: refused dev.example.org.example.org - the confirmation names "
+                      "the host dev.example.org, which is not the first label of "
+                      "dev.example.org.example.org", bad.stdout)
+        self.assertEqual((self.admitted(), self.known_hosts()), before)
+
+    def test_z_a_node_admitted_under_its_hostname_is_a_conflict(self):
+        """A node admitted before 0.2.0, named by its hostname alone, is not
+        the same name: admitting it again is stopped until its entry goes."""
+        self.add_node("203.0.113.95", "stage", 25)
+        self.save_nodes()
+        path = self.client / "raw/admitted.yml"
+        original = path.read_text()
+        data = yaml.safe_load(original)
+        data["admitted"]["hosts"]["stage"] = {
+            "ansible_host": "203.0.113.95", "raw_node_machine_id": machine_id(25),
+            "raw_node_macs": [mac(25)], "raw_node_batch": self.batch}
+        path.write_text(yaml.safe_dump(data, sort_keys=False))
+        try:
+            result = self.admit("-e", "admit_addresses=203.0.113.95")
+        finally:
+            path.write_text(original)
+        self.assertEqual(result.returncode, 2, result.stdout[-2000:])
+        self.assertIn("203.0.113.95: stopped stage.example.org - stage.example.org is new, but its "
+                      "identity is known as: stage (machine_id and mac, raw/admitted.yml)", result.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

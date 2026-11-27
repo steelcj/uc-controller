@@ -12,14 +12,23 @@
 #   4. admit only when the confirmation's ssh_host_keys equal the scanned
 #      keys, and, when a fingerprint read at the node's console is given for
 #      the address, when it is one of them;
-#   5. match its identity against every stage inventory with
-#      scripts/match_raw_identity.py: known, reinstalled, a name collision,
-#      known under another name, or new;
+#   5. name it by its fully qualified domain name, <hostname>.<admit_client_domain>,
+#      and match that name and its identity against every stage inventory
+#      with scripts/match_raw_identity.py: known, reinstalled, a name
+#      collision, known under another name, or new;
 #   6. write a new node into the client inventory's raw/admitted.yml under
-#      its confirmed hostname, add its host keys to the client inventory's
-#      ssh/known_hosts, and confirm an
+#      that name, add its host keys to the client inventory's
+#      ssh/known_hosts under the same name, and confirm an
 #      Ansible connection as initial and a become with the batch password,
 #      both over the admitted group's strict connection.
+#
+# The name is the node's fully qualified domain name, never its hostname
+# alone, so two domains in one client inventory cannot collide, and the node
+# keeps one name from uc-node's intake/ to normalized/. The confirmation
+# stays keyed by the hostname, so a confirmation whose hostname is not the
+# name's first label is refused. Known hosts entries are keyed by the name,
+# through HostKeyAlias, so a node's keys stay with it when its address
+# changes.
 #
 # The batch password is read only through the uc_secret lookup, from
 # ~/.secrets/uc/fleet/batches/<batch>.yml; see en/docs/guides/batch-secrets.md.
@@ -53,6 +62,10 @@
 # Options:
 #   admit_batch_id              batch the nodes were built with (required); its
 #                               password must be in ~/.secrets/uc/fleet/batches/<batch>.yml
+#   admit_client_domain         the domain the nodes are named in, such as
+#                               example.org (required): a node whose
+#                               confirmation says dev is admitted as
+#                               dev.example.org
 #   admit_ssh_port              expected ssh_port (default 22)
 #   admit_initial_username      expected initial_username (default initial)
 #
@@ -85,6 +98,14 @@
     admit_port: "{{ admit_ssh_port | default(22) | int }}"
     admit_user: "{{ admit_initial_username | default('initial') }}"
     admit_key: "{{ onboard_ssh_private_key_file | ansible.builtin.expanduser }}"
+    # A domain is DNS labels of lowercase letters, digits and hyphens, at
+    # least two of them, at most 253 characters, by the rule uc-node's
+    # build.yml applies to client_domain. An admitted name is one more label,
+    # the hostname, in front of a domain. scripts/check_inventory.py applies
+    # the same rule.
+    admit_label_pattern: '[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?'
+    admit_domain_pattern: '^{{ admit_label_pattern }}(\.{{ admit_label_pattern }})+$'
+    admit_name_pattern: '^{{ admit_label_pattern }}(\.{{ admit_label_pattern }}){2,}$'
 
   tasks:
     # A fact rather than a play variable, so the last play can rewrite the
@@ -137,6 +158,23 @@
         admit_batch_short: >-
           {{ lookup('uc_secret', 'batches/' ~ admit_batch_id, key='initial_password') | length < 15 }}
 
+    # Every source here names the node from its confirmation's hostname and
+    # this domain. No default: the domain is a fact about the nodes, and a
+    # client inventory may hold more than one.
+    - name: Require the domain the nodes are named in
+      ansible.builtin.assert:
+        that:
+          - admit_client_domain is defined
+          - admit_client_domain is string
+          - admit_client_domain | length <= 253
+          - admit_client_domain is match(admit_domain_pattern)
+        fail_msg: >-
+          Give the domain the nodes are named in, as -e admit_client_domain=example.org:
+          DNS labels of lowercase letters, digits and hyphens, each at most 63
+          characters, separated by dots and at most 253 characters in all. A node
+          whose confirmation says dev is then admitted as dev.example.org.
+        quiet: true
+
     - name: Require every entry of admit_candidates to have an address and a console fingerprint
       ansible.builtin.assert:
         that:
@@ -154,18 +192,26 @@
         quiet: true
       when: admit_candidates is defined
 
+    # Each target is {address, fingerprint}: the fingerprint read at the
+    # node's console, or empty. A target may also give its name and its
+    # port; otherwise the name comes from the confirmation's hostname and
+    # admit_client_domain, and the port is admit_port.
     - name: Take candidates from admit_candidates
       ansible.builtin.set_fact:
-        admit_targets: "{{ admit_candidates | map(attribute='address') | map('trim') | list }}"
-        admit_expected_by_address: >-
-          {{ admit_candidates | items2dict(key_name='address', value_name='fingerprint') }}
+        admit_targets: >-
+          {{ admit_candidates | map(attribute='address') | map('string') | map('trim')
+             | map('community.general.dict_kv', 'address')
+             | zip(admit_candidates | map(attribute='fingerprint')
+                   | map('community.general.dict_kv', 'fingerprint'))
+             | map('combine') | list }}
       when: admit_candidates is defined
 
     - name: Take candidates from admit_addresses
       ansible.builtin.set_fact:
         admit_targets: >-
           {{ ((admit_addresses.split(',') if admit_addresses is string else admit_addresses)
-              | map('trim') | select | unique | list) }}
+              | map('trim') | select | unique
+              | map('community.general.dict_kv', 'address') | list) }}
       when: admit_addresses is defined
 
     - name: Take candidates from the discovered inventory
@@ -182,7 +228,7 @@
             admit_targets: >-
               {{ ((lookup('ansible.builtin.file', admit_raw_dir ~ '/discovered.yml') | from_yaml).discovered.hosts
                   | default({}, true)) | dict2items | map(attribute='value.ansible_host')
-                  | select | unique | list }}
+                  | select | unique | map('community.general.dict_kv', 'address') | list }}
 
     - name: Require at least one candidate, and a console fingerprint for one address only
       ansible.builtin.assert:
@@ -196,10 +242,9 @@
           ssh-keygen -l prints it. For several nodes, use admit_candidates.
         quiet: true
 
-    # Which console fingerprint, if any, each address must present.
     - name: Pair the single console fingerprint with its address
       ansible.builtin.set_fact:
-        admit_expected_by_address: "{{ {admit_targets[0]: admit_expected_fingerprint} }}"
+        admit_targets: "{{ [admit_targets[0] | combine({'fingerprint': admit_expected_fingerprint})] }}"
       when: admit_expected_fingerprint is defined
 
     - name: Read the nodes already admitted
@@ -222,9 +267,12 @@
 
         - name: Check one candidate
           ansible.builtin.include_tasks: tasks/admit_candidate.yml
+          vars:
+            candidate: "{{ admit_target.address }}"
           loop: "{{ admit_targets }}"
           loop_control:
-            loop_var: candidate
+            loop_var: admit_target
+            label: "{{ admit_target.address }}"
 
       always:
         - name: Remove the scanned keys
@@ -239,8 +287,8 @@
 
     - name: Collect their names and reported Python
       ansible.builtin.set_fact:
-        admit_new_names: "{{ admit_new | map(attribute='hostname') | list }}"
-        admit_new_python: "{{ admit_new | items2dict(key_name='hostname', value_name='python') }}"
+        admit_new_names: "{{ admit_new | map(attribute='name') | list }}"
+        admit_new_python: "{{ admit_new | items2dict(key_name='name', value_name='python') }}"
 
     - name: Write the new nodes into the admitted inventory
       ansible.builtin.copy:
@@ -248,18 +296,18 @@
         mode: "0644"
         content: >-
           {{ admit_header }}{{ {'admitted': {'hosts': admit_existing
-             | combine(admit_new | items2dict(key_name='hostname', value_name='entry'))}}
+             | combine(admit_new | items2dict(key_name='name', value_name='entry'))}}
              | to_nice_yaml(indent=2, sort_keys=False) }}
       when: admit_new | length > 0
 
     - name: Add their host keys to the controller's known hosts file
       ansible.builtin.blockinfile:
         path: "{{ admit_known_hosts }}"
-        marker: "# {mark} {{ item.hostname }}, admitted by 05_admit.yml"
+        marker: "# {mark} {{ item.name }}, admitted by 05_admit.yml"
         block: "{{ item.known_hosts | join('\n') }}"
       loop: "{{ admit_new }}"
       loop_control:
-        label: "{{ item.hostname }}"
+        label: "{{ item.name }}"
 
     - name: Reload the inventory so the next play sees the admitted nodes
       ansible.builtin.meta: refresh_inventory

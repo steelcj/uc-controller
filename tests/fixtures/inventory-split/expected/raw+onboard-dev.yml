@@ -37,7 +37,7 @@ all:
       children:
         admitted:
           hosts:
-            example-vt-0001:
+            deb13-vt-0001.example.org:
               ansible_become_password: '{{ lookup(''uc_secret'', ''batches/'' ~ raw_node_batch, key=''initial_password'') }}'
               ansible_connection: ssh
               ansible_host: 203.0.113.10
