@@ -47,6 +47,17 @@ Once a second person admits nodes, make admission a change that is reviewed: adm
 
 The handoff phase has uc-node write `confirmation.yml` and a candidates entry into the client's inventory repository. Extend the client repository's pre-commit hook then, to check those files with `scripts/check_raw_confirmation.py` and the candidates rules of `05_admit.yml`.
 
+### Take uc-node's handover as it is now
+
+uc-node's handoff phase one, on its branch `handoff`, writes node definitions to `intake/` and candidates to `candidates/`, and reads its hashes from `~/.secrets/uc/build/batches/`. Its report, `en/docs/sessions/2026-11-27--14-48-38-uc-node-handoff-phase-one-report.md` in uc-node, lists what uc-controller should meet:
+
+- `05_admit.yml` reads `candidates/<fqdn>.yml` directly, rather than `admit_candidates` given with `-e @<file>`.
+- `inventory-template/` gains `intake/` and `candidates/`, each with a line in its README.
+- `check_inventory.py` checks a candidate's shape. Today it passes one because it reads it as a hosts file with a group and no variables.
+- The template's yamllint limit of 120 characters cannot be met by an RSA key line in `intake/`. Allow non-breakable inline mappings there, or raise the limit for that directory.
+- `en/docs/guides/batch-secrets.md` says uc-node does not read `~/.secrets/uc/build/` yet. Point that section at uc-node's guide 0, `en/docs/guides/0-set-up-a-client.md`, and at `scripts/new-batch`.
+- `check_raw_confirmation.py` reports some findings under names that are not clause identifiers, such as `Versioning`, `Host keys`, `Firewall` and `Firewall manager`, so a rejection cannot list them in `clauses`. Give those checks identifiers when the contract does.
+
 ### discover_subnet in the client inventory
 
 `ingress/playbooks/00_discover.yml` defaults `discover_subnet` to an address range in code. Which subnet to scan is a fact about a client, so move it to the client inventory, in `raw/group_vars/all.yml` or the template's place for it, and give the code no default: a run without it refuses, rather than scanning a range that belongs to nobody in particular.
