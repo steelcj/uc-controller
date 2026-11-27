@@ -1,7 +1,7 @@
 ---
 title: Handover for uc-controller, Plan and Kickoff Prompt
 description: The plan for bringing uc-controller into line with uc-node's handover, so admission reads candidates and names nodes by fully qualified domain name, and onboarding manages the Foomuuri firewall uc-node leaves, and the Claude Code kickoff prompt that carries it out.
-version: 0.1.0
+version: 0.1.1
 status: provisional
 date: 2026-11-27
 language: en-CA
@@ -24,7 +24,7 @@ The run also showed where uc-controller falls short:
 | `check_inventory.py` | Passes a candidate only because it reads it as a hosts file with a group and no variables |
 | Documents | uc-controller has no guide for admission or onboarding: uc-node's guide 4 covers admission from its side. `en/docs/guides/batch-secrets.md` says uc-node does not read `~/.secrets/uc/build/` yet, and its recipe uses `raw-1970-01-01-01`, the register's reserved name. `05_admit.yml`'s usage comment shows `~/uc-inventories/example.org` |
 
-The ROADMAP lists each of these on the branch `design-after-uc-node-phase-one`, under Take uc-node's handover as it is now and Switch to steelcj.foomuuri. This plan is written on a branch from there, `handover`, so the ROADMAP items it does are removed in the same branch.
+The ROADMAP lists each of these on the branch `design-after-uc-node-phase-one`, under Take uc-node's handover as it is now and Switch to steelcj.foomuuri. This plan is written on a branch from there, `handover`, so the ROADMAP items it does are removed in the same branch. The work is done in the worktree `~/areas/development/uc-controller-handover`, on `handover`, so the main checkout stays on `main`.
 
 ## What uc-controller comes into line with
 
@@ -39,6 +39,7 @@ Each is taken as recommended in the kickoff prompt below. Change any of them bef
 | Decision | Recommended | Why |
 | :-- | :-- | :-- |
 | The admitted name | The fully qualified domain name, from the candidate's top-level key. Admission checks that the confirmation's hostname is the name's first label, and refuses the candidate otherwise | Christopher's decision after uc-node's phase two, recorded in the handoff design 0.1.2. The node keeps one name from `intake/` to `normalized/`, and two domains in one client inventory cannot collide |
+| Known hosts entries | Keyed by the admitted name, through `HostKeyAlias`, as now. They move with the name: a node admitted again as `dev.example.org` has its keys under `dev.example.org`, and its old lines under `dev` are removed by hand | Christopher's decision, and the ROADMAP's. A key held by name stays with the node when its address changes, and addresses such as those in 203.0.113.0/24 are reused between test nodes. The handoff design 0.1.2 says known hosts are keyed by address, so the name does not change them: that sentence is for Christopher to correct in uc-contracts, and the session does not stop on it |
 | The name when there is no candidate | `admit_addresses` and `admit_from_discovered` stay, for nodes uc-node did not build, and require `admit_client_domain`. The name is `<hostname>.<admit_client_domain>` | The console path stays in the handoff design. Without a candidate the domain has to come from somewhere, and one extra variable says it plainly. A client inventory may hold more than one domain, so it is not a fixed fact of the inventory |
 | How admission takes candidates | A fourth source, `admit_from_candidates=true`, reads every `candidates/*.yml` whose `raw_node_batch` is `admit_batch_id`. The candidate's `fingerprint` is the console fingerprint for its address. `admit_candidates` is removed | Exactly one source per run, as now. Reading by batch matches the batch password admission needs. uc-node read the fingerprint through `incus exec` or the pinned first contact, which the handoff design accepts in place of the console |
 | A candidate's label and the run's environment | A `raw` candidate may be admitted with any onboard stage. A `dev`, `stage` or `prod` candidate only with the onboard stage of the same name, or it is refused | The handoff design refuses a `prod` candidate admitted with `onboard/dev`. `raw` means no destination yet, so any is fine |
@@ -66,9 +67,9 @@ The kickoff carries out the steps, then stops before the run on example-org. A s
 ## Kickoff prompt
 
 ```text
-Read en/docs/sessions/2026-11-27--17-58-28-uc-controller-handover-plan-and-kickoff.md first: it holds the reasons and decisions behind this prompt. Then read, in uc-contracts, on the branch design-after-uc-node-phase-one if it is not merged, en/docs/design/raw-node-handoff-inventories-and-secrets-v0.1.2.md, client-inventory-layout-v0.1.1.md, node-lifecycle-overview-v0.1.6.md and safe-values-and-substitutions-v0.1.2.md, and en/docs/node-onboarding-pipeline/1-raw-node-egress/uc-raw-node-contract.md. In uc-node, on the branch handoff, read templates/candidate.yml.j2, en/docs/guides/4-hand-over-to-the-fleet.md and en/docs/sessions/2026-11-27--17-31-42-uc-node-handoff-phase-two-report.md. Read steelcj.foomuuri at the commit requirements.yml pins, in ~/.ansible/roles/steelcj.foomuuri, and check that the installed copy is that commit.
+Read en/docs/sessions/2026-11-27--17-58-28-uc-controller-handover-plan-and-kickoff.md first: it holds the reasons and decisions behind this prompt. Then read, in uc-contracts, on the branch design-after-uc-node-phase-one if it is not merged, en/docs/design/raw-node-handoff-inventories-and-secrets-v0.1.2.md, client-inventory-layout-v0.1.1.md, node-lifecycle-overview-v0.1.6.md and safe-values-and-substitutions-v0.1.2.md, and en/docs/node-onboarding-pipeline/1-raw-node-egress/uc-raw-node-contract.md. In uc-node, on the branch handoff, read templates/candidate.yml.j2, en/docs/guides/4-hand-over-to-the-fleet.md and en/docs/sessions/2026-11-27--17-31-42-uc-node-handoff-phase-two-report.md. Read steelcj.foomuuri at the commit requirements.yml pins, in ~/.ansible/roles/steelcj.foomuuri, and check that the installed copy is that commit: it has no .git, so compare the version in its meta/.galaxy_install_info.
 
-Work on the branch handover, which holds this plan, and commit after each step. Stop after step 5 and write the step report. Step 6 starts only when Christopher says go.
+Work in the worktree ~/areas/development/uc-controller-handover, on the branch handover, which holds this plan, and commit after each step. Never switch branches in the main checkout, ~/areas/development/uc-controller, which stays on main. Stop after step 5 and write the step report. Step 6 starts only when Christopher says go.
 
 Ground rules for the whole piece of work:
 - The design documents in uc-contracts are evolving designs, not rules. Where one does not fit what you find, or a step cannot follow it without a choice the documents do not make, stop and ask, saying what does not fit and the options you see. Never edit a uc-contracts document, and change nothing in uc-node.
@@ -80,7 +81,7 @@ Ground rules for the whole piece of work:
 - Never push, never merge, never cut a release.
 
 1. Admitted names.
-   - tasks/admit_candidate.yml names the node by its fully qualified domain name: the candidate's top-level key when the source is candidates, otherwise <hostname>.<admit_client_domain>. Refuse a candidate whose confirmation hostname is not the name's first label, naming both. Use the name for the admitted entry, the known hosts lookups and entries, HostKeyAlias, the run's report, and match_raw_identity.py.
+   - tasks/admit_candidate.yml names the node by its fully qualified domain name: the candidate's top-level key when the source is candidates, otherwise <hostname>.<admit_client_domain>. Refuse a candidate whose confirmation hostname is not the name's first label, naming both. Use the name for the admitted entry, the known hosts lookups and entries, HostKeyAlias, the run's report, and match_raw_identity.py. Known hosts stay keyed by the name, as the plan's decisions say, although the handoff design 0.1.2 says by address: do not stop on that.
    - Check promote_node.py and demote_node.py carry the name unchanged, and test it.
    - check_inventory.py refuses an admitted, onboarded or normalized host whose name is not a fully qualified domain name, by the same rule uc-node's build.yml uses for client_domain.
    - Update the tests and fixtures that name a host by its hostname alone.
@@ -124,3 +125,4 @@ Ground rules for the whole piece of work:
 | Version | Date | Change |
 | :-- | :-- | :-- |
 | 0.1.0 | 2026-11-27 | First version |
+| 0.1.1 | 2026-11-27 | Known hosts stay keyed by the admitted name, against the handoff design 0.1.2's sentence that they are keyed by address. The work is done in a worktree beside the main checkout. The pinned role is checked through its install info |
