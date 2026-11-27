@@ -35,6 +35,10 @@ Once the inventory split is merged and works, recreate the GitHub repository wit
 
 ## Inventories
 
+### Move towards the proposed client inventory layout
+
+The client inventory's layout is evolving. `en/docs/design/client-inventory-layout-v0.1.0.md` in uc-contracts sets today's tree beside the one the design is heading towards: the client's folder at `~/.private/uc/<client>/uc-inventory`, a `specialized/<env>/` stage with `roles.yml` that takes the role files out of `normalized/`, uc-node's `intake/` and `candidates/`, and the client log beside the inventory. Try each change when its work comes due, and update `inventory-template/` and `en/docs/guides/client-inventories.md` with it.
+
 ### Admission as a reviewed event
 
 Once a second person admits nodes, make admission a change that is reviewed: admit on a branch of the client inventory repository, and merge the branch to admit, so that someone other than the admitter sees each new node and each newly trusted host key.
