@@ -54,7 +54,7 @@ uc-node's handoff phase one, on its branch `handoff`, writes node definitions to
 - `05_admit.yml` reads `candidates/<fqdn>.yml` directly, rather than `admit_candidates` given with `-e @<file>`.
 - `inventory-template/` gains `intake/` and `candidates/`, each with a line in its README.
 - `check_inventory.py` checks a candidate's shape. Today it passes one because it reads it as a hosts file with a group and no variables.
-- The template's yamllint limit of 120 characters cannot be met by an RSA key line in `intake/`. Allow non-breakable inline mappings there, or raise the limit for that directory.
+- The template's yamllint limit of 120 characters fails public key lines: an ed25519 key with a client's comment, such as `example-org-raw-initial-id_ed25519`, is about 130 characters, and an RSA key several hundred. No limit fits every key, so make `line-length` a warning in `inventory-template/.yamllint` (`level: warning`), which the pre-commit hook shows but does not stop on. example-org's inventory does this since its first commit.
 - `en/docs/guides/batch-secrets.md` says uc-node does not read `~/.secrets/uc/build/` yet. Point that section at uc-node's guide 0, `en/docs/guides/0-set-up-a-client.md`, and at `scripts/new-batch`.
 - `check_raw_confirmation.py` reports some findings under names that are not clause identifiers, such as `Versioning`, `Host keys`, `Firewall` and `Firewall manager`, so a rejection cannot list them in `clauses`. Give those checks identifiers when the contract does.
 
