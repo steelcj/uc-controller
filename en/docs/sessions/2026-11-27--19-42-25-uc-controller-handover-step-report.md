@@ -1,7 +1,7 @@
 ---
 title: Handover for uc-controller, Step Report
 description: What steps one to five of the handover work changed, the decisions taken on the way, the checks and their results, the throwaway node test of the Foomuuri switch, what in the kickoff and the design documents did not fit, the corrections left outside this repository, and what step six will change in example-org.
-version: 0.1.7
+version: 0.1.8
 status: provisional
 date: 2026-11-27
 language: en-CA
@@ -55,6 +55,33 @@ One decision was mine, not in the plan, and was reversed by Christopher after th
 | 4. Firewall | `24d8b5c` | `steelcj.foomuuri` in all three playbooks, as the ROADMAP's Switch to steelcj.foomuuri says, with the client variables unchanged. The role was vendored under `roles/` here, and is installed from `requirements.yml` since, as the decision above says. `uc_firewall`, its interim vars file and its test are removed. `tests/test_firewall_fragments.py` renders each playbook's call |
 | 5. Documents | `626c8f6` | `en/docs/guides/admit-and-onboard.md`, new. `client-inventories.md` 0.2.0, `batch-secrets.md` 0.1.5, the README, the ROADMAP and the CHANGELOG's Unreleased section for 0.2.0. `admitting-a-raw-node.md` says it describes 0.1.x. The usage comments of `00_discover.yml`, `10_onboard.yml`, `scripts/inventory-args` and `require-client-inventory.yml` name `~/.private/uc/example-org/uc-inventory`. `05_admit.yml`'s usage comment changed in step two |
 | After the step stop | `b64aac3`, `b0a846f`, `3b62643`, and the commit of this report's 0.1.2 | `.gitignore` leaves out `.ansible/`, ansible-lint's cache, so `git add -A` cannot commit it. `.ansible-lint` leaves out `roles/`. This report: the vendoring decision, how SSH was checked, the node's kind, the lint findings, and the corrections outside this repository. Then `steelcj.foomuuri` taken out of `roles/`, its test reading the installed role |
+
+### Every commit on handover
+
+Twenty commits from `7165cb6` to `d7f5f0f`, oldest first, with the commit of this report's 0.1.8 after them. `bfe3d31` and `eca41e0` are Christopher's, on `main`, and came in with the merge `2494a60`. The other eighteen are on `handover`'s first-parent line. `git log --reverse --format='%h %s' 7165cb6^..handover` lists the same commits, for review against this table.
+
+| Commit | Time | Part | Subject |
+| :-- | :-- | :-- | :-- |
+| `7165cb6` | 18:59 | Step 1 | Admission names nodes by fully qualified domain name |
+| `8d4bbc9` | 19:08 | Step 2 | Admission reads uc-node's candidates/ |
+| `b3aa9c2` | 19:17 | Step 3 | Client inventory template: intake/, candidates/, line-length warning |
+| `24d8b5c` | 19:41 | Step 4 | Firewall: steelcj.foomuuri on every stage, uc_firewall removed |
+| `626c8f6` | 19:46 | Step 5 | Documents for the handover, and the step report |
+| `b64aac3` | 19:52 | After the step stop | Ignore ansible-lint's cache, .ansible/ |
+| `b0a846f` | 19:53 | After the step stop | ansible-lint: leave out the vendored roles under roles/ |
+| `3b62643` | 19:54 | After the step stop | Step report 0.1.1, after review |
+| `086c16a` | 20:03 | Step 6 | Admit and Onboard 0.1.1: the hook's warnings, and an empty admitted.yml |
+| `141262c` | 20:04 | Step 6 | Run report for step six, on example-org |
+| `5a1c0ee` | 20:18 | Roles | steelcj.foomuuri installed from requirements.yml, not vendored |
+| `bfe3d31` | 20:23 | From `main`, Christopher's | add uc-repo template |
+| `eca41e0` | 20:37 | From `main`, Christopher's | mograted tested roles out of repo and into repo requirements.yml |
+| `3a20143` | 20:43 | Roles | run_tests.py fails on skips and offers to install a missing role |
+| `2494a60` | 20:43 | Roles, the merge of `main` | Merge main: the committed roles moved out of roles/ into requirements.yml |
+| `72897a6` | 20:49 | Roles | After main's move of the roles: pins, version check, lint, ROADMAP |
+| `e7e4dc2` | 21:02 | Roles | Roles: pin the confirmed set, and the version policy in the ROADMAP |
+| `bc9b0af` | 21:13 | Roles | ROADMAP: what step four exercised, a dated snapshot, the role catalog |
+| `e5c0231` | 21:15 | Outside corrections | Step report 0.1.7: the three outside corrections are made |
+| `d7f5f0f` | 21:17 | Roles | ROADMAP: where the logs behind the confirmed roles are kept |
 
 ### What uc_firewall enforced, and where each rule is now
 
@@ -164,16 +191,18 @@ Admission changes nothing on a node, so step six changes the client inventory on
 
 ## What remains before 0.2.0
 
-1. Review the branch `handover`, from `7165cb6` to the commit of this report's 0.1.1.
-2. Christopher's go for step six, as narrowed above.
-3. The three corrections outside this repository, above: made on branches in uc-contracts and uc-node, for review and merge.
-4. Onboarding admitted nodes, if 0.2.0 should onboard `dev.example.org`, or after it.
-5. Cut 0.2.0.
+Step six ran as narrowed above, its run report is `141262c`, and the three corrections outside this repository are made. What is left, in merge order:
+
+1. **uc-contracts:** review and merge `handover` into `main`: the handoff design 0.1.3, `a94e232`. It depends on nothing else.
+2. **uc-node:** `handoff-guide-4-admission`, `dd59019`, branches from `handoff`, so `handoff` reaches `main` first, or the two merge together. `handoff` is 31 commits ahead of `main`, nothing behind, and equal to `origin/handoff`. Its phase two report leaves open: the review of `handoff`, whether the contract says how `sudo` is measured, cutting 0.3.0 and rebuilding `dev.example.org` after it, an ssh platform build, and retiring example-org's test batch and instance. The admitted name it asked about is decided, as the fully qualified domain name, and uc-contracts' `design-after-uc-node-phase-one` is merged.
+3. **uc-controller:** review `handover` against the table of every commit above, merge it into `main`, and tag 0.2.0.
+4. **After 0.2.0:** onboarding admitted nodes, through the onboard-contract-nodes kickoff, so `dev.example.org` can be onboarded. Then the ROADMAP's Test the latest versions run, and the role catalog in uc-contracts.
 
 ## Changelog
 
 | Version | Date | Change |
 | :-- | :-- | :-- |
+| 0.1.8 | 2026-11-27 | Every commit on `handover`, in a table for the review. What remains is in merge order: uc-contracts, then uc-node with `handoff`, then uc-controller and the 0.2.0 tag, then onboarding admitted nodes, the latest-versions run and the role catalog. What is still open on uc-node's `handoff` |
 | 0.1.7 | 2026-11-27 | The uc-node correction made, in guide 4 0.1.4. No correction outside this repository is open |
 | 0.1.6 | 2026-11-27 | The two uc-contracts corrections made, in the handoff design 0.1.3. The ROADMAP's confirmed roles carry their evidence from step four's full output: thirteen confirmed, and `robertdebock.epel`, `ntp`, `selinux` and `auditd` pinned, not exercised, every task skipped on a Debian container |
 | 0.1.5 | 2026-11-27 | The four re-pins of 0.1.4 undone: `requirements.yml` pins the confirmed set, by the ROADMAP's version policy, with `robertdebock.bootstrap` at 7.1.7, the version step four ran. `epel`, `openssh` and `hostname` reinstalled at their pins with `--force` |
