@@ -10,7 +10,7 @@
 # The client inventory is found from the -i sources (uc_client_root), so
 # this does not depend on where this playbook lives:
 #
-#   ansible-playbook $(scripts/inventory-args ~/uc-inventories/example.org raw) \
+#   ansible-playbook $(scripts/inventory-args ~/.private/uc/example-org/uc-inventory raw) \
 #     ingress/playbooks/00_discover.yml -e discover_subnet=203.0.113.0/24
 #
 # Generated names are provisional: disc-<ip with dots as hyphens>, with

@@ -8,6 +8,8 @@ description: "How an operator admits raw nodes that meet the raw node contract i
 
 # Admitting a raw node
 
+This guide describes admission as uc-controller 0.1.x did it, with a candidates file given with `-e @`. From 0.2.0, admission reads uc-node's candidates from the client inventory's `candidates/`, takes `admit_from_candidates=true` in place of `admit_candidates`, and names each node by its fully qualified domain name, with `admit_client_domain` for nodes admitted by address. Follow [Admit and Onboard](guides/admit-and-onboard.md) instead. This guide is kept as a record of its time.
+
 ## Abstract
 
 A raw node built to the raw node contract, by uc-ventoy for example, refuses root over SSH, asks for a password for sudo, and reports itself in `/var/lib/raw-node/confirmation.yml`. Admission takes such a node into uc-controller's raw inventory, as the `admitted` source, after checking its confirmation against the contract, its host keys and its identity. The operator supplies each node's address and the fingerprint of its host key, both read at the node's console, so that the controller trusts a key it has confirmed out of band. This guide covers that path, reading the admission report, what to do when a node is refused or stopped, and, second, finding candidates by scanning a subnet. Admission changes nothing on a node. Onboarding admitted nodes comes in a later kickoff.

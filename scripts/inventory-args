@@ -9,7 +9,7 @@ inventory-defaults/ directories come first, then all the client's
 directories, each in the order the stages are given, so a client value
 always overrides a default:
 
-    ansible-playbook $(scripts/inventory-args ~/uc-inventories/example.org raw onboard/dev) \\
+    ansible-playbook $(scripts/inventory-args ~/.private/uc/example-org/uc-inventory raw onboard/dev) \\
       ingress/playbooks/05_admit.yml ...
 
 Paths are printed absolute, on one line. A path containing whitespace is

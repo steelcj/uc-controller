@@ -26,7 +26,7 @@
     fail_msg: >-
       No client inventory is loaded. Give uc-controller's defaults and a client
       inventory's stages with scripts/inventory-args, for example:
-      ansible-playbook $(scripts/inventory-args ~/uc-inventories/example.org raw onboard/dev)
+      ansible-playbook $(scripts/inventory-args ~/.private/uc/example-org/uc-inventory raw onboard/dev)
       ingress/playbooks/05_admit.yml
     quiet: true
 

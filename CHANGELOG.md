@@ -6,9 +6,34 @@ Write entries in the Unreleased section below as work happens. `scripts/cut-rele
 
 ## [Unreleased]
 
+For 0.2.0: admission's sources and names change, and the firewall role changes on every stage.
+
 ### Added
 
 - `en/docs/sessions/2026-11-26--16-20-08-uc-controller-repository-recreation-session.md`, the record of cleaning the tree of real values, the merge, the recreated repository and release 0.1.7.
+- `05_admit.yml` admits uc-node's candidates with `admit_from_candidates=true`: every file in the client inventory's `candidates/` whose `raw_node_batch` is `admit_batch_id`. Each gives the node's name, address, port and the host key fingerprint uc-node read through its platform. A `dev`, `stage` or `prod` candidate is refused, before it is contacted, unless the run's onboard stage is `onboard/<label>`; a `raw` one goes with any. A candidate file that is not valid is reported and skipped, and the run exits 2. Admission never changes `candidates/`.
+- `scripts/read_candidates.py` reads the candidates of a batch with PyYAML's `BaseLoader` and checks each against the raw node handoff design's candidate fields, for admission and for `check_inventory.py`.
+- `inventory-template/` gains `intake/` and `candidates/`, uc-node's, each with a `.gitkeep` and a line in its README.
+- `check_inventory.py` checks every file in `candidates/` as admission reads it, and refuses a host that came through admission whose name is not a fully qualified domain name: every admitted host, and every onboarded or normalized host carrying `raw_node_batch`.
+- `en/docs/guides/admit-and-onboard.md`: admitting from `candidates/`, the admitted name, admitting by address with `admit_client_domain`, moving a node admitted under its hostname, and the Foomuuri fragments each stage writes.
+- `roles/steelcj.foomuuri`, vendored at the commit `requirements.yml` pins, as the other roles are.
+- `tests/test_firewall_fragments.py` renders the fragment each playbook's `steelcj.foomuuri` call writes, from the client inventory template's values.
+
+### Changed
+
+- Admission names an admitted node by its fully qualified domain name, never its hostname alone: the candidate's name, or `<hostname>.<admit_client_domain>` for `admit_addresses` and `admit_from_discovered`, which now require `admit_client_domain`. It refuses a confirmation whose hostname is not the name's first label, and a name that is not fully qualified. The name is used in `raw/admitted.yml`, `ssh/known_hosts` and `HostKeyAlias`, the identity match and the report. A node admitted before 0.2.0 under its hostname is stopped as known under another name, until its entry and keys are removed.
+- `match_raw_identity.py` takes `--name` in place of `--hostname`, and compares the whole name.
+- The firewall is `steelcj.foomuuri` on every stage. `10_onboard.yml` writes the base fragment `10-base` from `firewall_onboard_ssh`, replacing uc-node's bootstrap rule, and refuses to run unless it gives SSH on the port the controller uses. `20_normalize.yml` writes `20-normalize` and `30_specialize.yml` writes `30-specialize` from their service lists, each refusing a node without `10-base`. Every call keeps the other two fragments and removes any other, and a stage with no service removes its own fragment. The role removes ufw and firewalld. The client inventory's variables keep their names and shape.
+- `scripts/new-inventory` makes the branch `main`, and prints the path it made, that no commit was made, and the next step, uc-node's guide 0.
+- The client inventory template's yamllint `line-length` is a warning at 120, which the pre-commit hook shows and does not stop on, since public key lines run past any limit.
+- `inventory_hosts.py`, and so the identity match, skips `intake/` and `candidates/`.
+- `en/docs/guides/client-inventories.md` 0.2.0, `en/docs/guides/batch-secrets.md` 0.1.5, `05_admit.yml`'s usage comment, the README and the ROADMAP follow these changes. Commands use `~/.private/uc/example-org/uc-inventory` and `raw-YYYY-MM-DD-NN`. `en/docs/admitting-a-raw-node.md` says it describes 0.1.x and points at the new guide.
+- Tests use the safe values register's host names, machine IDs and MAC addresses.
+
+### Removed
+
+- `admit_candidates`, the list of `{address, fingerprint}` given with `-e @<file>`. A run that gives it is refused with a message naming `admit_from_candidates`.
+- `shared/roles/uc_firewall`, `shared/vars/uc_firewall_interim.yml` and `tests/test_uc_firewall_interim.py`.
 
 ## [0.1.7] - 2026-11-26
 

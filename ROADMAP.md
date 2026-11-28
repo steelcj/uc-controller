@@ -33,48 +33,35 @@ Once the inventory split is merged and works, recreate the GitHub repository wit
 
 `inventory-defaults/onboard/group_vars/all.yml` gives `initial` `sudo_options: "ALL=(ALL) NOPASSWD: ALL"`. That conflicts with the privileged access policy. The inventory split moved it unchanged. The onboarding of contract nodes, which gives each node its own password (OE-ACC-03), is a natural place to settle it.
 
+## Onboarding
+
+### Onboard admitted nodes
+
+`10_onboard.yml` targets `raw:!admitted`: it onboards nodes it reaches as root, through Incus or a subnet scan, and leaves out nodes admitted under the raw node contract, which are reached as `initial` with sudo asking for the batch password. The onboard-contract-nodes kickoff, `en/docs/sessions/2026-11-18--17-38-56-kickoff-onboard-contract-nodes.md`, was written for this and never run. Onboarding an admitted node runs over the admitted group's strict SSH connection, becomes root with the batch password, skips the Python bootstrap the contract does not need, and keeps strict host key checking when it promotes the node. It should not use `wait_for_connection` against a node that may refuse the login, which OpenSSH 10 penalises. Until it is done, `dev.example.org` in example-org stays admitted, and the firewall switch has been tried on nodes reached as root only.
+
+### Limits that leave out localhost
+
+Every playbook starts with a play on `localhost` that finds the client inventory, so `-l <host>` alone skips it, and the next play fails with `'HostVarsVars' has no attribute 'uc_client_stages'`. `-l <host>,localhost` works, and the guides say so. Either have the first play say it was left out, or find the client inventory without a play on `localhost`.
+
 ## Inventories
 
 ### Move towards the proposed client inventory layout
 
-The client inventory's layout is evolving. `en/docs/design/client-inventory-layout-v0.1.0.md` in uc-contracts sets today's tree beside the one the design is heading towards: the client's folder at `~/.private/uc/<client>/uc-inventory`, a `specialized/<env>/` stage with `roles.yml` that takes the role files out of `normalized/`, uc-node's `intake/` and `candidates/`, and the client log beside the inventory. Try each change when its work comes due, and update `inventory-template/` and `en/docs/guides/client-inventories.md` with it.
+The client inventory's layout is evolving. `en/docs/design/client-inventory-layout-v0.1.1.md` in uc-contracts sets today's tree beside the one the design is heading towards. uc-node's `intake/` and `candidates/` are in the template since 0.2.0, and the guides use the client's folder, `~/.private/uc/<client>/uc-inventory`. Still to come: a `specialized/<env>/` stage with `roles.yml` that takes the role files out of `normalized/`, `secrets.yml`, and admission writing its rejections to the client log beside the inventory. Try each change when its work comes due, and update `inventory-template/` and `en/docs/guides/client-inventories.md` with it.
 
 ### Admission as a reviewed event
 
 Once a second person admits nodes, make admission a change that is reviewed: admit on a branch of the client inventory repository, and merge the branch to admit, so that someone other than the admitter sees each new node and each newly trusted host key.
 
-### Check confirmations and candidates on commit
+### Name the checker's findings by clause
 
-The handoff phase has uc-node write `confirmation.yml` and a candidates entry into the client's inventory repository. Extend the client repository's pre-commit hook then, to check those files with `scripts/check_raw_confirmation.py` and the candidates rules of `05_admit.yml`.
-
-### Take uc-node's handover as it is now
-
-uc-node's handoff phase one, on its branch `handoff`, writes node definitions to `intake/` and candidates to `candidates/`, and reads its hashes from `~/.secrets/uc/build/batches/`. Its report, `en/docs/sessions/2026-11-27--14-48-38-uc-node-handoff-phase-one-report.md` in uc-node, lists what uc-controller should meet:
-
-- `05_admit.yml` reads `candidates/<fqdn>.yml` directly, rather than `admit_candidates` given with `-e @<file>`.
-- Admission names the admitted host by its fully qualified domain name, as the candidate does, not by its hostname: uc-node's phase two run admitted `dev.example.org` as `dev`. It checks the confirmation's hostname against the name's first label. `promote_node.py`, `demote_node.py` and every stage keep the name, and `check_inventory.py` refuses an admitted host whose name is not fully qualified. See the raw node handoff design 0.1.2 in uc-contracts. Known hosts entries are keyed by the name through `HostKeyAlias`, so they move with it. example-org's admitted `dev`, its entry in `raw/admitted.yml` and its host keys in `ssh/known_hosts`, is moved to `dev.example.org` or admitted again afterwards.
-- `inventory-template/` gains `intake/` and `candidates/`, each with a line in its README.
-- `check_inventory.py` checks a candidate's shape. Today it passes one because it reads it as a hosts file with a group and no variables.
-- The template's yamllint limit of 120 characters fails public key lines: an ed25519 key with a client's comment, such as `example-org-raw-initial-id_ed25519`, is about 130 characters, and an RSA key several hundred. No limit fits every key, so make `line-length` a warning in `inventory-template/.yamllint` (`level: warning`), which the pre-commit hook shows but does not stop on. example-org's inventory does this since its first commit.
-- `en/docs/guides/batch-secrets.md` says uc-node does not read `~/.secrets/uc/build/` yet. Point that section at uc-node's guide 0, `en/docs/guides/0-set-up-a-client.md`, and at `scripts/new-batch`.
-- `check_raw_confirmation.py` reports some findings under names that are not clause identifiers, such as `Versioning`, `Host keys`, `Firewall` and `Firewall manager`, so a rejection cannot list them in `clauses`. Give those checks identifiers when the contract does.
+`scripts/check_raw_confirmation.py` reports some findings under names that are not clause identifiers, such as `Versioning`, `Host keys`, `Firewall` and `Firewall manager`, so a rejection cannot list them in `clauses`. Give those checks identifiers when the contract does. That is a contract change, in uc-contracts.
 
 ### discover_subnet in the client inventory
 
 `ingress/playbooks/00_discover.yml` defaults `discover_subnet` to an address range in code. Which subnet to scan is a fact about a client, so move it to the client inventory, in `raw/group_vars/all.yml` or the template's place for it, and give the code no default: a run without it refuses, rather than scanning a range that belongs to nobody in particular.
 
 ## Firewall
-
-### Switch to steelcj.foomuuri
-
-uc-node builds raw nodes with Foomuuri and writes the base fragment, `10-base`, as a bootstrap rule that lets the controller in. From admission on, uc-controller owns every fragment, as the raw node contract 0.3.1 allows and `en/docs/design/raw-node-handoff-inventories-and-secrets-v0.1.0.md` in uc-contracts describes. Replace `shared/roles/uc_firewall` with calls to `steelcj.foomuuri`, already in `requirements.yml`. `shared/vars/uc_firewall_interim.yml` and its test, `tests/test_uc_firewall_interim.py`, are removed with `uc_firewall`:
-
-- Onboard writes `10-base`, the role's default fragment, replacing uc-node's file under the same name, from `firewall_onboard_ssh`. `foomuuri_require_ssh` stays true.
-- Normalize writes `20-normalize`, and specialize `30-specialize`, from their service lists.
-- Every call lists all of uc-controller's other fragments in `foomuuri_keep_fragments`, so rerunning normalize after specialize does not purge `30-specialize`.
-- A stage whose service list is empty sets `foomuuri_fragment_state: absent`, so its old fragment is removed.
-
-The client inventory's variables keep their names and shape. The approach is to be tried, and adjusted if testing shows a better way.
 
 ### Change the SSH port at onboard
 

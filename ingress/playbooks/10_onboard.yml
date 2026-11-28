@@ -16,7 +16,7 @@
 # Usage, with the client inventory's raw stage and the onboard environment
 # that promoted nodes are written into:
 #
-#   ansible-playbook $(scripts/inventory-args ~/uc-inventories/example.org raw onboard/dev) \
+#   ansible-playbook $(scripts/inventory-args ~/.private/uc/example-org/uc-inventory raw onboard/dev) \
 #     ingress/playbooks/10_onboard.yml
 
 # Raw nodes admitted by 05_admit.yml (the admitted group) meet the raw node

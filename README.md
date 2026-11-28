@@ -6,21 +6,24 @@ An Ansible controller that moves nodes through a lifecycle of stages: raw nodes 
 
 | Stage | Playbook | What it does |
 | :-- | :-- | :-- |
-| Raw | `ingress/playbooks/00_discover.yml`, `ingress/playbooks/05_admit.yml` | Finds nodes by a subnet scan, or admits nodes that meet the raw node contract after checking their confirmation, host keys and identity |
-| Onboard | `ingress/playbooks/10_onboard.yml` | Creates the `initial` user, hardens SSH, sets up the firewall, and switches the node to SSH as `initial` |
-| Normalize | `converge/playbooks/20_normalize.yml` | Converges the compliance baseline |
-| Specialize | `converge/playbooks/30_specialize.yml` | Applies a role for the node's purpose, such as `webserver` |
+| Raw | `ingress/playbooks/00_discover.yml`, `ingress/playbooks/05_admit.yml` | Finds nodes by a subnet scan, or admits the nodes uc-node hands over as candidates, and others that meet the raw node contract, after checking their confirmation, host keys and identity, under their fully qualified domain names |
+| Onboard | `ingress/playbooks/10_onboard.yml` | Creates the `initial` user, hardens SSH, writes the Foomuuri base fragment `10-base`, and switches the node to SSH as `initial`. Admitted nodes are not onboarded yet |
+| Normalize | `converge/playbooks/20_normalize.yml` | Converges the compliance baseline, and writes the Foomuuri fragment `20-normalize` |
+| Specialize | `converge/playbooks/30_specialize.yml` | Applies a role for the node's purpose, such as `webserver`, and writes the Foomuuri fragment `30-specialize` |
 
 `site.yml` chains them. Every playbook runs against a client inventory, given with `scripts/inventory-args`, and refuses to run without one:
 
 ```bash
-ansible-playbook $(scripts/inventory-args ~/uc-inventories/example.org raw onboard/dev) \
-  ingress/playbooks/05_admit.yml -e admit_batch_id=raw-1970-01-01-01 -e @candidates.yml
+ansible-playbook $(scripts/inventory-args ~/.private/uc/example-org/uc-inventory raw onboard/dev) \
+  ingress/playbooks/05_admit.yml -e admit_batch_id=raw-YYYY-MM-DD-NN -e admit_from_candidates=true
 ```
+
+The firewall is Foomuuri, through `steelcj.foomuuri`: uc-node builds nodes with a bootstrap base fragment, and uc-controller owns every fragment from onboarding on.
 
 ## Outside this repository
 
-- **Client inventories**, one private repository per client, made with `scripts/new-inventory` from `inventory-template/`: the hosts at each stage, the client's values, and `ssh/known_hosts`. See [Client Inventories](en/docs/guides/client-inventories.md).
+- **Client inventories**, one private repository per client, made with `scripts/new-inventory` from `inventory-template/`: the hosts at each stage, the client's values, `ssh/known_hosts`, and uc-node's `intake/` and `candidates/`. See [Client Inventories](en/docs/guides/client-inventories.md).
+- **uc-node**, which builds raw nodes to the raw node contract and hands each over as a candidate in the client inventory. Its guides start where a client is set up and end at the handover, where [Admit and Onboard](en/docs/guides/admit-and-onboard.md) starts.
 - **Secrets**, in `~/.secrets/uc/fleet/` on the controller, read only through the `uc_secret` lookup. See [Batch Secrets](en/docs/guides/batch-secrets.md).
 
 ## Layout
@@ -33,11 +36,11 @@ ansible-playbook $(scripts/inventory-args ~/uc-inventories/example.org raw onboa
 | `CONTRIBUTORS.md` | How changes, versions and releases are handled |
 | `ingress/` | The playbooks and roles that take a node from raw to onboarded, whatever its source |
 | `converge/` | The playbooks and roles that take an onboarded node to normalized and specialized |
-| `shared/` | Roles both use, the `uc_secret` lookup, and the client inventory check every playbook starts with |
+| `shared/` | The `uc_secret` lookup, and the client inventory check every playbook starts with |
 | `roles/` | Vendored Galaxy roles, installed from `requirements.yml` |
 | `inventory-defaults/` | The logic half of the inventories, one directory per stage, loaded before every client inventory |
 | `inventory-template/` | The layout of a client inventory repository |
-| `scripts/` | The release scripts, and the scripts for client inventories: `inventory-args`, `new-inventory`, `check_inventory.py`, `promote_node.py`, `demote_node.py` and others |
+| `scripts/` | The release scripts, and the scripts for client inventories: `inventory-args`, `new-inventory`, `check_inventory.py`, `read_candidates.py`, `promote_node.py`, `demote_node.py` and others |
 | `tests/` | The tests, run with `python3 tests/run_tests.py` |
 | `en/docs/guides/` | Step-by-step guides |
 
@@ -45,7 +48,8 @@ ansible-playbook $(scripts/inventory-args ~/uc-inventories/example.org raw onboa
 
 - [Client Inventories](en/docs/guides/client-inventories.md): making a client's inventory repository, and running playbooks against it
 - [Batch Secrets](en/docs/guides/batch-secrets.md): where batch passwords are kept, and how to create and retire one
-- [Admitting a raw node](en/docs/admitting-a-raw-node.md): admitting nodes that meet the raw node contract
+- [Admit and Onboard](en/docs/guides/admit-and-onboard.md): admitting the candidates uc-node hands over, and other contract nodes, under their fully qualified names, and the firewall each later stage writes
+- [Admitting a raw node](en/docs/admitting-a-raw-node.md): admission as 0.1.x did it, kept as a record
 - The design, in [uc-controller v0.1.8](en/docs/uc-controller-v0.1.8.md)
 
 ## Releases

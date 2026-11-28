@@ -1,9 +1,9 @@
 ---
 title: Batch Secrets
 description: Where uc-controller keeps the password of each raw node batch, how to create a batch file without the password reaching shell history or the process list, and how to retire a batch.
-version: 0.1.4
+version: 0.1.5
 status: provisional
-date: 2026-11-26
+date: 2026-11-27
 language: en-CA
 ---
 
@@ -15,7 +15,7 @@ A raw node is built with a batch password: the password of the `initial` user, s
 
 ### uc-node
 
-uc-node's file will hold the batch password's hashes, and no password. uc-node does not read it yet.
+uc-node's file holds the batch password's hash and the root password's hash, and no password. uc-node's `scripts/new-batch` writes it, as uc-node's guide 0, Set Up a Client (`en/docs/guides/0-set-up-a-client.md` in uc-node), describes in Make a build batch, and uc-node reads it through its own `uc_secret` when it builds the batch's nodes.
 
 ```text
 ~/.secrets/uc/build/batches/<batch>.yml
@@ -50,7 +50,8 @@ The raw node contract gives the producer (uc-node) only the hash, and the two fi
 ~/.secrets/uc/fleet/                    0700, uc-controller's secrets root
 ~/.secrets/uc/fleet/batches/            0700
 ~/.secrets/uc/fleet/batches/<batch>.yml 0600
-~/.secrets/uc/build/                    0700, uc-node's secrets root, later
+~/.secrets/uc/build/                    0700, uc-node's secrets root
+~/.secrets/uc/build/batches/            0700
 ~/.secrets/uc/build/batches/<batch>.yml 0600
 ```
 
@@ -62,11 +63,11 @@ uc-controller's batch file is a YAML mapping with one key:
 | :-- | :-- | :-- |
 | `initial_password` | The password itself | uc-controller, as the admitted group's become password and to measure it against RN-ACC-08 during admission |
 
-uc-node's batch file will hold `initial_password_hash`, the password's SHA-512 crypt hash, and `root_password_hash`, which uc-node reads when it builds the nodes of the batch. uc-node does not read batch files yet; its own guide will say how to make that file when it does. On one workstation the operator's account can read both files, so here the split holds by convention. In OpenBao, policies will enforce it.
+uc-node's batch file holds `initial_password_hash`, the password's SHA-512 crypt hash, and `root_password_hash`, which uc-node reads when it builds the nodes of the batch. uc-node's `scripts/new-batch raw-YYYY-MM-DD-NN` makes it, reading both passwords from the terminal, and refuses a batch password shorter than 15 characters. Make uc-node's file first, then uc-controller's with the same batch password, as below: if the two differ, the nodes build, and admission's become with the batch password fails. On one workstation the operator's account can read both files, so here the split holds by convention. In OpenBao, policies will enforce it.
 
-This layout is an approach to try, as `en/docs/design/raw-node-handoff-inventories-and-secrets-v0.1.0.md` in uc-contracts proposes, and may change when it is tried.
+This layout is an approach to try, as the raw node handoff design in uc-contracts proposes, and may change when it is tried.
 
-Batch names follow `raw-YYYY-MM-DD-NN`. Examples in these documents use `raw-1970-01-01-01`, the Unix epoch, a date no real batch can have.
+Batch names follow `raw-YYYY-MM-DD-NN`: the day the batch is made, and a number for that day, such as the first batch of a day, `-01`. Commands here show `raw-YYYY-MM-DD-NN`, for you to fill in. Dates in 1970, such as the register's `raw-1970-01-01-01`, are reserved for documents and tests: no real batch has one, and examples of output use them.
 
 ## What reads the file
 
@@ -91,7 +92,7 @@ RN-ACC-08, a clause of the raw node contract, asks for a batch password of at le
 Run these in bash, in one terminal. The password is read from the terminal with `read -rs`, so it is not echoed and never reaches shell history. It is written to the file by `printf`, a bash builtin, so it never appears in the process list either.
 
 ```bash
-batch=raw-1970-01-01-01
+batch=raw-YYYY-MM-DD-NN   # the batch's name, as uc-node's scripts/new-batch was given it
 umask 077
 mkdir -p ~/.secrets/uc/fleet/batches
 chmod 0700 ~/.secrets ~/.secrets/uc ~/.secrets/uc/fleet ~/.secrets/uc/fleet/batches
@@ -135,7 +136,7 @@ Every line must start with `drwx------` and name you as owner.
 ### Check the file
 
 ```bash
-ls -l ~/.secrets/uc/fleet/batches/raw-1970-01-01-01.yml
+ls -l ~/.secrets/uc/fleet/batches/raw-YYYY-MM-DD-NN.yml
 ```
 
 Output example:
@@ -152,7 +153,7 @@ Run this from the uc-controller checkout, so its `ansible.cfg` finds the lookup:
 
 ```bash
 ansible localhost -m ansible.builtin.debug \
-  -a "msg={{ lookup('uc_secret', 'batches/raw-1970-01-01-01', key='initial_password') | length }}"
+  -a "msg={{ lookup('uc_secret', 'batches/raw-YYYY-MM-DD-NN', key='initial_password') | length }}"
 ```
 
 Output example:
@@ -174,15 +175,17 @@ A batch is retired when its password must no longer open anything: when the node
 1. Find every host that still carries the batch, in every client inventory:
 
    ```bash
-   grep -rl 'raw_node_batch: raw-1970-01-01-01' ~/uc-inventories/*/
+   grep -rl 'raw_node_batch: "*raw-YYYY-MM-DD-NN' ~/.private/uc/*/uc-inventory/
    ```
+
+   The quote is optional because `raw/admitted.yml` writes the batch without one, and uc-node's `intake/` and `candidates/` with one.
 
 2. For each one, either onboard it, so it no longer depends on the batch password, or rebuild it with a new batch and admit it again.
 3. Remove the batch from uc-node's node definitions, so no new node is built with it.
 4. Delete both files, and the copy you keep elsewhere:
 
    ```bash
-   rm -f ~/.secrets/uc/fleet/batches/raw-1970-01-01-01.yml ~/.secrets/uc/build/batches/raw-1970-01-01-01.yml
+   rm -f ~/.secrets/uc/fleet/batches/raw-YYYY-MM-DD-NN.yml ~/.secrets/uc/build/batches/raw-YYYY-MM-DD-NN.yml
    ```
 
 A password that may have been seen is not reused under another batch name. Make a new one.
@@ -198,6 +201,7 @@ A password that may have been seen is not reused under another batch name. Make 
 
 | Version | Date | Change |
 | :-- | :-- | :-- |
+| 0.1.5 | 2026-11-27 | uc-node reads its batch file now: its part points at uc-node's guide 0 and `scripts/new-batch`, which makes the file, and says to make it first, with the same password. Commands use `raw-YYYY-MM-DD-NN`, with a line saying 1970 dates are for documents and tests. The search for a batch's hosts covers `~/.private/uc/*/uc-inventory/`, quoted or not |
 | 0.1.4 | 2026-11-26 | The example outputs show the owner `operator` and the home `/home/operator`, the names the documents use for the operator's account |
 | 0.1.3 | 2026-11-26 | The example batch name is `raw-1970-01-01-01`, the Unix epoch, a date no real batch can have, in place of `raw-EXAMPLE-01`, which did not follow the `raw-YYYY-MM-DD-NN` pattern |
 | 0.1.2 | 2026-11-26 | Abstract given one subsection per controller, as written by Christopher, with its wording completed: one password per batch file. Checking a batch file split into three subsections, with `~/.secrets` and `~/.secrets/uc` added to the directory check, outputs marked as examples in `text` blocks, the sizes and length replaced with made-up values, what each check must show, and a warning not to paste real output |
