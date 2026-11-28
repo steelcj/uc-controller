@@ -1,7 +1,7 @@
 ---
 title: Handover for uc-controller, Step Report
-description: What steps one to five of the handover work changed, the two decisions taken on the way, the checks and their results, the throwaway node test of the Foomuuri switch, what in the kickoff and the design documents did not fit, and what step six will change in example-org.
-version: 0.1.0
+description: What steps one to five of the handover work changed, the decisions taken on the way, the checks and their results, the throwaway node test of the Foomuuri switch, what in the kickoff and the design documents did not fit, the corrections left outside this repository, and what step six will change in example-org.
+version: 0.1.1
 status: provisional
 date: 2026-11-27
 language: en-CA
@@ -39,6 +39,12 @@ Under `~/.secrets/` I opened nothing. Under `~/.private/` I read and wrote nothi
 | Which hosts must have a fully qualified name in `check_inventory.py`. The kickoff says every admitted, onboarded and normalized host, but `10_onboard.yml` promotes Incus and scanned nodes under names such as `dev-example-org` and `disc-203-0-113-20`, so every onboarding the controller can do today would be refused at commit | The hosts that came through admission, or every host | The hosts that came through admission: every host in `raw/admitted.yml`, and every onboarded or normalized host carrying `raw_node_batch`. This matches the handoff design, which names only admitted hosts |
 | Admitted nodes cannot be onboarded: `10_onboard.yml` targets `raw:!admitted`, and the onboard-contract-nodes kickoff of 2026-11-18 was never run | A minimal onboarding path for admitted nodes, the firewall switch only, or stop after step three | The firewall only. Test the switch on a throwaway uc-node Incus node reached as root, with `-l`. Step six admits `dev.example.org` and neither onboards nor normalizes it |
 
+One decision was mine, not in the plan, and was reviewed after the step stop:
+
+| Decision | Taken | Why |
+| :-- | :-- | :-- |
+| Vendor `steelcj.foomuuri` under `roles/` | At the pinned commit, `b62b02b5ee0c7dbf2bf2721aad46cf52ce60ebe3`, copied from the installed role. The copy equals `git archive b62b02b5…` of `~/areas/development/ansible-role-foomuuri` file for file, apart from `meta/.galaxy_install_info`, which says the same commit | Every other role in `requirements.yml` is vendored there, and `roles/` comes first in `roles_path`, so a fresh checkout would otherwise not have the firewall role. `roles/` is left out of `ansible-lint`, in `.ansible-lint`, since vendored roles are not edited here |
+
 ## What changed
 
 | Step | Commit | What |
@@ -47,7 +53,8 @@ Under `~/.secrets/` I opened nothing. Under `~/.private/` I read and wrote nothi
 | 2. Candidates | `8d4bbc9` | `admit_from_candidates=true` reads every `candidates/*.yml` whose `raw_node_batch` is the batch, through a new `scripts/read_candidates.py`, which uses `BaseLoader` and checks every field before use. A candidate file that is not valid is reported and skipped, and the run exits 2. The label rule refuses a `dev`, `stage` or `prod` candidate before it is contacted unless the run's one onboard stage matches. `admit_candidates` is removed and refused with a message naming its replacement. `admit_client_domain` is required with `admit_addresses` and `admit_from_discovered`, and refused with candidates, as `admit_ssh_port` is. Admission never changes `candidates/`. Tests: two batches, a label mismatch, a hostname mismatch, a wrong fingerprint, broken files, a batch with no candidates, and the refusals before contact |
 | 3. Template | `b3aa9c2` | `intake/` and `candidates/` with `.gitkeep` and README lines. `line-length` a warning at 120, with the reason. `new-inventory` runs `git init -b main`, prints the path, that no commit was made, and the next step, uc-node's guide 0. `check_inventory.py` checks each candidate with `read_candidates.py` and treats `intake/` as other client files, without reading either as hosts files. `inventory_hosts.py` skips both |
 | 4. Firewall | `24d8b5c` | `steelcj.foomuuri` in all three playbooks, as the ROADMAP's Switch to steelcj.foomuuri says, with the client variables unchanged. The role is vendored under `roles/` at the pinned commit, as every other role in `requirements.yml` is. `uc_firewall`, its interim vars file and its test are removed. `tests/test_firewall_fragments.py` renders each playbook's call |
-| 5. Documents | The commit of this report | `en/docs/guides/admit-and-onboard.md`, new. `client-inventories.md` 0.2.0, `batch-secrets.md` 0.1.5, the README, the ROADMAP and the CHANGELOG's Unreleased section for 0.2.0. `admitting-a-raw-node.md` says it describes 0.1.x. The usage comments of `00_discover.yml`, `10_onboard.yml`, `scripts/inventory-args` and `require-client-inventory.yml` name `~/.private/uc/example-org/uc-inventory`. `05_admit.yml`'s usage comment changed in step two |
+| 5. Documents | `626c8f6` | `en/docs/guides/admit-and-onboard.md`, new. `client-inventories.md` 0.2.0, `batch-secrets.md` 0.1.5, the README, the ROADMAP and the CHANGELOG's Unreleased section for 0.2.0. `admitting-a-raw-node.md` says it describes 0.1.x. The usage comments of `00_discover.yml`, `10_onboard.yml`, `scripts/inventory-args` and `require-client-inventory.yml` name `~/.private/uc/example-org/uc-inventory`. `05_admit.yml`'s usage comment changed in step two |
+| After the step stop | `b64aac3`, `b0a846f`, and the commit of this report's 0.1.1 | `.gitignore` leaves out `.ansible/`, ansible-lint's cache, so `git add -A` cannot commit it. `.ansible-lint` leaves out `roles/`. This report: the vendoring decision, how SSH was checked, the node's kind, the lint findings, and the corrections outside this repository |
 
 ### What uc_firewall enforced, and where each rule is now
 
@@ -64,7 +71,16 @@ Under `~/.secrets/` I opened nothing. Under `~/.private/` I read and wrote nothi
 
 ## The node test of step four
 
-A throwaway node, built by uc-node's `scripts/build` from `handoff` into a temporary client inventory for `example.net`, with a temporary build and fleet secrets root holding a made-up batch `raw-1970-01-01-01`, through `UC_NODE_SECRETS_DIR` and `UC_SECRETS_DIR`. The node definition's `ssh_sources` and every firewall source in the client values were the controller host's address on the Incus bridge, 10.0.0.1 in the register's terms. The temporary inventory's Incus plugin was filtered to the one instance, and every run was limited to it. The instance and the temporary files were removed afterwards. Disk space was checked first: 66 GB free on the root filesystem.
+A throwaway node, built by uc-node's `scripts/build` from `handoff` into a temporary client inventory for `example.net`, with a temporary build and fleet secrets root holding a made-up batch `raw-1970-01-01-01`, through `UC_NODE_SECRETS_DIR` and `UC_SECRETS_DIR`. The node definition's `ssh_sources` and every firewall source in the client values were the controller host's address on the Incus bridge, 10.0.0.1 in the register's terms. The temporary inventory's Incus plugin was filtered to the one instance, and every run was limited to it. The node was an Incus system container, `images:debian/13`, as uc-node's incus platform launches it, without `--vm`. The instance and the temporary files were removed afterwards. Disk space was checked first: 66 GB free on the root filesystem.
+
+Onboarding reaches the node through Incus, so a run would pass whatever the firewall did to port 22. SSH on 22 was therefore checked from the controller host after every stage, besides the ports in the table:
+
+| After | How SSH on 22 was checked |
+| :-- | :-- |
+| Each `10_onboard.yml` | Its own task "wait for SSH to answer as initial" passed, and one manual login as `initial` with the client's key alone, `ssh -F /dev/null -o BatchMode=yes -o IdentitiesOnly=yes`, printed `initial` |
+| Each `20_normalize.yml` and `30_specialize.yml` | The run itself: both reach the node only over SSH as `initial`, the connection onboarding wrote into `onboard/dev/hosts.yml`, and every one of the six passed. Normalize's "confirm reachability", a TCP check of port 22 from the controller host, passed on all four normalize runs |
+
+Not checked: that SSH is refused from a source outside the onboard sources. That needs a second host on another address.
 
 | Step | Result |
 | :-- | :-- |
@@ -93,7 +109,8 @@ Before each commit I ran `tests/run_tests.py`, `ansible-lint` compared with the 
 | `tests/run_tests.py` | 117 tests, all pass |
 | `--syntax-check` | Every playbook and `site.yml` pass |
 | Converge boundary | Passes |
-| `ansible-lint` | Fails, as on the starting tree. 186 findings before, 195 after. Ten are new: four `name[template]` on new tasks in `tasks/admit_candidate.yml`, whose 23 other tasks are named the same way, `"{{ candidate }}: …"`, and six `yaml[line-length]` in the vendored `roles/steelcj.foomuuri`, which is not edited, as the findings in the other vendored roles are not. One is gone: a `name[casing]` on the `uc_firewall` task `30_specialize.yml` no longer has |
+| `ansible-lint` | Fails, as on the starting tree. With `roles/` left out, as `.ansible-lint` now says, 167 findings on the starting tree and 170 on the final one. Four are new, all `name[template]` on new tasks in `tasks/admit_candidate.yml`, named as its 23 other tasks are, `"{{ candidate }}: …"`, so the report reads one line per candidate address. One is gone, `var-naming[no-role-prefix]` in `uc_firewall`'s defaults. Before `roles/` was left out the counts were 186 and 195, the difference being nineteen findings in the other vendored roles and six in `steelcj.foomuuri` |
+| `check_inventory.py` on an admitted host without `raw_node_batch` | Still refused, as before, by `test_admitted_host_needs_a_batch`. The name rule for onboarded and normalized hosts keys on `raw_node_batch`, which promotion carries from `raw/admitted.yml`, where it is required, so a host loses the rule only if its batch is removed by hand |
 | Links and anchors in the changed documents | None broken. The old admission guide's `<a name>` citation anchors were checked by eye |
 | `$6$` and `$y$` in every run's output | None |
 
@@ -126,6 +143,16 @@ None of these stopped a step once the two decisions above were taken. I edited n
 - **The design document.** `en/docs/uc-controller-v0.1.8.md` still describes `admit_candidates`, admission by hostname and `uc_firewall`. It is versioned, so it was left as it is. Suggested: a 0.1.9 with this work.
 - **The older walkthroughs** still show `uc_firewall` output, and are already in the ROADMAP's item for them.
 
+## Corrections outside this repository
+
+Open, for Christopher, and not made by this session:
+
+| Where | Correction |
+| :-- | :-- |
+| uc-node, `en/docs/guides/4-hand-over-to-the-fleet.md`, Admit the node | Replace the conversion to `admit_candidates`, which uc-controller 0.2.0 refuses, with a pointer to uc-controller's Admit and Onboard guide and `admit_from_candidates=true` |
+| uc-contracts, `en/docs/design/raw-node-handoff-inventories-and-secrets-v0.1.2.md`, line 207 | "Known hosts entries are keyed by address, so the name does not change them" becomes: entries are keyed by the admitted name, through `HostKeyAlias`, so they move with the name |
+| uc-contracts, the same document, the fleet inventory examples | `firewall_rules_onboard`, `firewall_rules_normalize` and `firewall_rules_specialize` become `firewall_onboard_ssh`, `firewall_normalize_services` and `firewall_specialize_services`, in the shapes the client inventory template uses |
+
 ## What step six will change in example-org
 
 Admission changes nothing on a node, so step six changes the client inventory only. `dev-example-org` stays as it is, running, with uc-node's firewall.
@@ -137,15 +164,15 @@ Admission changes nothing on a node, so step six changes the client inventory on
 
 ## What remains before 0.2.0
 
-1. Review the branch `handover`, from `7165cb6` to the commit of this report.
+1. Review the branch `handover`, from `7165cb6` to the commit of this report's 0.1.1.
 2. Christopher's go for step six, as narrowed above.
-3. The handoff design's known hosts sentence and firewall examples, in uc-contracts.
-4. uc-node's guide 4, pointing at Admit and Onboard.
-5. Onboarding admitted nodes, if 0.2.0 should onboard `dev.example.org`, or after it.
-6. Cut 0.2.0.
+3. The three corrections outside this repository, above.
+4. Onboarding admitted nodes, if 0.2.0 should onboard `dev.example.org`, or after it.
+5. Cut 0.2.0.
 
 ## Changelog
 
 | Version | Date | Change |
 | :-- | :-- | :-- |
+| 0.1.1 | 2026-11-27 | After review: the vendoring of `steelcj.foomuuri` as a decision, with its check against upstream; how SSH on 22 was checked after each stage, and that the node was a container; the lint counts with `roles/` left out, and the finding that went with `uc_firewall` named correctly; the `raw_node_batch` refusal; the corrections outside this repository; the commits after the stop |
 | 0.1.0 | 2026-11-27 | First version |
