@@ -1,7 +1,7 @@
 ---
 title: Admit and Onboard
 description: What uc-controller does with a node after uc-node hands it over: admitting the candidates of one batch from the client inventory's candidates/, the fully qualified name an admitted node takes, admitting a node uc-node did not build, moving a node admitted under its hostname alone, and the Foomuuri fragments each later stage writes.
-version: 0.1.0
+version: 0.1.1
 status: provisional
 date: 2026-11-27
 language: en-CA
@@ -115,6 +115,15 @@ cd -
 
 `ssh-keygen -lf` prints each key's size, fingerprint, name and type, so the line ending `dev.example.org (ED25519)` holds the fingerprint to compare. `raw/admitted.yml` gains a host `dev.example.org` with its address, port, contract, baseline, machine ID, MAC addresses, batch and the time of admission.
 
+The pre-commit hook runs `check_inventory.py`, then yamllint, which may print line-length warnings for other files, such as key lines in `intake/`:
+
+```text
+./intake/defaults.yml
+  8:121     warning  line too long (131 > 120 characters)  (line-length)
+```
+
+A warning does not stop the commit. `git log --oneline -1` shows that it was made.
+
 ## Nodes uc-node did not build
 
 A node without a candidate, such as a uc-ventoy install, is admitted by address. Without a candidate, admission takes the name from the confirmation's hostname and `admit_client_domain`, which is required:
@@ -155,7 +164,7 @@ sed -i '/^# BEGIN dev, admitted by 05_admit.yml$/,/^# END dev, admitted by 05_ad
 git diff
 ```
 
-`git diff` should show only `dev`'s entry and its block removed. Commit both, then admit the node from its candidate, as above, and commit that admission:
+`git diff` should show only `dev`'s entry and its block removed. When `dev` was the only admitted host, `raw/admitted.yml` is left with `hosts: {}`, as the template has it. Commit both, then admit the node from its candidate, as above, and commit that admission. The hook shows the same warnings as there:
 
 ```sh
 git add raw/admitted.yml ssh/known_hosts
@@ -219,4 +228,5 @@ table inet foomuuri
 
 | Version | Date | Change |
 | :-- | :-- | :-- |
+| 0.1.1 | 2026-11-27 | From step six's run on example-org: the pre-commit hook's line-length warnings, which do not stop a commit, and `hosts: {}` when the moved node was the only admitted host |
 | 0.1.0 | 2026-11-27 | First version, for uc-controller 0.2.0: admitting from `candidates/`, the fully qualified name, admitting by address with `admit_client_domain`, moving a node admitted under its hostname, and the Foomuuri fragments of each stage. Admitted nodes are not onboarded yet |
