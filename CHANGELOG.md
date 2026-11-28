@@ -11,6 +11,7 @@ For 0.2.0: admission's sources and names change, and the firewall role changes o
 ### Added
 
 - `en/docs/sessions/2026-11-26--16-20-08-uc-controller-repository-recreation-session.md`, the record of cleaning the tree of real values, the merge, the recreated repository and release 0.1.7.
+- The handover work's records: the plan and kickoff, `en/docs/sessions/2026-11-27--17-58-28-uc-controller-handover-plan-and-kickoff.md`, the step report for steps one to five, `…-19-42-25-uc-controller-handover-step-report.md`, and the run report for step six on example-org, `…-20-03-53-uc-controller-handover-run-report.md`.
 - `05_admit.yml` admits uc-node's candidates with `admit_from_candidates=true`: every file in the client inventory's `candidates/` whose `raw_node_batch` is `admit_batch_id`. Each gives the node's name, address, port and the host key fingerprint uc-node read through its platform. A `dev`, `stage` or `prod` candidate is refused, before it is contacted, unless the run's onboard stage is `onboard/<label>`; a `raw` one goes with any. A candidate file that is not valid is reported and skipped, and the run exits 2. Admission never changes `candidates/`.
 - `scripts/read_candidates.py` reads the candidates of a batch with PyYAML's `BaseLoader` and checks each against the raw node handoff design's candidate fields, for admission and for `check_inventory.py`.
 - `inventory-template/` gains `intake/` and `candidates/`, uc-node's, each with a `.gitkeep` and a line in its README.
