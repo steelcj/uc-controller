@@ -1,7 +1,7 @@
 ---
 title: Handover for uc-controller, Step Report
 description: What steps one to five of the handover work changed, the decisions taken on the way, the checks and their results, the throwaway node test of the Foomuuri switch, what in the kickoff and the design documents did not fit, the corrections left outside this repository, and what step six will change in example-org.
-version: 0.1.9
+version: 0.1.10
 status: provisional
 date: 2026-11-27
 language: en-CA
@@ -198,12 +198,13 @@ Step six ran as narrowed above, its run report is `141262c`, and the three corre
 3. **uc-controller:** Christopher reviews `handover` against the table of every commit above, with `git log --reverse 7165cb6^..handover`, then merges it into `main` and tags 0.2.0.
 4. **After 0.2.0:** onboarding admitted nodes, through the onboard-contract-nodes kickoff, so `dev.example.org` can be onboarded. Then the ROADMAP's Test the latest versions run, the role catalog in uc-contracts, and uc-node's own review and 0.3.0.
 
-The instance `dev-example-org` is still running in Incus. Retiring it is one of uc-node's open items, and stopping it costs nothing if it is not in use.
+The instance `dev-example-org` is stopped, with `incus stop`, not deleted, in case uc-node's rebuild of `dev.example.org` needs it. Deleting it is left to uc-node's cleanup. The worktrees `~/areas/development/uc-contracts-handover` and `~/areas/development/uc-node-handoff-guide-4` are removed, and uc-contracts' branch `handover` deleted with `git branch -d`.
 
 ## Changelog
 
 | Version | Date | Change |
 | :-- | :-- | :-- |
+| 0.1.10 | 2026-11-27 | `dev-example-org` stopped, not deleted. The two outside worktrees removed, and uc-contracts' `handover` branch deleted |
 | 0.1.9 | 2026-11-27 | Merge order changed: uc-node's `handoff` stays off `main` for this release, and takes guide 4 by a fast-forward. uc-contracts' `handover` fast-forwarded into `main`, and uc-node's `handoff` to `dd59019`, with Christopher's go-ahead. uc-controller's merge and the 0.2.0 tag wait on his review |
 | 0.1.8 | 2026-11-27 | Every commit on `handover`, in a table for the review. What remains is in merge order: uc-contracts, then uc-node with `handoff`, then uc-controller and the 0.2.0 tag, then onboarding admitted nodes, the latest-versions run and the role catalog. What is still open on uc-node's `handoff` |
 | 0.1.7 | 2026-11-27 | The uc-node correction made, in guide 4 0.1.4. No correction outside this repository is open |
