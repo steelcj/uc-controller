@@ -3,11 +3,13 @@
 
     scripts/new-inventory <path>
 
-Copies inventory-template/ to <path>, runs git init there, and sets
-core.hooksPath to .githooks, so the template's pre-commit hook runs before
-every commit. Refuses a path that exists and is not an empty directory.
-Creates no remote and makes no commit: replace the CHANGE-ME values first,
-then commit with UC_CONTROLLER set to this checkout.
+Copies inventory-template/ to <path>, runs git init there with the branch
+main, and sets core.hooksPath to .githooks, so the template's pre-commit
+hook runs before every commit. Refuses a path that exists and is not an
+empty directory. Creates no remote and makes no commit: the first commit
+comes once the CHANGE-ME values are replaced, as uc-node's guide 0, Set Up
+a Client, describes, with UC_CONTROLLER set to this checkout. Prints what
+it made and what to do next.
 """
 from __future__ import annotations
 
@@ -37,14 +39,18 @@ def main(argv: list[str]) -> int:
     shutil.copytree(TEMPLATE, target, dirs_exist_ok=True)
     hook = target / ".githooks" / "pre-commit"
     hook.chmod(0o755)
-    for argv_ in (["git", "init", "-q"], ["git", "config", "core.hooksPath", ".githooks"]):
+    for argv_ in (["git", "init", "-q", "-b", "main"], ["git", "config", "core.hooksPath", ".githooks"]):
         result = subprocess.run(argv_, cwd=target, capture_output=True, text=True)
         if result.returncode != 0:
             return fail(f"{' '.join(argv_)} failed: {result.stderr.strip()}")
-    print(f"Made a client inventory in {target.resolve()}. Next:\n"
-          f"  replace every CHANGE-ME value under {target}/onboard/,\n"
-          f"  delete raw/incus.yml if this client has no Incus server,\n"
-          f"  then commit with UC_CONTROLLER={REPO} set, and keep the repository private.")
+    made = target.resolve()
+    print(f"Made a client inventory in {made}\n"
+          f"  a git repository on the branch main, with its pre-commit hook, no remote and no commit.\n"
+          f"Next, as uc-node's guide 0, Set Up a Client (en/docs/guides/0-set-up-a-client.md in uc-node), describes:\n"
+          f"  replace every CHANGE-ME value under {made / 'onboard'},\n"
+          f"  delete {made / 'raw' / 'incus.yml'} if this client has no Incus server,\n"
+          f"  then make the first commit with UC_CONTROLLER={REPO} set.\n"
+          f"Keep the repository private: it names the client's hosts and addresses.")
     return 0
 
 

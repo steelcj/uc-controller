@@ -8,6 +8,8 @@ How a node is reached and set up is logic, and lives in uc-controller's `invento
 
 | Path | Holds | Written by |
 | :-- | :-- | :-- |
+| `intake/` | uc-node's node definitions, one per node it is to build, without secrets | uc-node's `scripts/new-node` |
+| `candidates/` | uc-node's handoff records, one per node it built, read by admission and never changed by it | uc-node, at the end of a build |
 | `raw/admitted.yml` | Raw nodes admitted under the raw node contract | `05_admit.yml` |
 | `raw/discovered.yml` | Raw nodes found by a subnet scan | `00_discover.yml` |
 | `raw/incus.yml` | The Incus inventory plugin's settings; delete it when there is no Incus server | By hand |
@@ -23,12 +25,14 @@ The generated files are committed, so the history records when each node was adm
 
 ## Using it
 
-Run uc-controller's playbooks from the uc-controller checkout, with `scripts/inventory-args` giving the `-i` options for the stages the playbook needs. It lists uc-controller's defaults first and this repository's directories after them, so a value here overrides a default:
+Run uc-controller's playbooks from the uc-controller checkout, with `scripts/inventory-args` giving the `-i` options for the stages the playbook needs. It lists uc-controller's defaults first and this repository's directories after them, so a value here overrides a default. `intake/` and `candidates/` are never inventory sources. Admitting the candidates of one batch, with the batch name in `$batch`:
 
 ```bash
-ansible-playbook $(scripts/inventory-args ~/uc-inventories/example.org raw onboard/dev) \
-  ingress/playbooks/05_admit.yml -e admit_batch_id=raw-1970-01-01-01 -e @candidates.yml
+ansible-playbook $(scripts/inventory-args ~/.private/uc/example-org/uc-inventory raw onboard/dev) \
+  ingress/playbooks/05_admit.yml -e admit_batch_id="$batch" -e admit_from_candidates=true
 ```
+
+uc-controller's guide `en/docs/guides/admit-and-onboard.md` gives the whole procedure.
 
 ## Where a value goes
 
@@ -39,6 +43,6 @@ A run that combines stages, such as admission with `raw` and `onboard/dev`, merg
 
 ## The pre-commit hook
 
-`.githooks/pre-commit` runs uc-controller's `scripts/check_inventory.py`, which refuses a commit that puts logic or secrets here: connection variables in `group_vars/` or `host_vars/`, an encrypted vault file, a password hash, a private key, a lookup, or an admitted host without a batch or without its host keys in `ssh/known_hosts`. Then it runs `yamllint`.
+`.githooks/pre-commit` runs uc-controller's `scripts/check_inventory.py`, which refuses a commit that puts logic or secrets here: connection variables in `group_vars/` or `host_vars/`, an encrypted vault file, a password hash, a private key, a lookup, an admitted host without a batch, without its host keys in `ssh/known_hosts` or without a fully qualified domain name, or a candidate that does not hold the handoff design's fields. Then it runs `yamllint`, whose line-length limit is a warning: a public key line is often longer, and the hook shows the warning without stopping.
 
 The hook needs `UC_CONTROLLER` set to a uc-controller checkout, and refuses every commit until it is. Without uc-controller, either remove `.githooks/pre-commit`, or commit with `git commit --no-verify`.

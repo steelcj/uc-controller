@@ -8,5 +8,9 @@ rules:
   document-start: disable
   indentation:
     indent-sequences: consistent
+  # A warning, which the pre-commit hook shows and does not stop on. Public
+  # key lines run past any limit: an ed25519 key with a client's comment is
+  # about 130 characters, and an RSA key several hundred.
   line-length:
     max: 120
+    level: warning

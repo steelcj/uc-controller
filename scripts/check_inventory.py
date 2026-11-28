@@ -11,7 +11,7 @@ problem it finds, when:
   directory, or on a group in a hosts file. Set per host, in the hosts files
   that admission, discovery and promote_node.py write, they are allowed;
 - any file holds an ansible-vault header, a crypt hash ($6$, $y$, $2b$) or a
-  private key block;
+  private key block, uc-node's intake/ and candidates/ included;
 - a YAML file uses a lookup (lookup, query, q, or uc_secret) in a template;
 - an admitted host in raw/admitted.yml has no raw_node_batch, or no entry in
   ssh/known_hosts under its inventory name;
@@ -19,7 +19,12 @@ problem it finds, when:
   domain name: every host in raw/admitted.yml, and every host in an
   onboard/<env>/ or normalized/<env>/ hosts.yml that carries raw_node_batch.
   Hosts from the Incus plugin or a subnet scan keep the names they arrive
-  with, and are not checked.
+  with, and are not checked;
+- a file in candidates/ is not a candidate as the raw node handoff design
+  defines it, read as admission reads it, with read_candidates.py.
+
+intake/ and candidates/ are uc-node's, and never inventory sources, so they
+are not read as hosts files.
 
 The template's .githooks/pre-commit runs it before every commit. It checks
 the working tree. Exit status 0 when the inventory is clean, 1 when it is
@@ -34,6 +39,11 @@ import sys
 from pathlib import Path
 
 import yaml
+
+# is_fqdn: a hostname label in front of a domain, where the domain follows
+# the rule uc-node's build.yml applies to client_domain, as 05_admit.yml
+# names an admitted host.
+from read_candidates import is_fqdn, read_candidate
 
 # Variables that indicate logic leaked into a client inventory.
 FORBIDDEN_VARIABLES = (
@@ -51,16 +61,8 @@ TEMPLATE = re.compile(r"\{\{.*?\}\}|\{%.*?%\}", re.S)
 LOOKUP = re.compile(r"\b(?:lookup|query|q)\s*\(|\buc_secret\b")
 YAML_SUFFIXES = (".yml", ".yaml")
 
-# A fully qualified domain name, as 05_admit.yml names an admitted host: a
-# hostname label in front of a domain, where the domain follows the rule
-# uc-node's build.yml applies to client_domain: DNS labels of lowercase
-# letters, digits and hyphens, at least two, at most 253 characters.
-LABEL = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
-FQDN = re.compile(rf"^{LABEL}(?:\.{LABEL}){{2,}}$")
-
-
-def is_fqdn(name: str) -> bool:
-    return len(name) <= 253 and FQDN.match(name) is not None
+# uc-node's directories, which are not inventory sources.
+UC_NODE_DIRS = ("intake", "candidates")
 
 
 def files(root: Path) -> list[Path]:
@@ -132,6 +134,11 @@ def check(root: Path) -> list[str]:
             continue
         if any(LOOKUP.search(block) for block in TEMPLATE.findall(text)):
             problem(path, "uses a lookup; secrets and logic belong in uc-controller")
+        top = path.relative_to(root).parts[0]
+        if top == "candidates":
+            for found in read_candidate(path)[1]:
+                problem(path, f"is not a candidate: {found}")
+            continue
         try:
             data = yaml.safe_load(text)
         except yaml.YAMLError as error:
@@ -148,7 +155,7 @@ def check(root: Path) -> list[str]:
             for name in FORBIDDEN_VARIABLES:
                 if name in data:
                     problem(path, f"sets {name}, which only uc-controller's inventory-defaults/ may set")
-        elif isinstance(data, dict) and "plugin" not in data:
+        elif isinstance(data, dict) and "plugin" not in data and top not in UC_NODE_DIRS:
             for group, body in groups_in(data):
                 group_vars = body.get("vars")
                 if isinstance(group_vars, dict):

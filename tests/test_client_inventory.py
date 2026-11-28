@@ -36,7 +36,7 @@ GIT_ENV = {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1",
 
 def run(argv, cwd=None, env=None, stdin=None):
     return subprocess.run([str(a) for a in argv], cwd=cwd, capture_output=True, text=True,
-                          env=dict(os.environ, **GIT_ENV, **(env or {})), input=stdin)
+                          env={**os.environ, **GIT_ENV, **(env or {})}, input=stdin)
 
 
 def new_client(parent: Path, name: str = "example.org") -> Path:
@@ -140,7 +140,27 @@ class NewInventory(TempDir):
         self.assertTrue(os.access(client / ".githooks/pre-commit", os.X_OK))
         self.assertEqual(run(["git", "remote"], cwd=client).stdout, "")
         self.assertNotEqual(run(["git", "rev-parse", "--verify", "HEAD"], cwd=client).returncode, 0)
+        self.assertEqual(run(["git", "symbolic-ref", "HEAD"], cwd=client).stdout.strip(), "refs/heads/main")
         self.assertEqual((client / "ssh/known_hosts").read_text(), "")
+        for folder in ("intake", "candidates"):
+            self.assertEqual([p.name for p in (client / folder).iterdir()], [".gitkeep"])
+        # What it made, that there is no commit, and the next step.
+        out = result.stdout
+        self.assertIn(f"Made a client inventory in {client.resolve()}", out)
+        self.assertIn("on the branch main", out)
+        self.assertIn("no commit", out)
+        self.assertIn("uc-node's guide 0, Set Up a Client", out)
+        self.assertIn(f"UC_CONTROLLER={REPO}", out)
+        self.assertEqual(result.stderr, "")
+
+    def test_the_branch_is_main_whatever_git_is_configured_with(self):
+        client = self.root / "example.org"
+        config = self.root / "gitconfig"
+        config.write_text("[init]\n\tdefaultBranch = master\n")
+        result = run([sys.executable, SCRIPTS / "new-inventory", client],
+                     env={"GIT_CONFIG_GLOBAL": str(config)})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(run(["git", "symbolic-ref", "HEAD"], cwd=client).stdout.strip(), "refs/heads/main")
 
     def test_an_empty_directory_is_accepted(self):
         client = self.root / "empty"
@@ -182,6 +202,18 @@ class PreCommitHook(TempDir):
     def test_passes_on_the_template(self):
         result = self.commit({"UC_CONTROLLER": str(REPO)})
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_a_long_key_line_is_a_warning(self):
+        # An ed25519 key line with a client's comment, as uc-node's intake/ holds it.
+        key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA" + "x" * 68 + " example-org-raw-initial-id_ed25519"
+        path = self.client / "intake/defaults.yml"
+        path.write_text(f'---\nssh_public_key: "{key}"\n')
+        self.assertGreater(max(len(l) for l in path.read_text().splitlines()), 120)
+        run(["git", "add", "-A"], cwd=self.client)
+        result = self.commit({"UC_CONTROLLER": str(REPO)})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("line too long", result.stdout + result.stderr)
+        self.assertIn("warning", result.stdout + result.stderr)
 
     def test_refuses_logic(self):
         write_yaml(self.client / "onboard/dev/group_vars/extra.yml", {"ansible_user": "root"})
@@ -357,6 +389,70 @@ class CheckInventory(TempDir):
         write_yaml(self.client / "onboard/dev/hosts.yml", {"onboarded": {"hosts": {
             "dev-example-org": {"ansible_host": "10.0.0.21", "uc_origin": "plugin"},
             "disc-203-0-113-20": {"ansible_host": "203.0.113.20"}}}})
+        self.assert_clean()
+
+    def write_candidate(self, name="dev.example.org", **changes) -> Path:
+        values = {"address": "203.0.113.21", "ssh_port": 22,
+                  "fingerprint": "SHA256:EXAMPLEexampleEXAMPLEexampleEXAMPLEexample0",
+                  "raw_node_batch": "raw-1970-01-01-01", "node_label": "dev", "platform": "incus",
+                  "producer": "uc-node", "producer_version": "0.3.0", "contract": "0.3.1",
+                  "built": "1970-01-01T00:00:00-05:00", **changes}
+        lines = [f"# candidates/{name}.yml", f"{name}:"] + [
+            f"  {k}: {v}" if isinstance(v, int) else f'  {k}: "{v}"'
+            for k, v in values.items() if v is not None]
+        path = self.client / "candidates" / f"{name}.yml"
+        path.write_text("\n".join(lines) + "\n")
+        return path
+
+    def test_a_candidate_as_uc_node_writes_it_is_clean(self):
+        self.write_candidate()
+        self.write_candidate("stage.example.org", address="203.0.113.22", node_label="stage")
+        self.assert_clean()
+
+    def test_a_candidate_that_is_not_one(self):
+        for name, changes, message in (
+                ("dev.example.org", {"fingerprint": None}, "is not a candidate: lacks fingerprint"),
+                ("dev.example.org", {"node_label": "test"}, "is not a candidate: node_label is 'test'"),
+                ("dev.example.org", {"ssh_port": "port"}, "is not a candidate: ssh_port is 'port'"),
+                ("dev", {}, "is not a candidate: is keyed by 'dev'")):
+            with self.subTest(changes=changes, name=name):
+                for old in (self.client / "candidates").glob("*.yml"):
+                    old.unlink()
+                path = self.write_candidate(name, **changes)
+                self.assert_refused(f"candidates/{path.name}: {message}")
+        for old in (self.client / "candidates").glob("*.yml"):
+            old.unlink()
+        (self.client / "candidates/dev.example.org.yml").write_text("dev.example.org: [\n")
+        self.assert_refused("candidates/dev.example.org.yml: is not a candidate: is not valid YAML")
+        self.assertEqual(self.check().stderr.count("dev.example.org.yml"), 1)
+
+    @unittest.skipUnless(shutil.which("openssl"), "openssl not on PATH")
+    def test_uc_node_files_hold_no_secrets(self):
+        made = run(["openssl", "passwd", "-6", "-stdin"], stdin="made up for this test\n")
+        self.assertEqual(made.returncode, 0, made.stderr)
+        hashed = made.stdout.strip()
+        cases = {
+            "intake/dev.example.org.yml": f'client_domain: example.org\ninitial_password_hash: "{hashed}"\n',
+            "intake/defaults.yml": "raw_node_batch: \"{{ lookup('ansible.builtin.env', 'BATCH') }}\"\n",
+        }
+        for relative, text in cases.items():
+            with self.subTest(file=relative):
+                path = self.client / relative
+                path.write_text(text)
+                try:
+                    self.assert_refused(f"{relative}: " + ("holds a crypt hash" if "hash" in text
+                                                           else "uses a lookup"))
+                finally:
+                    path.unlink()
+        path = self.write_candidate()
+        path.write_text(path.read_text() + f"# {hashed}\n")
+        self.assert_refused("candidates/dev.example.org.yml: holds a crypt hash")
+
+    def test_intake_files_are_not_hosts_files(self):
+        # A node definition is a flat mapping, never read for group variables.
+        (self.client / "intake/dev.example.org.yml").write_text(
+            "client_domain: example.org\nnode_label: dev\nplatform: incus\n"
+            "initial_username: initial\nraw_node_batch: raw-1970-01-01-01\n")
         self.assert_clean()
 
     def test_invalid_yaml(self):

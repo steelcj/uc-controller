@@ -137,6 +137,14 @@ class IdentityDecisions(TempRepo):
         self.assertEqual(outcome["decision"], "conflict")
         self.assertIn("dev (machine_id and mac, raw/admitted.yml)", outcome["message"])
 
+    def test_uc_nodes_directories_are_not_read(self):
+        for folder in ("intake", "candidates"):
+            with self.subTest(folder=folder):
+                path = self.write(f"{folder}/stray.yml", {"admitted": {"hosts": {
+                    "dev.example.org": {"raw_node_machine_id": ID_4}}}})
+                self.assertEqual(self.decide("stage.example.org", ID_4)["decision"], "new")
+                path.unlink()
+
     def test_the_client_repositorys_git_directory_is_not_read(self):
         self.write(".git/stray.yml", {"admitted": {"hosts": {"deb13-vt-0007.example.org": {"raw_node_machine_id": ID_4}}}})
         outcome = self.decide("deb13-vt-0008.example.org", ID_4)
@@ -244,10 +252,9 @@ class ReadCandidates(TempRepo):
 
     def test_nothing_is_changed(self):
         path = self.candidate()
-        before = path.read_text()
+        before = {p.name: p.read_bytes() for p in path.parent.iterdir()}
         self.read()
-        self.assertEqual(path.read_text(), before)
-        self.assertEqual(sorted(p.name for p in path.parent.iterdir()), ["dev.example.org.yml"])
+        self.assertEqual({p.name: p.read_bytes() for p in path.parent.iterdir()}, before)
 
 
 class PromoteAndReset(TempRepo):

@@ -6,7 +6,8 @@ be. Read-only.
 Covered: the raw source files that list hosts (admitted.yml,
 discovered.yml, hand entries in hosts.yml), each stage's hosts.yml, and
 every host_vars file. Not covered: dynamic plugin configs such as
-raw/incus.yml, which list no hosts themselves, group_vars, and the client
+raw/incus.yml, which list no hosts themselves, group_vars, uc-node's
+intake/ and candidates/, which are not inventory sources, and the client
 repository's .git/.
 
 Runs on Linux, macOS and Windows; requires PyYAML.
@@ -17,6 +18,9 @@ from pathlib import Path
 from typing import Iterator
 
 import yaml
+
+# uc-node's directories in a client inventory, which list no hosts.
+NOT_INVENTORY = ("intake", "candidates")
 
 
 def hosts_in(data, host_vars_file: Path | None = None) -> Iterator[tuple[str, dict]]:
@@ -46,7 +50,7 @@ def inventory_hosts(root: Path) -> Iterator[tuple[Path, str, dict]]:
     under a client inventory's root."""
     for path in sorted(root.rglob("*.y*ml")):
         relative = path.relative_to(root).parts
-        if "group_vars" in relative or ".git" in relative:
+        if "group_vars" in relative or ".git" in relative or relative[0] in NOT_INVENTORY:
             continue
         try:
             with path.open(encoding="utf-8") as handle:
