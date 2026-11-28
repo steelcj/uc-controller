@@ -4,3 +4,5 @@ dist/
 
 /resume.txt
 
+# ansible-lint's cache, made in the working tree when it runs.
+.ansible/
