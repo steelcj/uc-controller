@@ -71,6 +71,17 @@ Dev and stage both stay on port 22 for now. `steelcj.foomuuri` allows only `foom
 
 `onboard/stage` allows SSH from `0.0.0.0/0`, any IPv4 address, which is as open as dev for IPv4. Narrow the IPv4 sources for SSH on stage.
 
+## Roles
+
+### Install the committed outside roles from requirements.yml
+
+`roles/` is for roles developed in uc-controller, and a role developed elsewhere is pinned in `requirements.yml` and installed, as `steelcj.foomuuri` is since 0.2.0. `roles/` still holds sixteen roles committed before that rule: fifteen robertdebock roles, released on Galaxy, and `steelcj.umask`, a fork with no release, pinned to a commit. All sixteen are already pinned in `requirements.yml`. Remove them from `roles/` and install them, and drop their per-role exclusions from `.ansible-lint`, so that `roles/` and its lint settings hold only roles developed here. Not needed for 0.2.0. To settle with it:
+
+- **Where they are installed.** `~/.ansible/roles` is shared with other projects, and already holds other versions of some of these roles: on the controller host on 2026-11-27, `robertdebock.bootstrap` 7.1.7 where 7.3.1 is pinned, `epel` 4.3.1 for 4.1.7, `openssh` 5.1.0 for 5.0.4, `hostname` 3.3.0 for 3.1.11. `ansible-galaxy` leaves a role installed at another version as it is unless given `--force`. A git-ignored directory in the repository, on `roles_path` before `~/.ansible/roles`, would keep uc-controller's pins its own.
+- **Checking the versions.** `tests/run_tests.py` offers to install a role it does not find, but takes a role it finds at any version as installed. `tests/test_firewall_fragments.py` checks `steelcj.foomuuri`'s commit. A check of every role's `meta/.galaxy_install_info` against its pin, in `run_tests.py` or a test of its own, replaces both.
+- **`steelcj.umask`'s source** is `git@github.com:`, over SSH, so installing it needs a GitHub key. `steelcj.foomuuri` comes over HTTPS.
+- **The design document.** Pinned Versions and Bumping a Pinned Version, in `en/docs/uc-controller-v0.1.8.md`, describe the roles as committed, with `git diff roles/` as the review. The next version describes the install and the version check.
+
 ## Ansible features
 
 * fireball mode

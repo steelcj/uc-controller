@@ -20,7 +20,7 @@ Then the run:
 incus snapshot create ex2-test pre-onboard
 
 # 1. roles (pulls steelcj.umask over SSH + the robertdebock roles)
-ansible-galaxy install -r requirements.yml
+ansible-galaxy role install -r requirements.yml -p ~/.ansible/roles
 
 # 2. confirm the raw group and vars resolve
 ansible-inventory -i inventories/raw/incus.yml -i inventories/onboard/dev --graph

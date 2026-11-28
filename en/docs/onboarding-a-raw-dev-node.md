@@ -17,7 +17,7 @@ Build and activate the Ansible virtual environment, then install the roles.
 ```sh
 python3 scripts/make_ansible_venv.py
 . ~/.venvs/ansible/current/bin/activate
-ansible-galaxy install -r requirements.yml
+ansible-galaxy role install -r requirements.yml -p ~/.ansible/roles
 ```
 
 The `requirements.yml` sources `steelcj.umask` from git over SSH, so that fork must be pushed to GitHub and your GitHub SSH key must be available before the install runs. The remaining roles come from Ansible Galaxy.

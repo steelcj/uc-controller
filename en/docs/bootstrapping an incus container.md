@@ -19,7 +19,7 @@ To reset between runs: `incus snapshot restore ex2-test pre-onboard`.
 The playbook calls a dozen `robertdebock.*` roles. Install them into the active venv from the repo’s `requirements.yml`:
 
 ```sh
-ansible-galaxy install -r requirements.yml
+ansible-galaxy role install -r requirements.yml -p ~/.ansible/roles
 ```
 
 If any are missing from that file, the run fails at the first missing role with a clear name.

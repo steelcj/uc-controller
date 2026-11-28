@@ -1,7 +1,7 @@
 ---
 title: Handover for uc-controller, Step Report
 description: What steps one to five of the handover work changed, the decisions taken on the way, the checks and their results, the throwaway node test of the Foomuuri switch, what in the kickoff and the design documents did not fit, the corrections left outside this repository, and what step six will change in example-org.
-version: 0.1.2
+version: 0.1.3
 status: provisional
 date: 2026-11-27
 language: en-CA
@@ -43,7 +43,7 @@ One decision was mine, not in the plan, and was reversed by Christopher after th
 
 | Decision | Taken | Now |
 | :-- | :-- | :-- |
-| Where `steelcj.foomuuri` comes from | I vendored it under `roles/` in step four, at the pinned commit `b62b02b5ee0c7dbf2bf2721aad46cf52ce60ebe3`, because the robertdebock roles and `steelcj.umask` are committed there. The copy equalled `git archive b62b02b5…` of `~/areas/development/ansible-role-foomuuri` file for file | Not vendored. uc-controller's `roles/` is for roles developed in uc-controller, and an outside role is pinned in `requirements.yml` and installed with `ansible-galaxy install -r requirements.yml`, Christopher's rule. The copy is removed, and Ansible finds the installed role on `roles_path`. `tests/test_firewall_fragments.py` reads the installed role, is skipped when it is not installed, and fails when it is not at the pinned commit. The roles already committed under `roles/` are an older exception, left as they are |
+| Where `steelcj.foomuuri` comes from | I vendored it under `roles/` in step four, at the pinned commit `b62b02b5ee0c7dbf2bf2721aad46cf52ce60ebe3`, because the robertdebock roles and `steelcj.umask` are committed there. The copy equalled `git archive b62b02b5…` of `~/areas/development/ansible-role-foomuuri` file for file | Not vendored. uc-controller's `roles/` is for roles developed in uc-controller, and an outside role is pinned in `requirements.yml` and installed with `ansible-galaxy role install -r requirements.yml -p ~/.ansible/roles`, Christopher's rule. Without `-p`, run from the repository, `ansible-galaxy` installs into `roles/`, the first entry on `roles_path`. The copy is removed, and Ansible finds the installed role on `roles_path`. `tests/test_firewall_fragments.py` reads the installed role, is skipped when it is not installed, and fails when it is not at the pinned commit. `tests/run_tests.py` counts a skip as a failure, and offers the operator to install a missing role. The roles already committed under `roles/` are an older exception, left as they are for 0.2.0, with a ROADMAP item to install them the same way |
 
 ## What changed
 
@@ -106,7 +106,7 @@ Before each commit I ran `tests/run_tests.py`, `ansible-lint` compared with the 
 
 | Check | On the final tree |
 | :-- | :-- |
-| `tests/run_tests.py` | 118 tests, all pass. The 118th, since 0.1.1, checks that the installed `steelcj.foomuuri` is at the pinned commit and not under `roles/` |
+| `tests/run_tests.py` | 118 tests, all pass, none skipped. With `steelcj.foomuuri` missing, under an empty home directory, the six firewall tests are skipped and the run exits 1, naming each. Asked, the operator declining or no terminal fails the run with the command to install. Accepting installs the role at the pinned commit into that home's `~/.ansible/roles`, and the firewall tests then pass against it. The 118th, since 0.1.1, checks that the installed `steelcj.foomuuri` is at the pinned commit and not under `roles/` |
 | `--syntax-check` | Every playbook and `site.yml` pass |
 | Converge boundary | Passes |
 | `ansible-lint` | Fails, as on the starting tree. With the outside roles committed under `roles/` left out, as `.ansible-lint` now says, by name, since `roles/` itself is for roles developed here, 167 findings on the starting tree and 170 on the final one. Four are new, all `name[template]` on new tasks in `tasks/admit_candidate.yml`, named as its 23 other tasks are, `"{{ candidate }}: …"`, so the report reads one line per candidate address. One is gone, `var-naming[no-role-prefix]` in `uc_firewall`'s defaults. Before `roles/` was left out the counts were 186 and 195, the difference being nineteen findings in the robertdebock roles committed there and six in the vendored `steelcj.foomuuri`, which is no longer in the repository |
@@ -174,6 +174,7 @@ Admission changes nothing on a node, so step six changes the client inventory on
 
 | Version | Date | Change |
 | :-- | :-- | :-- |
+| 0.1.3 | 2026-11-27 | The install command takes `-p ~/.ansible/roles`, since without it `ansible-galaxy` installs into `roles/`. `tests/run_tests.py` fails on a skip and offers to install a missing role, both checked. The robertdebock roles and `steelcj.umask` are a ROADMAP item, Install the committed outside roles from requirements.yml |
 | 0.1.2 | 2026-11-27 | `steelcj.foomuuri` is not vendored: the decision row records Christopher's rule that `roles/` is for roles developed in uc-controller, and step four's row says the role is installed from `requirements.yml`. `.ansible-lint` lists the committed outside roles by name, and the comments in `ansible.cfg` and `requirements.yml` and the README say what `roles/` is for. 118 tests, and the same 170 lint findings |
 | 0.1.1 | 2026-11-27 | After review: the vendoring of `steelcj.foomuuri` as a decision, with its check against upstream; how SSH on 22 was checked after each stage, and that the node was a container; the lint counts with `roles/` left out, and the finding that went with `uc_firewall` named correctly; the `raw_node_batch` refusal; the corrections outside this repository; the commits after the stop |
 | 0.1.0 | 2026-11-27 | First version |

@@ -7,10 +7,12 @@ play's own variables, and render the role's template on localhost with the
 client inventory template's firewall values. The role is the one installed
 from requirements.yml, found on ansible.cfg's roles_path, and must be at the
 commit requirements.yml pins: install it with
-ansible-galaxy install -r requirements.yml. The tests are skipped when it is
-not installed, and fail when it is installed at another version. They check
-what each fragment accepts, that each call keeps the other two fragments, and
-that a stage with no service removes its fragment. No host is contacted.
+ansible-galaxy role install -r requirements.yml -p ~/.ansible/roles, or say
+yes when tests/run_tests.py offers to. The tests are skipped when it is not
+installed, which run_tests.py counts as a failure, and fail when it is
+installed at another version. They check what each fragment accepts, that
+each call keeps the other two fragments, and that a stage with no service
+removes its fragment. No host is contacted.
 
 The role's own checks, the play's refusals and the result on a node are
 tested on a throwaway node, as the step report of the handover work records.
@@ -32,6 +34,8 @@ import yaml
 
 REPO = Path(__file__).resolve().parent.parent
 ROLE_NAME = "steelcj.foomuuri"
+# -p: run from here, ansible-galaxy would install into roles/, first on roles_path.
+INSTALL = "ansible-galaxy role install -r requirements.yml -p ~/.ansible/roles"
 TEMPLATE = REPO / "inventory-template"
 PLAYBOOKS = {
     "10-base": REPO / "ingress/playbooks/10_onboard.yml",
@@ -82,13 +86,13 @@ def foomuuri_call(playbook: Path) -> tuple[dict, dict]:
 
 
 @unittest.skipUnless(shutil.which("ansible-playbook"), "Ansible not on PATH")
-@unittest.skipUnless(ROLE, f"{ROLE_NAME} is not installed: ansible-galaxy install -r requirements.yml")
+@unittest.skipUnless(ROLE, f"{ROLE_NAME} is not installed: {INSTALL}")
 class Fragments(unittest.TestCase):
     def test_the_installed_role_is_the_pinned_one(self):
         info = load(ROLE / "meta/.galaxy_install_info") if (ROLE / "meta/.galaxy_install_info").is_file() else {}
         self.assertEqual(str(info.get("version")), pinned_version(),
                          f"{ROLE} is not at the commit requirements.yml pins; reinstall it with "
-                         "ansible-galaxy install -r requirements.yml --force")
+                         f"{INSTALL} --force")
         self.assertNotEqual(ROLE.parent, REPO / "roles",
                             f"{ROLE_NAME} is developed in its own repository, not in uc-controller's roles/")
 

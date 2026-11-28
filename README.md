@@ -37,11 +37,11 @@ The firewall is Foomuuri, through `steelcj.foomuuri`: uc-node builds nodes with 
 | `ingress/` | The playbooks and roles that take a node from raw to onboarded, whatever its source |
 | `converge/` | The playbooks and roles that take an onboarded node to normalized and specialized |
 | `shared/` | The `uc_secret` lookup, and the client inventory check every playbook starts with |
-| `roles/` | Roles developed in uc-controller, and the robertdebock roles and `steelcj.umask`, committed from `requirements.yml` earlier. A role developed elsewhere, such as `steelcj.foomuuri`, is pinned in `requirements.yml` and installed with `ansible-galaxy install -r requirements.yml`, not committed |
+| `roles/` | Roles developed in uc-controller, and the robertdebock roles and `steelcj.umask`, committed from `requirements.yml` earlier. A role developed elsewhere, such as `steelcj.foomuuri`, is pinned in `requirements.yml` and installed with `ansible-galaxy role install -r requirements.yml -p ~/.ansible/roles`, not committed. Without `-p`, run from here, `ansible-galaxy` installs into `roles/`, the first entry on `roles_path`. `tests/run_tests.py` offers to install a missing role |
 | `inventory-defaults/` | The logic half of the inventories, one directory per stage, loaded before every client inventory |
 | `inventory-template/` | The layout of a client inventory repository |
 | `scripts/` | The release scripts, and the scripts for client inventories: `inventory-args`, `new-inventory`, `check_inventory.py`, `read_candidates.py`, `promote_node.py`, `demote_node.py` and others |
-| `tests/` | The tests, run with `python3 tests/run_tests.py` |
+| `tests/` | The tests, run with `python3 tests/run_tests.py`, which fails on a skipped test and offers to install a missing role |
 | `en/docs/guides/` | Step-by-step guides |
 
 ## Guides
