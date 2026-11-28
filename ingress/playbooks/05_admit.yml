@@ -10,12 +10,14 @@
 #      not a contract node: it is reported and skipped;
 #   3. check the confirmation with scripts/check_raw_confirmation.py;
 #   4. admit only when the confirmation's ssh_host_keys equal the scanned
-#      keys, and, when a fingerprint read at the node's console is given for
-#      the address, when it is one of them;
-#   5. name it by its fully qualified domain name, <hostname>.<admit_client_domain>,
-#      and match that name and its identity against every stage inventory
-#      with scripts/match_raw_identity.py: known, reinstalled, a name
-#      collision, known under another name, or new;
+#      keys, and, when a fingerprint read at the node's console, or by
+#      uc-node through its platform, is given for the address, when it is
+#      one of them;
+#   5. name it by its fully qualified domain name, its candidate's name or
+#      <hostname>.<admit_client_domain>, and match that name and its
+#      identity against every stage inventory with
+#      scripts/match_raw_identity.py: known, reinstalled, a name collision,
+#      known under another name, or new;
 #   6. write a new node into the client inventory's raw/admitted.yml under
 #      that name, add its host keys to the client inventory's
 #      ssh/known_hosts under the same name, and confirm an
@@ -36,41 +38,53 @@
 # Nothing on a node is changed. The play may run any number of times: a
 # node already admitted is reported as known and left as it is.
 #
+# Admission never changes the client inventory's candidates/.
+#
 # Exit status: 0 when every candidate was admitted, is known, or is not a
 # contract node; 2, after the report, when any candidate was refused or
-# stopped, or an admission could not be confirmed.
+# stopped, a candidate file is not valid, or an admission could not be
+# confirmed.
 #
 # Usage, from the uc-controller checkout, with the client inventory's raw
 # stage and its onboard stage, which defines onboard_ssh_private_key_file:
 #
-#   ansible-playbook $(scripts/inventory-args ~/uc-inventories/example.org raw onboard/dev) \
-#     ingress/playbooks/05_admit.yml -e admit_batch_id=raw-1970-01-01-01 \
-#     -e @candidates.yml
+#   ansible-playbook $(scripts/inventory-args ~/.private/uc/example-org/uc-inventory raw onboard/dev) \
+#     ingress/playbooks/05_admit.yml -e admit_batch_id=raw-YYYY-MM-DD-NN \
+#     -e admit_from_candidates=true
 #
 # The admitted inventory and the known hosts file are the client
 # inventory's, found from the -i sources (uc_client_root). Commit them in the
-# client repository after a run.
+# client repository after a run. See en/docs/guides/admit-and-onboard.md.
 #
 # Candidates come from exactly one of:
-#   admit_candidates            a list of {address, fingerprint}, usually from
-#                               a file given with -e @candidates.yml; each
-#                               fingerprint is read at that node's console
+#   admit_from_candidates=true  every file in the client's candidates/, written
+#                               by uc-node, whose raw_node_batch is
+#                               admit_batch_id. Each names its node, and gives
+#                               its address, port and host key fingerprint,
+#                               which uc-node read through its platform. A
+#                               dev, stage or prod candidate is admitted only
+#                               with the onboard stage of its label; a raw one
+#                               with any
 #   admit_addresses             ADDRESS[,ADDRESS...], with
-#                               admit_expected_fingerprint for one address only
+#                               admit_expected_fingerprint, read at the
+#                               node's console, for one address only
 #   admit_from_discovered=true  every host in the client's raw/discovered.yml
 #
 # Options:
 #   admit_batch_id              batch the nodes were built with (required); its
 #                               password must be in ~/.secrets/uc/fleet/batches/<batch>.yml
 #   admit_client_domain         the domain the nodes are named in, such as
-#                               example.org (required): a node whose
+#                               example.org: required with admit_addresses and
+#                               admit_from_discovered, where a node whose
 #                               confirmation says dev is admitted as
-#                               dev.example.org
-#   admit_ssh_port              expected ssh_port (default 22)
+#                               dev.example.org. Not given with candidates,
+#                               which name their nodes
+#   admit_ssh_port              expected ssh_port, for admit_addresses and
+#                               admit_from_discovered (default 22)
 #   admit_initial_username      expected initial_username (default initial)
 #
 # Admitted nodes are not onboarded by 10_onboard.yml yet; that comes in a
-# later kickoff.
+# later piece of work.
 
 - name: Require a client inventory
   hosts: localhost
@@ -122,18 +136,33 @@
           # uc-controller's inventory-defaults/raw/group_vars/admitted.yml; host keys
           # are in ssh/known_hosts.
 
+    - name: Refuse admit_candidates, which admit_from_candidates replaces
+      ansible.builtin.assert:
+        that: admit_candidates is not defined
+        fail_msg: >-
+          admit_candidates was removed in uc-controller 0.2.0. Admission reads uc-node's
+          candidates from the client inventory's candidates/ itself: give
+          -e admit_from_candidates=true with the batch, and no candidates file.
+        quiet: true
+
     - name: Require the controller key and one way of choosing candidates
       ansible.builtin.assert:
         that:
           - onboard_ssh_private_key_file is defined
-          - ([admit_candidates is defined, admit_addresses is defined,
+          - ([admit_from_candidates | default(false) | bool, admit_addresses is defined,
               admit_from_discovered | default(false) | bool] | select | list | length) == 1
         fail_msg: >-
           Load the client inventory's onboard stage too (scripts/inventory-args
           <client> raw onboard/dev) for onboard_ssh_private_key_file, and give exactly one of
-          -e @candidates.yml (admit_candidates), -e admit_addresses=ADDRESS[,ADDRESS...]
+          -e admit_from_candidates=true, -e admit_addresses=ADDRESS[,ADDRESS...]
           or -e admit_from_discovered=true.
         quiet: true
+
+    - name: Choose the source
+      ansible.builtin.set_fact:
+        admit_source: >-
+          {{ 'candidates' if admit_from_candidates | default(false) | bool
+             else ('addresses' if admit_addresses is defined else 'discovered') }}
 
     # No default: the batch is named on every run.
     - name: Require the batch the candidates were built with
@@ -158,9 +187,10 @@
         admit_batch_short: >-
           {{ lookup('uc_secret', 'batches/' ~ admit_batch_id, key='initial_password') | length < 15 }}
 
-    # Every source here names the node from its confirmation's hostname and
-    # this domain. No default: the domain is a fact about the nodes, and a
-    # client inventory may hold more than one.
+    # admit_addresses and admit_from_discovered name the node from its
+    # confirmation's hostname and this domain. No default: the domain is a
+    # fact about the nodes, and a client inventory may hold more than one. A
+    # candidate names its node itself, so the domain is not given with it.
     - name: Require the domain the nodes are named in
       ansible.builtin.assert:
         that:
@@ -174,37 +204,68 @@
           characters, separated by dots and at most 253 characters in all. A node
           whose confirmation says dev is then admitted as dev.example.org.
         quiet: true
+      when: admit_source != 'candidates'
 
-    - name: Require every entry of admit_candidates to have an address and a console fingerprint
+    - name: Refuse a domain or a port with candidates, which give their own
       ansible.builtin.assert:
         that:
-          - admit_candidates is sequence and admit_candidates is not string
-          - admit_candidates | length > 0
-          - admit_candidates | rejectattr('address', 'defined') | list | length == 0
-          - admit_candidates | rejectattr('fingerprint', 'defined') | list | length == 0
-          - admit_candidates | map(attribute='address') | map('string') | map('trim') | select | list | length == admit_candidates | length
-          - admit_candidates | map(attribute='fingerprint') | map('string') | reject('match', '^SHA256:[A-Za-z0-9+/]{43}$') | list | length == 0
-          - admit_candidates | map(attribute='address') | unique | list | length == admit_candidates | length
+          - admit_client_domain is not defined
+          - admit_ssh_port is not defined
         fail_msg: >-
-          admit_candidates must be a list of entries, each with an address and the
-          SHA256 fingerprint read at that node's console (ssh-keygen -lf
-          /etc/ssh/ssh_host_ed25519_key.pub), with no address twice.
+          A candidate names its node and gives its port, so admit_client_domain and
+          admit_ssh_port are not given with admit_from_candidates.
         quiet: true
-      when: admit_candidates is defined
+      when: admit_source == 'candidates'
 
-    # Each target is {address, fingerprint}: the fingerprint read at the
-    # node's console, or empty. A target may also give its name and its
-    # port; otherwise the name comes from the confirmation's hostname and
-    # admit_client_domain, and the port is admit_port.
-    - name: Take candidates from admit_candidates
-      ansible.builtin.set_fact:
-        admit_targets: >-
-          {{ admit_candidates | map(attribute='address') | map('string') | map('trim')
-             | map('community.general.dict_kv', 'address')
-             | zip(admit_candidates | map(attribute='fingerprint')
-                   | map('community.general.dict_kv', 'fingerprint'))
-             | map('combine') | list }}
-      when: admit_candidates is defined
+    # Each target is {address}, with fingerprint, the one read at the node's
+    # console or by uc-node through its platform, when there is one. A
+    # candidate also gives its name, port and label; otherwise the name comes
+    # from the confirmation's hostname and admit_client_domain, and the port
+    # is admit_port.
+    - name: Take candidates from candidates/
+      when: admit_source == 'candidates'
+      block:
+        # The run's environment, the label a candidate must have to be
+        # admitted, comes from the one onboard stage loaded.
+        - name: Require one onboard environment
+          ansible.builtin.assert:
+            that: uc_client_stages | select('match', '^onboard/') | list | length == 1
+            fail_msg: >-
+              Load exactly one onboard environment with admit_from_candidates, such as
+              scripts/inventory-args <client> raw onboard/dev: a dev, stage or prod
+              candidate is admitted only with the onboard stage of its label.
+            quiet: true
+
+        # BaseLoader, as the raw node contract asks of a confirmation's
+        # reader, and every field checked before it is used.
+        - name: Read the candidates of the batch
+          ansible.builtin.command:
+            argv:
+              - "{{ admit_python }}"
+              - "{{ admit_scripts }}/read_candidates.py"
+              - --inventory
+              - "{{ admit_root }}"
+              - --batch
+              - "{{ admit_batch_id }}"
+              - --compact
+          register: admit_read_candidates
+          changed_when: false
+
+        - name: Take each candidate as a target
+          ansible.builtin.set_fact:
+            admit_environment: "{{ (uc_client_stages | select('match', '^onboard/') | first).split('/')[1] }}"
+            admit_candidate_problems: "{{ (admit_read_candidates.stdout | from_json).problems }}"
+            admit_targets: "{{ (admit_read_candidates.stdout | from_json).candidates }}"
+
+        - name: Require a candidate of the batch
+          ansible.builtin.assert:
+            that: admit_targets | length > 0
+            fail_msg: >-
+              No valid candidate in {{ admit_root }}/candidates/ names the batch
+              {{ admit_batch_id }}{{ (', and ' ~ (admit_read_candidates.stdout | from_json).other_batches
+              ~ ' name other batches') if (admit_read_candidates.stdout | from_json).other_batches else '' }}.
+              {{ ('Not valid: ' ~ (admit_candidate_problems | join('; '))) if admit_candidate_problems else '' }}
+            quiet: true
 
     - name: Take candidates from admit_addresses
       ansible.builtin.set_fact:
@@ -239,7 +300,7 @@
         fail_msg: >-
           No candidates, or admit_expected_fingerprint was given other than with
           one address in admit_addresses, or is not a SHA256 fingerprint as
-          ssh-keygen -l prints it. For several nodes, use admit_candidates.
+          ssh-keygen -l prints it. For several nodes, use their candidates.
         quiet: true
 
     - name: Pair the single console fingerprint with its address
@@ -397,13 +458,15 @@
 
     - name: Report every candidate
       ansible.builtin.debug:
-        msg: "{{ admit_results | default([]) | map(attribute='line') | list }}"
+        msg: >-
+          {{ admit_results | default([]) | map(attribute='line') | list
+             + (admit_candidate_problems | default([]) | map('regex_replace', '^', 'not valid, skipped: ') | list) }}
 
     # Exit status, after the report: 0 when every candidate was admitted, is
     # known, or is not a contract node (no SSH, the key or the confirmation
     # refused), so a subnet scan of ordinary hosts succeeds. 2 when any
-    # candidate was refused or stopped, or an admission could not be
-    # confirmed: those need the operator.
+    # candidate was refused or stopped, a candidate file is not valid, or an
+    # admission could not be confirmed: those need the operator.
     - name: Fail when a candidate was refused or stopped, or not confirmed
       ansible.builtin.fail:
         msg: >-
@@ -412,8 +475,12 @@
              + (['Refused or stopped: ' ~ (admit_attention | map(attribute='address')
                  | zip(admit_attention | map(attribute='outcome'))
                  | map('join', ' ') | join(', '))]
-                if admit_attention | length > 0 else []) }}
+                if admit_attention | length > 0 else [])
+             + (['Candidate files not valid: ' ~ (admit_candidate_problems | default([]) | join('; '))]
+                if admit_candidate_problems | default([]) | length > 0 else []) }}
       vars:
         admit_attention: >-
           {{ admit_results | default([]) | selectattr('outcome', 'in', ['refused', 'stopped']) | list }}
-      when: admit_failed | length > 0 or admit_attention | length > 0
+      when: >-
+        admit_failed | length > 0 or admit_attention | length > 0
+        or admit_candidate_problems | default([]) | length > 0

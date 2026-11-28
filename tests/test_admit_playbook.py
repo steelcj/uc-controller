@@ -171,10 +171,12 @@ class AdmitPlaybook(unittest.TestCase):
         (secrets / "batches").mkdir(parents=True)
         secrets.chmod(0o700)
         (secrets / "batches").chmod(0o700)
-        # raw-1970-01-01-02 has a password under 15 characters, for RN-ACC-08.
+        # raw-1970-01-01-02 has a password under 15 characters, for RN-ACC-08,
+        # and raw-1970-01-01-03 has no candidates.
         cls.batch = "raw-1970-01-01-01"
         for batch, password in ((cls.batch, "tannery unbiased pebble canopy mullets gutter 4"),
-                                ("raw-1970-01-01-02", "abc123")):
+                                ("raw-1970-01-01-02", "abc123"),
+                                ("raw-1970-01-01-03", "gutter tannery canopy unbiased mullets 5")):
             path = secrets / "batches" / f"{batch}.yml"
             path.write_text(yaml.safe_dump({"initial_password": password}))
             path.chmod(0o600)
@@ -243,9 +245,10 @@ class AdmitPlaybook(unittest.TestCase):
     def save_nodes(cls):
         Path(cls.env["FAKE_NODES"]).write_text(json.dumps(cls.nodes))
 
-    def admit(self, *extra, extra_env=None):
+    def admit(self, *extra, extra_env=None, stages=None):
         result = self.run_cmd(
-            ["ansible-playbook", *self.raw_onboard, "ingress/playbooks/05_admit.yml",
+            ["ansible-playbook", *(self.inventory_args(*stages) if stages else self.raw_onboard),
+             "ingress/playbooks/05_admit.yml",
              "-e", f"onboard_ssh_private_key_file={self.client_key}",
              "-e", f"admit_batch_id={self.batch}", *self.domain(extra), *extra],
             check=False, extra_env=extra_env)
@@ -256,7 +259,8 @@ class AdmitPlaybook(unittest.TestCase):
     @staticmethod
     def domain(extra) -> list[str]:
         """-e admit_client_domain=example.org, unless the test gives its own."""
-        given = any(str(arg).startswith("admit_client_domain=") for arg in extra)
+        given = any(str(arg).startswith(("admit_client_domain=", "admit_from_candidates=", "@"))
+                    for arg in extra)
         return [] if given else ["-e", f"admit_client_domain={DOMAIN}"]
 
     def admitted(self) -> dict:
@@ -502,60 +506,145 @@ class AdmitPlaybook(unittest.TestCase):
         return subprocess.run(["ssh-keygen", "-l", "-E", "sha256", "-f", pub],
                               capture_output=True, text=True, check=True).stdout.split()[1]
 
-    def candidates(self, entries, name="candidates") -> str:
-        path = self.repo / f"{name}.yml"
-        path.write_text(yaml.safe_dump({"admit_candidates": entries}))
-        return f"@{path}"
+    def write_candidate(self, name, address, batch, label, fingerprint=None, **fields) -> Path:
+        """A candidate file as uc-node writes it, every string quoted."""
+        values = {"address": address, "ssh_port": 22,
+                  "fingerprint": fingerprint or self.fingerprint(address),
+                  "raw_node_batch": batch, "node_label": label, "platform": "incus",
+                  "producer": "uc-node", "producer_version": "0.3.0", "contract": "0.3.1",
+                  "built": "1970-01-01T00:00:00-05:00", **fields}
+        lines = [f"# candidates/{name}.yml", f"{name}:"] + [
+            f"  {k}: {v}" if isinstance(v, int) else f'  {k}: "{v}"'
+            for k, v in values.items() if v is not None]
+        path = self.client / "candidates" / f"{name}.yml"
+        path.parent.mkdir(exist_ok=True)
+        path.write_text("\n".join(lines) + "\n")
+        return path
 
-    def test_y_candidates_file(self):
-        self.add_node("203.0.113.80", "deb13-vt-0008", 8)
-        self.add_node("203.0.113.81", "deb13-vt-0009", 9)
-        self.add_node("203.0.113.82", "deb13-vt-0010", 10)
+    def candidates_state(self) -> dict:
+        folder = self.client / "candidates"
+        return {p.name: p.read_text() for p in sorted(folder.iterdir())} if folder.is_dir() else {}
+
+    def test_y_candidates(self):
+        """admit_from_candidates reads uc-node's candidates/, one batch per run."""
+        second = "raw-1970-01-01-02"
+        self.add_node("203.0.113.80", "stage", 8)
+        self.add_node("203.0.113.81", "raw", 9)
+        self.add_node("203.0.113.82", "prod", 10)
+        self.add_node("203.0.113.83", "dev", 11)
+        self.add_node("203.0.113.84", "raw", 12)
         self.save_nodes()
+        self.write_candidate("stage.example.net", "203.0.113.80", self.batch, "stage")
+        self.write_candidate("raw.example.net", "203.0.113.81", self.batch, "raw")
+        self.write_candidate("prod.example.net", "203.0.113.82", second, "raw")
+        # The node at .83 says it is dev; its candidate names it stage.
+        self.write_candidate("stage.example.com", "203.0.113.83", second, "raw")
+        # The fingerprint of another node.
+        self.write_candidate("raw.example.com", "203.0.113.84", second, "raw",
+                             fingerprint=self.fingerprint("203.0.113.81"))
+        broken = [self.client / "candidates/dev.example.net.yml",
+                  self.write_candidate("prod.example.com", "203.0.113.85", self.batch, "dev",
+                                       fingerprint="SHA256:EXAMPLEexampleEXAMPLEexampleEXAMPLEexample5")]
+        broken[0].write_text('dev.example.net:\n  address: "203.0.113.86\n')
+        # A candidate without its fingerprint field.
+        text = broken[1].read_text()
+        broken[1].write_text("\n".join(l for l in text.splitlines() if "fingerprint" not in l) + "\n")
+        state = self.candidates_state()
+        candidates = ["-e", "admit_from_candidates=true"]
 
-        # Each node with the fingerprint read at its own console: admitted,
-        # with no trust-on-first-use warning.
-        good = self.admit("-e", self.candidates([
-            {"address": "203.0.113.80", "fingerprint": self.fingerprint("203.0.113.80")},
-            {"address": "203.0.113.81", "fingerprint": self.fingerprint("203.0.113.81", "ecdsa")}]))
-        self.assertEqual(good.returncode, 0, good.stdout[-2000:])
-        self.assertIn("203.0.113.80: admitted deb13-vt-0008.example.org", good.stdout)
-        self.assertIn("203.0.113.81: admitted deb13-vt-0009.example.org", good.stdout)
-        self.assertNotIn("PA-HOST-01", good.stdout)
+        # The first batch, with onboard/dev: raw.example.net is admitted under
+        # its candidate's name; the stage candidate is refused before it is
+        # contacted; the broken files are reported and skipped; exit 2.
+        first = self.admit(*candidates)
+        out = first.stdout
+        self.assertEqual(first.returncode, 2, out[-3000:])
+        self.assertIn("203.0.113.81: admitted raw.example.net - raw.example.net is new on every count", out)
+        self.assertNotIn("PA-HOST-01", out)
+        self.assertIn("203.0.113.80: refused stage.example.net - its candidate has node_label stage, "
+                      "and this run is onboard/dev: admit it with onboard/stage", out)
+        self.assertNotIn("203.0.113.80: not-contract", out)
+        self.assertIn("not valid, skipped: candidates/dev.example.net.yml: is not valid YAML", out)
+        self.assertIn("not valid, skipped: candidates/prod.example.com.yml: lacks fingerprint", out)
+        self.assertIn("Candidate files not valid:", out)
+        self.assertNotIn("prod.example.net", out)
+        self.assertIn("raw.example.net", self.admitted())
+        self.assertEqual(self.admitted()["raw.example.net"]["raw_node_batch"], self.batch)
+        self.assertNotIn("stage.example.net", self.admitted())
+        self.assertIn("# BEGIN raw.example.net, admitted by 05_admit.yml", self.known_hosts())
+        self.assertEqual(self.candidates_state(), state)
+        for path in broken:
+            path.unlink()
+        self.check_inventory()
+        state = self.candidates_state()
 
-        # A fingerprint that does not belong to the node: refused, exit 2;
-        # the other entry is still handled.
-        before = (self.admitted(), self.known_hosts())
-        wrong = self.admit("-e", self.candidates([
-            {"address": "203.0.113.80", "fingerprint": self.fingerprint("203.0.113.80")},
-            {"address": "203.0.113.82", "fingerprint": self.fingerprint("203.0.113.80")}]))
-        self.assertEqual(wrong.returncode, 2, wrong.stdout[-2000:])
-        self.assertIn("203.0.113.80: known deb13-vt-0008.example.org", wrong.stdout)
-        self.assertIn("203.0.113.82: refused deb13-vt-0010.example.org - the console fingerprint", wrong.stdout)
-        self.assertEqual((self.admitted(), self.known_hosts()), before)
+        # The second batch: prod.example.net, labelled raw, is admitted with
+        # onboard/dev; the hostname that is not its name's first label and the
+        # wrong fingerprint are refused; exit 2.
+        two = self.admit(*candidates, "-e", f"admit_batch_id={second}")
+        out = two.stdout
+        self.assertEqual(two.returncode, 2, out[-3000:])
+        self.assertIn("203.0.113.82: admitted prod.example.net", out)
+        self.assertIn("203.0.113.83: refused stage.example.com - the confirmation names the host dev, "
+                      "which is not the first label of stage.example.com from its candidate", out)
+        self.assertIn("203.0.113.84: refused raw.example.com - the fingerprint in its candidate, "
+                      f"{self.fingerprint('203.0.113.81')}, is not among the host keys", out)
+        self.assertNotIn("raw.example.net", out)
+        self.assertEqual(self.admitted()["prod.example.net"]["raw_node_batch"], second)
+        self.assertNotIn("stage.example.com", self.admitted())
+        self.assertNotIn("raw.example.com", self.admitted())
+        self.assertEqual(self.candidates_state(), state)
 
-        # Rejected before anything is contacted.
-        fp = self.fingerprint("203.0.113.82")
-        for name, args in {
-            "missing fingerprint": ["-e", self.candidates(
-                [{"address": "203.0.113.82"}], "c-missing")],
-            "malformed fingerprint": ["-e", self.candidates(
-                [{"address": "203.0.113.82", "fingerprint": "MD5:00:11"}], "c-malformed")],
-            "address twice": ["-e", self.candidates(
-                [{"address": "203.0.113.82", "fingerprint": fp},
-                 {"address": "203.0.113.82", "fingerprint": fp}], "c-twice")],
-            "two candidate sources": ["-e", self.candidates(
-                [{"address": "203.0.113.82", "fingerprint": fp}], "c-two-sources"),
-                "-e", "admit_addresses=203.0.113.82"],
-            "one console fingerprint for two addresses": [
-                "-e", "admit_addresses=203.0.113.80,203.0.113.82",
-                "-e", f"admit_expected_fingerprint={fp}"],
+        # The first batch again, with onboard/stage: raw.example.net is known,
+        # and stage.example.net is admitted now. Exit 0.
+        staged = self.admit(*candidates, stages=("raw", "onboard/stage"))
+        self.assertEqual(staged.returncode, 0, staged.stdout[-3000:])
+        self.assertIn("203.0.113.81: known raw.example.net", staged.stdout)
+        self.assertIn("203.0.113.80: admitted stage.example.net", staged.stdout)
+        self.assertEqual(self.candidates_state(), state)
+        self.check_inventory()
+
+        # A batch with no candidates: refused, saying how many name other batches.
+        none = self.admit(*candidates, "-e", "admit_batch_id=raw-1970-01-01-03")
+        self.assertEqual(none.returncode, 2, none.stdout[-1500:])
+        self.assertIn("No valid candidate in", none.stdout)
+        self.assertIn("names the batch raw-1970-01-01-03, and 5 name other batches", none.stdout)
+        self.assertNotIn("fetch the SSH host keys", none.stdout)
+
+        # Refused before anything is contacted.
+        listed = self.repo / "candidates.yml"
+        listed.write_text(yaml.safe_dump({"admit_candidates": [
+            {"address": "203.0.113.82", "fingerprint": self.fingerprint("203.0.113.82")}]}))
+        for name, (extra, stages, message) in {
+            "admit_candidates": (["-e", f"@{listed}", "-e", "admit_client_domain=example.org"],
+                                 None, "admit_candidates was removed in uc-controller 0.2.0"),
+            "a domain with candidates": (candidates + ["-e", "admit_client_domain=example.org"],
+                                         None, "admit_client_domain and admit_ssh_port are not given"),
+            "a port with candidates": (candidates + ["-e", "admit_ssh_port=2222"],
+                                       None, "admit_client_domain and admit_ssh_port are not given"),
+            "two sources": (candidates + ["-e", "admit_addresses=203.0.113.82"], None,
+                            "give exactly one of -e admit_from_candidates=true"),
+            "two onboard stages": (candidates, ("raw", "onboard/dev", "onboard/stage"),
+                                   "Load exactly one onboard environment"),
+            "a console fingerprint with candidates": (
+                candidates + ["-e", f"admit_expected_fingerprint={self.fingerprint('203.0.113.82')}"],
+                None, "admit_expected_fingerprint was given other than"),
         }.items():
             with self.subTest(case=name):
-                result = self.admit(*args)
+                result = self.admit(*extra, stages=stages)
                 self.assertEqual(result.returncode, 2, result.stdout[-1500:])
+                self.assertIn(message, result.stdout)
                 self.assertNotIn("fetch the SSH host keys", result.stdout)
-        self.assertNotIn("deb13-vt-0010.example.org", self.admitted())
+        self.assertEqual(self.candidates_state(), state)
+
+        # Remove the candidates, so the tests after this one see none.
+        for path in (self.client / "candidates").iterdir():
+            path.unlink()
+
+    def test_y_one_console_fingerprint_for_two_addresses(self):
+        result = self.admit("-e", "admit_addresses=203.0.113.10,203.0.113.50",
+                            "-e", f"admit_expected_fingerprint={self.fingerprint('203.0.113.10')}")
+        self.assertEqual(result.returncode, 2, result.stdout[-1500:])
+        self.assertNotIn("fetch the SSH host keys", result.stdout)
 
     def test_z_names(self):
         """The admitted name is the fully qualified domain name, from the

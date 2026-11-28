@@ -3,9 +3,10 @@
 #
 # Steps 1 to 5 of 05_admit.yml for one candidate, on the controller.
 # Read-only towards the node: it runs ssh-keyscan and one cat as initial.
-# The candidate is admit_target, {address, fingerprint, name, port}, where
-# fingerprint (the one read at the node's console), name and port may be
-# absent, and candidate is its address. Appends one result to admit_results:
+# The candidate is admit_target, {address, fingerprint, name, port,
+# node_label}, where fingerprint (read at the node's console, or by uc-node
+# through its platform), name, port and node_label may be absent, and
+# candidate is its address. Appends one result to admit_results:
 #
 #   address, hostname (the confirmation's), name (the fully qualified domain
 #   name it is admitted under), outcome, message, findings (non-failing notes
@@ -17,9 +18,10 @@
 # hostname must then be its first label. Otherwise it is
 # <hostname>.<admit_client_domain>.
 #
-# Outcomes: admitted, known, refused (breaks the contract, host keys differ
-# from the confirmation, or, for a known node, from ssh/known_hosts, or the
-# hostname does not fit the name), stopped (reinstall, name collision, known
+# Outcomes: admitted, known, refused (a candidate's label is not the run's
+# environment, the node breaks the contract, its host keys differ from the
+# confirmation, or, for a known node, from ssh/known_hosts, or its hostname
+# does not fit the name), stopped (reinstall, name collision, known
 # under another name), not-contract (no SSH, or the controller key or
 # confirmation is refused).
 # Every step after the first runs only while the outcome is pending.
@@ -38,6 +40,18 @@
     admit_expected: "{{ admit_target.fingerprint | default('', true) }}"
     admit_one_port: "{{ admit_target.port | default(admit_port) | int }}"
 
+# 0. A candidate built for another environment is refused before the node
+# is contacted. raw means no destination yet, so it goes with any.
+- name: "{{ candidate }}: refuse a candidate built for another environment"
+  ansible.builtin.set_fact:
+    admit_one: >-
+      {{ admit_one | combine({'outcome': 'refused', 'message':
+         'its candidate has node_label ' ~ admit_target.node_label ~ ', and this run is onboard/'
+         ~ admit_environment ~ ': admit it with onboard/' ~ admit_target.node_label}) }}
+  when:
+    - admit_target.node_label is defined
+    - admit_target.node_label not in ['raw', admit_environment]
+
 # 1. Host keys, into a temporary file only.
 - name: "{{ candidate }}: fetch the SSH host keys"
   ansible.builtin.command:
@@ -45,12 +59,15 @@
   register: admit_scan
   changed_when: false
   failed_when: false
+  when: admit_one.outcome == 'pending'
 
 - name: "{{ candidate }}: no SSH server"
   ansible.builtin.set_fact:
     admit_one: "{{ admit_one | combine({'outcome': 'not-contract',
                    'message': 'no SSH server answered on port ' ~ admit_one_port}) }}"
-  when: admit_scan.stdout_lines | reject('match', '^#') | list | length == 0
+  when:
+    - admit_one.outcome == 'pending'
+    - admit_scan.stdout_lines | reject('match', '^#') | list | length == 0
 
 - name: "{{ candidate }}: keep the scanned keys for this connection only"
   ansible.builtin.copy:
@@ -212,7 +229,8 @@
   ansible.builtin.set_fact:
     admit_one: >-
       {{ admit_one | combine({'outcome': 'refused', 'message':
-         'the console fingerprint ' ~ admit_expected ~ ' is not among the host keys '
+         ('the fingerprint in its candidate, ' if admit_target.name is defined else 'the console fingerprint ')
+         ~ admit_expected ~ (',' if admit_target.name is defined else '') ~ ' is not among the host keys '
          ~ (admit_scanned | join(', '))}) }}
   when:
     - admit_one.outcome == 'pending'

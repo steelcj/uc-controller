@@ -143,6 +143,113 @@ class IdentityDecisions(TempRepo):
         self.assertEqual(outcome["decision"], "new")
 
 
+CANDIDATE = {
+    "address": "203.0.113.21", "ssh_port": "22",
+    "fingerprint": "SHA256:EXAMPLEexampleEXAMPLEexampleEXAMPLEexample0",
+    "raw_node_batch": "raw-1970-01-01-01", "node_label": "dev", "platform": "incus",
+    "producer": "uc-node", "producer_version": "0.3.0", "contract": "0.3.1",
+    "built": "1970-01-01T00:00:00-05:00",
+}
+
+
+class ReadCandidates(TempRepo):
+    def candidate(self, name="dev.example.org", file=None, **changes):
+        values = {k: v for k, v in {**CANDIDATE, **changes}.items() if v is not None}
+        lines = [f"{name}:"] + [f"  {k}: {v}" if k == "ssh_port" else f'  {k}: "{v}"'
+                                for k, v in values.items()]
+        path = self.client / "candidates" / (file or f"{name}.yml")
+        path.parent.mkdir(exist_ok=True)
+        path.write_text("\n".join(lines) + "\n")
+        return path
+
+    def read(self, batch="raw-1970-01-01-01"):
+        result = self.run_script("read_candidates.py", "--inventory", str(self.client), "--batch", batch)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
+
+    def test_a_valid_candidate(self):
+        self.candidate()
+        self.assertEqual(self.read(), {"candidates": [{
+            "name": "dev.example.org", "address": "203.0.113.21", "port": 22,
+            "fingerprint": "SHA256:EXAMPLEexampleEXAMPLEexampleEXAMPLEexample0",
+            "node_label": "dev", "file": "candidates/dev.example.org.yml"}],
+            "problems": [], "other_batches": 0})
+
+    def test_no_candidates_folder(self):
+        self.assertEqual(self.read(), {"candidates": [], "problems": [], "other_batches": 0})
+
+    def test_other_batches_are_counted_not_read(self):
+        self.candidate()
+        self.candidate("stage.example.org", raw_node_batch="raw-1970-01-01-02", address="203.0.113.22")
+        outcome = self.read()
+        self.assertEqual([c["name"] for c in outcome["candidates"]], ["dev.example.org"])
+        self.assertEqual(outcome["other_batches"], 1)
+        self.assertEqual([c["name"] for c in self.read("raw-1970-01-01-02")["candidates"]],
+                         ["stage.example.org"])
+
+    def test_values_are_read_as_strings(self):
+        # Unquoted, PyYAML's SafeLoader would read these as a number and a date.
+        path = self.candidate()
+        text = path.read_text().replace('"0.3.1"', "0.3.1").replace(
+            '"1970-01-01T00:00:00-05:00"', "1970-01-01T00:00:00-05:00")
+        path.write_text(text)
+        self.assertEqual(self.read()["problems"], [])
+
+    def test_problems(self):
+        cases = {
+            "not yaml": (lambda: (self.client / "candidates").mkdir(exist_ok=True) or
+                         (self.client / "candidates/dev.example.org.yml").write_text("dev.example.org: [\n"),
+                         "is not valid YAML near line"),
+            "two nodes": (lambda: (self.client / "candidates").mkdir(exist_ok=True) or
+                          (self.client / "candidates/dev.example.org.yml").write_text(
+                              "a.example.org: {}\nb.example.org: {}\n"),
+                          "must hold one node"),
+            "a hostname key": (lambda: self.candidate("dev", file="dev.yml"),
+                               "is keyed by 'dev', not a fully qualified domain name"),
+            "file name": (lambda: self.candidate(file="other.yml"),
+                          "holds dev.example.org, so it must be named dev.example.org.yml"),
+            "missing field": (lambda: self.candidate(fingerprint=None), "lacks fingerprint"),
+            "extra field": (lambda: self.candidate(hostname="dev"),
+                            "has fields the handoff design does not define: hostname"),
+            "fingerprint": (lambda: self.candidate(fingerprint="SHA256:short"),
+                            "fingerprint is 'SHA256:short', not a SHA256 fingerprint"),
+            "port": (lambda: self.candidate(ssh_port="70000"), "ssh_port is '70000', not a port"),
+            "batch": (lambda: self.candidate(raw_node_batch="raw-EXAMPLE-01"),
+                      "raw_node_batch is 'raw-EXAMPLE-01', not a batch name"),
+            "label": (lambda: self.candidate(node_label="test"), "node_label is 'test', not one of"),
+            "address": (lambda: self.candidate(address="not an address"), "address is 'not an address'"),
+            "built": (lambda: self.candidate(built="1970-01-01T00:00:00"),
+                      "built is '1970-01-01T00:00:00', not ISO 8601 with an offset"),
+            "a list": (lambda: self.candidate().write_text(self.candidate().read_text().replace(
+                '"203.0.113.21"', '["203.0.113.21"]')), "address is not a single value"),
+        }
+        for name, (make, message) in cases.items():
+            with self.subTest(case=name):
+                shutil.rmtree(self.client / "candidates", ignore_errors=True)
+                make()
+                outcome = self.read()
+                self.assertEqual(outcome["candidates"], [])
+                self.assertEqual(len(outcome["problems"]), 1, outcome["problems"])
+                self.assertIn(message, outcome["problems"][0])
+                self.assertTrue(outcome["problems"][0].startswith("candidates/"))
+
+    def test_an_address_twice(self):
+        self.candidate()
+        self.candidate("stage.example.org")
+        outcome = self.read()
+        self.assertEqual([c["name"] for c in outcome["candidates"]], ["dev.example.org"])
+        self.assertEqual(outcome["problems"], [
+            "candidates/stage.example.org.yml: has the address 203.0.113.21, as "
+            "candidates/dev.example.org.yml does"])
+
+    def test_nothing_is_changed(self):
+        path = self.candidate()
+        before = path.read_text()
+        self.read()
+        self.assertEqual(path.read_text(), before)
+        self.assertEqual(sorted(p.name for p in path.parent.iterdir()), ["dev.example.org.yml"])
+
+
 class PromoteAndReset(TempRepo):
     def promote(self, host, *extra):
         return self.run_script(
