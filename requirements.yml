@@ -1,8 +1,9 @@
 ---
 # Every role and collection is pinned to an exact version: the versions the
 # lifecycle was verified with (see Verification Status in the design
-# document), apart from the four roles whose comments say otherwise. To move
-# one, see "Bumping a Pinned Version" there.
+# document): the last set confirmed to work, listed in the ROADMAP's Roles,
+# Confirmed working. A bump to a newer release is tested on its own branch
+# before its pin changes, as the ROADMAP's Test the latest versions says.
 #
 # Roles are installed into ~/.ansible/roles, never roles/, which is for roles
 # developed in uc-controller:
@@ -25,8 +26,8 @@ collections:
 
 roles:
   - name: robertdebock.bootstrap
-    # The version in ~/.ansible/roles when the roles left roles/, on 2026-11-27,
-    # in place of 7.3.1. Not yet run through the lifecycle at this version.
+    # 7.1.7, the copy committed under roles/ and run by the handover step four
+    # node test. The pin said 7.3.1, which was never installed here.
     version: "7.1.7"
   # Our fork of robertdebock.umask, adding the umask_system option for a
   # system-wide umask (login.defs + profile.d). Sourced from git, not Galaxy,
@@ -39,9 +40,7 @@ roles:
     # of master on 2026-11-13.
     version: 424960626fd48d86ecd23ba1654fdf8b722f7821
   - name: robertdebock.epel
-    # The version in ~/.ansible/roles when the roles left roles/, on 2026-11-27,
-    # in place of 4.1.7. Not yet run through the lifecycle at this version.
-    version: 4.3.1
+    version: 4.1.7
   - name: robertdebock.update
     version: 3.1.10
 #  - name: robertdebock.grub
@@ -58,9 +57,7 @@ roles:
   - name: robertdebock.ntp
     version: 3.1.7
   - name: robertdebock.openssh
-    # The version in ~/.ansible/roles when the roles left roles/, on 2026-11-27,
-    # in place of 5.0.4. Not yet run through the lifecycle at this version.
-    version: 5.1.0
+    version: 5.0.4
   - name: robertdebock.fail2ban
     version: 5.0.7
   # The Foomuuri firewall. No release yet, so pinned to a commit.
@@ -88,8 +85,6 @@ roles:
   - name: robertdebock.sysctl
     version: 2.1.10
   - name: robertdebock.hostname
-    # The version in ~/.ansible/roles when the roles left roles/, on 2026-11-27,
-    # in place of 3.1.11. Not yet run through the lifecycle at this version.
-    version: 3.3.0
+    version: 3.1.11
   - name: robertdebock.rsyslog
     version: 5.0.1

@@ -73,9 +73,62 @@ Dev and stage both stay on port 22 for now. `steelcj.foomuuri` allows only `foom
 
 ## Roles
 
-### Run the lifecycle with the four re-pinned roles
+### Version policy
 
-When the roles left `roles/`, on 2026-11-27, `~/.ansible/roles` already held four of them at other versions, and `requirements.yml` was moved to those versions rather than forcing the pinned ones over a directory other projects share: `robertdebock.bootstrap` 7.1.7 in place of 7.3.1, an older release, `robertdebock.epel` 4.3.1 for 4.1.7, `robertdebock.openssh` 5.1.0 for 5.0.4 and `robertdebock.hostname` 3.3.0 for 3.1.11. Run onboard, normalize and specialize on a throwaway node of each supported family with these versions, and either keep them, recording the run in the design document's Verification Status, or move back with `--force`. If sharing `~/.ansible/roles` with other projects keeps pulling versions apart, give uc-controller its own git-ignored install directory, on `roles_path` before `~/.ansible/roles`.
+We aim to run the latest release of every role. requirements.yml always pins the last set confirmed to work, and each bump to the latest is tested on a branch before its pin changes.
+
+### Confirmed working
+
+Confirmed on 2026-11-27 by the handover step 4 node test (throwaway uc-node node, Incus system container, images:debian/13) through onboard, normalize and specialize. The versions are those of the copies then committed under `roles/`, read from each copy's `meta/.galaxy_install_info` at `24d8b5c`. `robertdebock.bootstrap` was 7.1.7, though requirements.yml pinned 7.3.1, and requirements.yml now pins 7.1.7: its files equal Galaxy's 7.1.7. `steelcj.umask`'s copy said `master`, and its files equal the pinned commit.
+
+| Role | Version |
+|---|---|
+| robertdebock.bootstrap | 7.1.7 |
+| steelcj.umask | 42496062 |
+| robertdebock.epel | 4.1.7 |
+| robertdebock.update | 3.1.10 |
+| robertdebock.locale | 3.3.12 |
+| robertdebock.auto_update | 3.1.9 |
+| robertdebock.cron | 2.2.8 |
+| robertdebock.ntp | 3.1.7 |
+| robertdebock.openssh | 5.0.4 |
+| robertdebock.fail2ban | 5.0.7 |
+| steelcj.foomuuri | b62b02b5 |
+| robertdebock.users | 6.1.8 |
+| robertdebock.selinux | 3.1.12 |
+| robertdebock.auditd | 3.2.13 |
+| robertdebock.sysctl | 2.1.10 |
+| robertdebock.hostname | 3.1.11 |
+| robertdebock.rsyslog | 5.0.1 |
+
+### Test the latest versions
+
+On the next run, on its own branch:
+
+1. Look up the latest release of each pinned role. For the robertdebock roles, Robert's chart, <https://robertdebock.nl/ansible.html>, shows each role's Molecule and GitLab CI state and a badge counting commits since its latest release, but not the version number. Take the version from the role's Galaxy page or its GitHub releases. On 2026-11-27, Galaxy and GitHub agreed, and every robertdebock role had a newer release than its confirmed pin, all released between 2026-11-20 and 2026-11-21:
+
+   | Role | Confirmed | Latest on 2026-11-27 |
+   |---|---|---|
+   | robertdebock.auditd | 3.2.13 | 3.3.1 |
+   | robertdebock.auto_update | 3.1.9 | 3.2.0 |
+   | robertdebock.bootstrap | 7.1.7 | 7.3.1 |
+   | robertdebock.cron | 2.2.8 | 2.3.0 |
+   | robertdebock.epel | 4.1.7 | 4.3.1 |
+   | robertdebock.fail2ban | 5.0.7 | 5.1.0 |
+   | robertdebock.hostname | 3.1.11 | 3.3.0 |
+   | robertdebock.locale | 3.3.12 | 3.4.1 |
+   | robertdebock.ntp | 3.1.7 | 3.3.0 |
+   | robertdebock.openssh | 5.0.4 | 5.1.0 |
+   | robertdebock.rsyslog | 5.0.1 | 5.2.1 |
+   | robertdebock.selinux | 3.1.12 | 3.2.0 |
+   | robertdebock.sysctl | 2.1.10 | 2.2.0 |
+   | robertdebock.update | 3.1.10 | 3.3.1 |
+   | robertdebock.users | 6.1.8 | 6.2.1 |
+
+   `steelcj.umask` and `steelcj.foomuuri` are pinned to commits: compare each with its repository's head.
+2. Pin the latest versions and install them with `ansible-galaxy role install -r requirements.yml -p ~/.ansible/roles --force`.
+3. Run onboard, normalize and specialize on a throwaway uc-node node, using the test steps from the handover step report.
+4. If everything passes, keep the new pins and replace the confirmed table with the new set and date. If a role fails, put back its confirmed version, record the failure here, and fix it in that role's repository or upstream.
 
 ### Revisit the robertdebock roles
 
