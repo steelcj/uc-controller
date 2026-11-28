@@ -1,7 +1,14 @@
 ---
 # Every role and collection is pinned to an exact version: the versions the
 # lifecycle was verified with (see Verification Status in the design
-# document). To move one, see "Bumping a Pinned Version" there.
+# document), apart from the four roles whose comments say otherwise. To move
+# one, see "Bumping a Pinned Version" there.
+#
+# Roles are installed into ~/.ansible/roles, never roles/, which is for roles
+# developed in uc-controller:
+#   ansible-galaxy role install -r requirements.yml -p ~/.ansible/roles
+# Without -p, run from here, ansible-galaxy installs into roles/, the first
+# entry on ansible.cfg's roles_path.
 
 # The collections the playbooks and the roles use. Both also ship
 # inside the "ansible" package of the controller's virtual environment;
@@ -18,7 +25,9 @@ collections:
 
 roles:
   - name: robertdebock.bootstrap
-    version: "7.3.1"
+    # The version in ~/.ansible/roles when the roles left roles/, on 2026-11-27,
+    # in place of 7.3.1. Not yet run through the lifecycle at this version.
+    version: "7.1.7"
   # Our fork of robertdebock.umask, adding the umask_system option for a
   # system-wide umask (login.defs + profile.d). Sourced from git, not Galaxy,
   # because the option does not exist upstream. Must run before
@@ -30,7 +39,9 @@ roles:
     # of master on 2026-11-13.
     version: 424960626fd48d86ecd23ba1654fdf8b722f7821
   - name: robertdebock.epel
-    version: 4.1.7
+    # The version in ~/.ansible/roles when the roles left roles/, on 2026-11-27,
+    # in place of 4.1.7. Not yet run through the lifecycle at this version.
+    version: 4.3.1
   - name: robertdebock.update
     version: 3.1.10
 #  - name: robertdebock.grub
@@ -47,7 +58,9 @@ roles:
   - name: robertdebock.ntp
     version: 3.1.7
   - name: robertdebock.openssh
-    version: 5.0.4
+    # The version in ~/.ansible/roles when the roles left roles/, on 2026-11-27,
+    # in place of 5.0.4. Not yet run through the lifecycle at this version.
+    version: 5.1.0
   - name: robertdebock.fail2ban
     version: 5.0.7
   # The Foomuuri firewall. No release yet, so pinned to a commit.
@@ -75,6 +88,8 @@ roles:
   - name: robertdebock.sysctl
     version: 2.1.10
   - name: robertdebock.hostname
-    version: 3.1.11
+    # The version in ~/.ansible/roles when the roles left roles/, on 2026-11-27,
+    # in place of 3.1.11. Not yet run through the lifecycle at this version.
+    version: 3.3.0
   - name: robertdebock.rsyslog
     version: 5.0.1

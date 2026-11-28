@@ -12,7 +12,10 @@ entry outside the repository (~/.ansible/roles):
 
 Never into roles/, which is for roles developed in uc-controller, and which
 ansible-galaxy would pick by default, being first on roles_path. A role left
-missing, declined or with no terminal to ask on, fails the run.
+missing, declined or with no terminal to ask on, fails the run. So does a
+role installed at another version than its pin, by its
+meta/.galaxy_install_info: the script names it and the command that
+reinstalls it, with --force, and changes nothing itself.
 
 The tests that run Ansible need it on PATH or importable (the controller's
 Ansible virtual environment). A test whose tool or role is missing is
@@ -21,7 +24,7 @@ each skipped test with its reason and exits 1, so a run that left tests out
 never reads as a pass. Each test makes its own secrets in a temporary
 directory, never reading the operator's.
 
-Exit status 0 when every role is installed and every test ran and passed.
+Exit status 0 when every role is installed at its pin and every test ran and passed.
 """
 import configparser
 import os
@@ -55,6 +58,22 @@ def missing_roles() -> list[dict]:
     paths = roles_path()
     return [r for r in roles
             if not any((p / r["name"] / "meta/main.yml").is_file() for p in paths)]
+
+
+def misversioned_roles() -> list[tuple[str, str, str]]:
+    """(name, pinned, installed) for each role found at another version than its pin."""
+    roles = yaml.safe_load((REPO / "requirements.yml").read_text())["roles"]
+    paths = roles_path()
+    wrong = []
+    for role in roles:
+        found = next((p / role["name"] for p in paths if (p / role["name"] / "meta/main.yml").is_file()), None)
+        if found is None:
+            continue
+        info = found / "meta/.galaxy_install_info"
+        installed = str(yaml.safe_load(info.read_text()).get("version")) if info.is_file() else "unknown"
+        if installed != str(role["version"]):
+            wrong.append((role["name"], str(role["version"]), installed))
+    return wrong
 
 
 def install_path() -> Path:
@@ -96,6 +115,14 @@ def offer_install(missing: list[dict]) -> bool:
 if __name__ == "__main__":
     missing = missing_roles()
     roles_ok = not missing or offer_install(missing)
+    wrong = misversioned_roles()
+    if wrong:
+        roles_ok = False
+        print("Roles installed at another version than requirements.yml pins:", file=sys.stderr)
+        for name, pinned, installed in wrong:
+            print(f"  {name}: pinned {pinned}, installed {installed}", file=sys.stderr)
+        print(f"Reinstall them with: ansible-galaxy role install -r requirements.yml -p {install_path()} --force",
+              file=sys.stderr)
     suite = unittest.defaultTestLoader.discover(str(HERE), top_level_dir=str(HERE))
     result = unittest.TextTestRunner(verbosity=1).run(suite)
     if result.skipped:
@@ -104,5 +131,6 @@ if __name__ == "__main__":
         for test, reason in result.skipped:
             print(f"  {test.id()}: {reason}", file=sys.stderr)
     if not roles_ok:
-        print("\nFAILED: roles requirements.yml pins are not installed, as listed above.", file=sys.stderr)
+        print("\nFAILED: roles requirements.yml pins are not installed at their pins, as listed above.",
+              file=sys.stderr)
     sys.exit(0 if result.wasSuccessful() and not result.skipped and roles_ok else 1)
