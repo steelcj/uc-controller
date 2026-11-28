@@ -1,7 +1,7 @@
 ---
 title: Handover for uc-controller, Step Report
 description: What steps one to five of the handover work changed, the decisions taken on the way, the checks and their results, the throwaway node test of the Foomuuri switch, what in the kickoff and the design documents did not fit, the corrections left outside this repository, and what step six will change in example-org.
-version: 0.1.5
+version: 0.1.6
 status: provisional
 date: 2026-11-27
 language: en-CA
@@ -145,7 +145,7 @@ None of these stopped a step once the two decisions above were taken. I edited n
 
 ## Corrections outside this repository
 
-Open, for Christopher, and not made by this session:
+The two in uc-contracts are made, in its handoff design 0.1.3, on the branch `handover` in the worktree `~/areas/development/uc-contracts-handover`, commit `a94e232`, not pushed. 0.1.2 is kept, as earlier versions are. The one in uc-node is open:
 
 | Where | Correction |
 | :-- | :-- |
@@ -174,6 +174,7 @@ Admission changes nothing on a node, so step six changes the client inventory on
 
 | Version | Date | Change |
 | :-- | :-- | :-- |
+| 0.1.6 | 2026-11-27 | The two uc-contracts corrections made, in the handoff design 0.1.3. The ROADMAP's confirmed roles carry their evidence from step four's full output: thirteen confirmed, and `robertdebock.epel`, `ntp`, `selinux` and `auditd` pinned, not exercised, every task skipped on a Debian container |
 | 0.1.5 | 2026-11-27 | The four re-pins of 0.1.4 undone: `requirements.yml` pins the confirmed set, by the ROADMAP's version policy, with `robertdebock.bootstrap` at 7.1.7, the version step four ran. `epel`, `openssh` and `hostname` reinstalled at their pins with `--force` |
 | 0.1.4 | 2026-11-27 | `main`'s move of every outside role out of `roles/` merged. The ten roles installed nowhere installed at their pins, four pins moved to the versions installed. `tests/run_tests.py` checks every role's version. `.ansible-lint` leaves out `roles/` as a whole, since roles are linted and tested only in work on them. Syntax-check, the boundary check, 118 tests and the 170 lint findings unchanged |
 | 0.1.3 | 2026-11-27 | The install command takes `-p ~/.ansible/roles`, since without it `ansible-galaxy` installs into `roles/`. `tests/run_tests.py` fails on a skip and offers to install a missing role, both checked. The robertdebock roles and `steelcj.umask` are a ROADMAP item, Install the committed outside roles from requirements.yml |

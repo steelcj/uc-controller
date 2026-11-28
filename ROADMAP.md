@@ -79,35 +79,41 @@ We aim to run the latest release of every role. requirements.yml always pins the
 
 ### Confirmed working
 
-Confirmed on 2026-11-27 by the handover step 4 node test (throwaway uc-node node, Incus system container, images:debian/13) through onboard, normalize and specialize. The versions are those of the copies then committed under `roles/`, read from each copy's `meta/.galaxy_install_info` at `24d8b5c`. `robertdebock.bootstrap` was 7.1.7, though requirements.yml pinned 7.3.1, and requirements.yml now pins 7.1.7: its files equal Galaxy's 7.1.7. `steelcj.umask`'s copy said `master`, and its files equal the pinned commit.
+From the handover step 4 node test, on 2026-11-27: a throwaway uc-node node, an Incus system container, images:debian/13, through onboard, normalize and specialize. The versions are those of the copies then committed under `roles/`, read from each copy's `meta/.galaxy_install_info` at `24d8b5c`. `robertdebock.bootstrap` was 7.1.7, though requirements.yml pinned 7.3.1, and requirements.yml now pins 7.1.7: its files equal Galaxy's 7.1.7. `steelcj.umask`'s copy said `master`, and its files equal the pinned commit.
 
-| Role | Version |
-|---|---|
-| robertdebock.bootstrap | 7.1.7 |
-| steelcj.umask | 42496062 |
-| robertdebock.epel | 4.1.7 |
-| robertdebock.update | 3.1.10 |
-| robertdebock.locale | 3.3.12 |
-| robertdebock.auto_update | 3.1.9 |
-| robertdebock.cron | 2.2.8 |
-| robertdebock.ntp | 3.1.7 |
-| robertdebock.openssh | 5.0.4 |
-| robertdebock.fail2ban | 5.0.7 |
-| steelcj.foomuuri | b62b02b5 |
-| robertdebock.users | 6.1.8 |
-| robertdebock.selinux | 3.1.12 |
-| robertdebock.auditd | 3.2.13 |
-| robertdebock.sysctl | 2.1.10 |
-| robertdebock.hostname | 3.1.11 |
-| robertdebock.rsyslog | 5.0.1 |
+A role is **confirmed** when the run executed its tasks on the node, and **pinned, not exercised** when it was installed but every task was skipped. Confirmed here means on Debian 13, in a container, only. The task counts are for the node, `dev-example-net`, summed over the successful runs: two onboard, four normalize and one specialize. They were read from those runs' full output, made between 19:28 and 19:37, before step four's commit at 19:41, with `roles/` unchanged since the branch began.
+
+| Role | Version | Status | Stage, or why it did not run | Tasks on the node |
+|---|---|---|---|---|
+| robertdebock.bootstrap | 7.1.7 | confirmed | onboard | 22 ok, 2 skipped |
+| steelcj.umask | 42496062 | confirmed | onboard | 13 ok, 3 changed, 2 skipped |
+| robertdebock.epel | 4.1.7 | pinned, not exercised | onboard, every task skipped: Red Hat family only | 6 skipped |
+| robertdebock.update | 3.1.10 | confirmed | onboard | 11 ok, 1 changed, 20 skipped |
+| robertdebock.locale | 3.3.12 | confirmed | onboard | 36 ok, 4 changed |
+| robertdebock.auto_update | 3.1.9 | confirmed | onboard | 16 ok, 2 changed |
+| robertdebock.cron | 2.2.8 | confirmed | onboard | 12 ok, 4 changed, 12 skipped |
+| robertdebock.ntp | 3.1.7 | pinned, not exercised | onboard, gated off in containers by `10_onboard.yml` | 40 skipped |
+| robertdebock.openssh | 5.0.4 | confirmed | onboard | 121 ok, 6 changed, 6 skipped |
+| robertdebock.fail2ban | 5.0.7 | confirmed | onboard | 34 ok, 11 changed, 9 skipped |
+| steelcj.foomuuri | b62b02b5 | confirmed | onboard, normalize, specialize | 140 ok, 12 changed, 51 skipped |
+| robertdebock.users | 6.1.8 | confirmed | onboard | 25 ok, 5 changed, 64 skipped |
+| robertdebock.selinux | 3.1.12 | pinned, not exercised | normalize, run on the Red Hat family only by `20_normalize.yml` | 44 skipped |
+| robertdebock.auditd | 3.2.13 | pinned, not exercised | normalize, gated off in containers by `20_normalize.yml` | 180 skipped |
+| robertdebock.sysctl | 2.1.10 | confirmed | normalize | 12 ok, 4 skipped |
+| robertdebock.hostname | 3.1.11 | confirmed | normalize | 15 ok, 1 changed |
+| robertdebock.rsyslog | 5.0.1 | confirmed | normalize | 106 ok, 2 changed, 16 skipped |
+
+To confirm the four that were not exercised: `robertdebock.epel` and `robertdebock.selinux` need a Red Hat family node, and `robertdebock.ntp` and `robertdebock.auditd` need a virtual machine or bare metal.
 
 ### Test the latest versions
 
 On the next run, on its own branch:
 
-1. Look up the latest release of each pinned role. For the robertdebock roles, Robert's chart, <https://robertdebock.nl/ansible.html>, shows each role's Molecule and GitLab CI state and a badge counting commits since its latest release, but not the version number. Take the version from the role's Galaxy page or its GitHub releases. On 2026-11-27, Galaxy and GitHub agreed, and every robertdebock role had a newer release than its confirmed pin, all released between 2026-11-20 and 2026-11-21:
+1. Look up the latest release of each pinned role. For the robertdebock roles, Robert's chart, <https://robertdebock.nl/ansible.html>, shows each role's Molecule and GitLab CI state and a badge counting commits since its latest release, but not the version number. Take the version from the role's Galaxy page or its GitHub releases. Look the versions up again when the run starts, and never pin from the snapshot below.
 
-   | Role | Confirmed | Latest on 2026-11-27 |
+   **Snapshot, 2026-11-27, not for pinning.** Galaxy and GitHub agreed, and every robertdebock role had a newer release than its confirmed pin, all released between 2026-11-20 and 2026-11-21:
+
+   | Role | Confirmed | Latest, as of 2026-11-27 |
    |---|---|---|
    | robertdebock.auditd | 3.2.13 | 3.3.1 |
    | robertdebock.auto_update | 3.1.9 | 3.2.0 |
@@ -129,6 +135,15 @@ On the next run, on its own branch:
 2. Pin the latest versions and install them with `ansible-galaxy role install -r requirements.yml -p ~/.ansible/roles --force`.
 3. Run onboard, normalize and specialize on a throwaway uc-node node, using the test steps from the handover step report.
 4. If everything passes, keep the new pins and replace the confirmed table with the new set and date. If a role fails, put back its confirmed version, record the failure here, and fix it in that role's repository or upstream.
+
+### A role catalog in uc-contracts, after 0.2.0
+
+uc-controller will use many of Robert's roles, so keep the record of versions where every repository can read it, in uc-contracts, beside the robertdebock role cache and CFAP in `en/docs/design/ansible/roles/`. Two parts:
+
+- **A generated catalog.** A small script queries the Galaxy API and writes one row per role in Robert's catalog, more than 140: the name, the latest version and its release date, Galaxy and GitHub links, the distributions each role is tested on, from Robert's relations page if they parse easily, and the date it was generated. Rerunning it refreshes the whole catalog, nobody edits it by hand, and it is the lookup step 1 of Test the latest versions asks for.
+- **A small hand-kept data file** of the roles in use, `steelcj.foomuuri` and `steelcj.umask` among them, so the record of what is confirmed is in one place: the confirmed version, confirmed by which repository, run, OS family and stages, and the status, confirmed or pinned, not exercised. The script merges it into the catalog, so most rows say not used, and those in use carry their evidence. The table above is its first content.
+
+Robert's page also offers the `robertdebock.roles` collection, which bundles every role. It was considered and is not used: uc-controller pins individual roles, each at its own confirmed version. Say so in the catalog, so a later session does not suggest switching to it.
 
 ### Revisit the robertdebock roles
 
