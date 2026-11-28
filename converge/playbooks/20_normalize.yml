@@ -62,19 +62,14 @@
   # play above keeps it for its add_host loop.
   strategy: free
 
-  # Firewall values come from the client inventory, one variable per stage,
-  # shaped for steelcj.foomuuri. Until the switch to that role, the vars file
-  # turns the stages listed in uc_firewall_stages into the firewall_rules list
-  # shared/roles/uc_firewall applies. Each is loaded only
-  # when its stage is given to scripts/inventory-args:
-  #   firewall_onboard_ssh         onboard/<env>/group_vars/all.yml
-  #   firewall_normalize_services  normalized/<env>/group_vars/all.yml
-  # See Firewall Layering in en/docs/uc-controller-v0.1.8.md.
-  vars_files:
-    - ../../shared/vars/uc_firewall_interim.yml
-
+  # The firewall is Foomuuri, through steelcj.foomuuri. Normalize writes
+  # its own fragment, 20-normalize, from the client inventory's
+  # firewall_normalize_services (normalized/<env>/group_vars/all.yml), beside
+  # onboard's 10-base, and removes it when the list has no service.
   vars:
-    uc_firewall_stages: [onboard, normalize]
+    normalize_firewall_present: >-
+      {{ firewall_normalize_services | default([]) | map(attribute='state', default='present')
+         | select('eq', 'present') | list | length > 0 }}
     # Container virtualization types, as in the ntp gate in 10_onboard.yml.
     # Roles that need the kernel or host access a container does not have are
     # skipped there; VMs and bare metal run them.
@@ -89,6 +84,25 @@
   # creates /.autorelabel at every boot, so the reboot the role asks for
   # relabels the filesystem and then boots again, enforcing.
   pre_tasks:
+    # 20-normalize adds services and accepts no SSH itself; SSH is in
+    # onboard's 10-base, which the role keeps. A node without it, never
+    # onboarded by uc-controller or onboarded before the switch to Foomuuri,
+    # would be left with no SSH rule, so refuse it: the lock-out protection
+    # uc_firewall had.
+    - name: Look for onboard's firewall fragment
+      ansible.builtin.stat:
+        path: /etc/foomuuri/10-base.conf
+      register: normalize_base_fragment
+
+    - name: Refuse a node without onboard's firewall fragment
+      ansible.builtin.assert:
+        that: normalize_base_fragment.stat.exists
+        fail_msg: >-
+          {{ inventory_hostname }} has no /etc/foomuuri/10-base.conf, the fragment that
+          accepts SSH, which 10_onboard.yml writes. Writing 20-normalize alone would
+          lock the controller out. Onboard it with 10_onboard.yml first.
+        quiet: true
+
     - name: install the SELinux policy the selinux role configures
       ansible.builtin.package:
         name: selinux-policy-targeted
@@ -119,7 +133,14 @@
     - role: robertdebock.sysctl
     - role: robertdebock.hostname
     - role: robertdebock.rsyslog
-    - role: uc_firewall
+    # 20-normalize, keeping 10-base and specialize's 30-specialize, so a
+    # rerun after specialize does not purge it.
+    - role: steelcj.foomuuri
+      vars:
+        foomuuri_fragment: 20-normalize
+        foomuuri_fragment_state: "{{ 'present' if normalize_firewall_present | bool else 'absent' }}"
+        foomuuri_services: "{{ firewall_normalize_services | default([]) }}"
+        foomuuri_keep_fragments: [10-base, 30-specialize]
 
 - name: Persist the promotion to the normalized inventory
   hosts: normalizing

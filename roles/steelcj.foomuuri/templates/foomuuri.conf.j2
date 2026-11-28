@@ -1,0 +1,95 @@
+{{ ansible_managed | comment }}
+{#
+  One Foomuuri fragment. Foomuuri reads /etc/foomuuri/*.conf in alphabetical
+  order and merges sections with the same name, so the base fragment holds the
+  zones and the rules every host needs, and later fragments add rules.
+  No section ends with a policy line: Foomuuri appends "drop log", or
+  "reject log" for localhost-* sections, after all fragments are merged.
+#}
+{% macro service(s) -%}
+{%- set s = s if s is mapping else {'name': s} -%}
+{%- set name = s.name | string -%}
+{%- if name is match('^[0-9]+(-[0-9]+)?$') -%}
+{{ s.protocol | default(foomuuri_default_protocol) }} {{ name }}
+{%- else -%}
+{{ name }}
+{%- endif -%}
+{%- if s.sources | default([]) | length > 0 %} saddr {{ s.sources | join(' ') }}{% endif -%}
+{%- if s.action is defined %} {{ s.action }}{% endif -%}
+{%- endmacro -%}
+{% set is_base = foomuuri_fragment == foomuuri_base_fragment %}
+{% set ns = namespace(services=[]) %}
+{% for s in foomuuri_services if s is not mapping or (s.state | default('present')) == 'present' %}
+{% set ns.services = ns.services + [s] %}
+{% endfor %}
+{% set services = ns.services %}
+{% set incoming = (foomuuri_base_services if is_base else []) + ([foomuuri_ssh_service] if is_base and (foomuuri_ssh_port | int) > 0 else []) + services %}
+{% set outgoing = (['accept'] if foomuuri_outgoing == 'accept' else foomuuri_outgoing) if is_base else [] %}
+{% if is_base and foomuuri_config | length > 0 %}
+
+foomuuri {
+{% for key, value in foomuuri_config.items() %}
+  {{ key }} {{ value }}
+{% endfor %}
+}
+{% endif %}
+{% if is_base %}
+
+zone {
+{% for zone, interfaces in foomuuri_zones.items() %}
+{% set interfaces = foomuuri_public_interfaces if zone == 'public' and interfaces | length == 0 else interfaces %}
+  {{ zone }}{% if interfaces | length > 0 %} {{ interfaces | join(' ') }}{% endif %}
+
+{% endfor %}
+}
+{% endif %}
+{% if foomuuri_macros | length > 0 %}
+
+macro {
+{% for name, value in foomuuri_macros.items() %}
+  {{ name }} {{ value }}
+{% endfor %}
+}
+{% endif %}
+{% if foomuuri_iplists | length > 0 %}
+
+iplist {
+{% for name, value in foomuuri_iplists.items() %}
+  {{ name }} {{ value | join(' ') if value is sequence and value is not string else value }}
+{% endfor %}
+}
+{% endif %}
+{% for name, rules in foomuuri_templates.items() %}
+
+template {{ name }} {
+{% for rule in rules %}
+  {{ service(rule) }}
+{% endfor %}
+}
+{% endfor %}
+{% set incoming = incoming + foomuuri_rules['public-localhost'] | default([]) %}
+{% if incoming | length > 0 %}
+
+public-localhost {
+{% for rule in incoming %}
+  {{ service(rule) }}
+{% endfor %}
+}
+{% endif %}
+{% set outgoing = outgoing + foomuuri_rules['localhost-public'] | default([]) %}
+{% if outgoing | length > 0 %}
+
+localhost-public {
+{% for rule in outgoing %}
+  {{ service(rule) }}
+{% endfor %}
+}
+{% endif %}
+{% for section, rules in foomuuri_rules.items() if section not in ['public-localhost', 'localhost-public'] %}
+
+{{ section }} {
+{% for rule in rules %}
+  {{ service(rule) }}
+{% endfor %}
+}
+{% endfor %}

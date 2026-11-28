@@ -1,0 +1,12 @@
+---
+- name: Prepare
+  hosts: all
+  gather_facts: false
+  tasks:
+    # images:debian/13 has neither Python, which Ansible modules need, nor
+    # sudo, which become needs. robertdebock.bootstrap does this on real hosts.
+    - name: Install Python and sudo
+      ansible.builtin.raw: >-
+        (command -v python3 && command -v sudo) >/dev/null ||
+        (apt-get update -q && apt-get install -y -q python3 sudo)
+      changed_when: false

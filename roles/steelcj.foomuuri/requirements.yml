@@ -1,0 +1,4 @@
+---
+# The role itself needs no collections. Molecule's needs are in
+# molecule/default/requirements.yml.
+collections: []

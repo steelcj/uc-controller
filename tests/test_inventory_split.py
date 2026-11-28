@@ -11,8 +11,8 @@ holds that output with only the allowed changes applied:
 - uc_client_inventory, uc_known_hosts_file and onboard_initial_authorized_keys, which are new
 - the firewall_rules_<stage> lists, renamed and reshaped for steelcj.foomuuri:
   firewall_onboard_ssh, firewall_normalize_services and firewall_specialize_services,
-  with the same ports, protocols and sources (tests/test_uc_firewall_interim.py checks
-  that uc_firewall still gets the same rules)
+  with the same ports, protocols and sources (tests/test_firewall_fragments.py checks
+  the Foomuuri fragments steelcj.foomuuri writes from them)
 - for the stage environments only, the onboard policy (umask, openssh and users),
   which inventory-defaults/onboard/ now gives every onboard environment and the
   old onboard/stage inventory did not set

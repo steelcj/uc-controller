@@ -15,21 +15,15 @@
   # Each node converges independently; the config default stays linear.
   strategy: free
 
-  # Firewall values come from the client inventory, one variable per stage,
-  # shaped for steelcj.foomuuri. Until the switch to that role, the vars file
-  # turns the stages listed in uc_firewall_stages into the firewall_rules list
-  # shared/roles/uc_firewall applies. Each is loaded only
-  # when its stage is given to scripts/inventory-args:
-  #   firewall_onboard_ssh          onboard/<env>/group_vars/all.yml
-  #   firewall_normalize_services   normalized/<env>/group_vars/all.yml
-  #   firewall_specialize_services  normalized/<env>/group_vars/<group>.yml
-  #                                 (for example webservers.yml)
-  # See Firewall Layering in en/docs/uc-controller-v0.1.8.md.
-  vars_files:
-    - ../../shared/vars/uc_firewall_interim.yml
-
+  # The firewall is Foomuuri, through steelcj.foomuuri. Specialize writes
+  # its own fragment, 30-specialize, from the client inventory's
+  # firewall_specialize_services (normalized/<env>/group_vars/<group>.yml,
+  # for example webservers.yml), beside onboard's 10-base and normalize's
+  # 20-normalize, and removes it when the host has no service.
   vars:
-    uc_firewall_stages: [onboard, normalize, specialize]
+    specialize_firewall_present: >-
+      {{ firewall_specialize_services | default([]) | map(attribute='state', default='present')
+         | select('eq', 'present') | list | length > 0 }}
 
   # The roles are included as tasks, not listed under roles:, so the play can
   # check specialize_role first. A roles: entry named by an undefined variable
@@ -46,10 +40,32 @@
           -e specialize_role=webserver.
         quiet: true
 
+    # As in 20_normalize.yml: 30-specialize accepts no SSH itself, so a node
+    # without onboard's 10-base would be locked out.
+    - name: Look for onboard's firewall fragment
+      ansible.builtin.stat:
+        path: /etc/foomuuri/10-base.conf
+      register: specialize_base_fragment
+
+    - name: Refuse a node without onboard's firewall fragment
+      ansible.builtin.assert:
+        that: specialize_base_fragment.stat.exists
+        fail_msg: >-
+          {{ inventory_hostname }} has no /etc/foomuuri/10-base.conf, the fragment that
+          accepts SSH, which 10_onboard.yml writes. Writing 30-specialize alone would
+          lock the controller out. Onboard and normalize it first.
+        quiet: true
+
     - name: apply the specialize role
       ansible.builtin.include_role:
         name: "{{ specialize_role }}"
 
-    - name: apply the combined firewall rules
+    # 30-specialize, keeping 10-base and 20-normalize.
+    - name: write the specialize firewall fragment
       ansible.builtin.include_role:
-        name: uc_firewall
+        name: steelcj.foomuuri
+      vars:
+        foomuuri_fragment: 30-specialize
+        foomuuri_fragment_state: "{{ 'present' if specialize_firewall_present | bool else 'absent' }}"
+        foomuuri_services: "{{ firewall_specialize_services | default([]) }}"
+        foomuuri_keep_fragments: [10-base, 20-normalize]

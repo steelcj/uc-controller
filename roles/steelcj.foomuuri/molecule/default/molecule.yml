@@ -1,0 +1,36 @@
+---
+# Runs the role against an Incus system container on the machine running
+# Molecule. Needs the incus client, permission to use it, and the
+# community.general collection for the incus connection plugin.
+dependency:
+  name: galaxy
+  options:
+    requirements-file: requirements.yml
+driver:
+  name: default
+  options:
+    managed: true
+platforms:
+  - name: foomuuri-debian13
+    image: images:debian/13
+provisioner:
+  name: ansible
+  playbooks:
+    create: create.yml
+    prepare: prepare.yml
+    converge: converge.yml
+    verify: verify.yml
+    destroy: destroy.yml
+verifier:
+  name: ansible
+scenario:
+  test_sequence:
+    - dependency
+    - destroy
+    - syntax
+    - create
+    - prepare
+    - converge
+    - idempotence
+    - verify
+    - destroy

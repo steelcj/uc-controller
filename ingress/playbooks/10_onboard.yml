@@ -155,16 +155,28 @@
     - name: gather fresh facts
       ansible.builtin.setup:
 
-  # Firewall values come from the client inventory, one variable per stage,
-  # shaped for steelcj.foomuuri. Until the switch to that role, the vars file
-  # turns the stages listed in uc_firewall_stages into the firewall_rules list
-  # shared/roles/uc_firewall applies. Onboard applies only
-  # firewall_onboard_ssh, from onboard/<env>/group_vars/all.yml.
-  vars_files:
-    - ../../shared/vars/uc_firewall_interim.yml
-
-  vars:
-    uc_firewall_stages: [onboard]
+    # The firewall is Foomuuri, through steelcj.foomuuri, and uc-controller
+    # owns every fragment from here on. Onboard writes the base fragment,
+    # 10-base, from the client inventory's firewall_onboard_ssh
+    # (onboard/<env>/group_vars/all.yml), replacing uc-node's bootstrap
+    # rule of the same name. The role drops incoming traffic that no
+    # fragment accepts, so refuse before it runs unless SSH is accepted on
+    # the port the controller uses: the lock-out protection uc_firewall had.
+    - name: Refuse a firewall without SSH on the port the controller uses
+      ansible.builtin.assert:
+        that:
+          - firewall_onboard_ssh is defined
+          - firewall_onboard_ssh is mapping
+          - firewall_onboard_ssh.port is defined
+          - (firewall_onboard_ssh.port | int) == (ansible_port | default(22) | int)
+          - firewall_onboard_ssh.sources | default([]) is sequence
+          - firewall_onboard_ssh.sources | default([]) is not string
+        fail_msg: >-
+          firewall_onboard_ssh must give SSH on port {{ ansible_port | default(22) }}, the port
+          the controller uses, with its sources, or the firewall would lock the controller
+          out. Set it in the client inventory's onboard/<env>/group_vars/all.yml, and load
+          that stage.
+        quiet: true
 
   # No sudo pre_task is needed: robertdebock.bootstrap already installs sudo
   # (its Debian package set is "python3 sudo gnupg python3-apt"), which is why
@@ -188,7 +200,16 @@
       when: ansible_facts['virtualization_type'] | default('') not in ['lxc', 'lxd', 'incus', 'docker', 'podman', 'systemd-nspawn', 'container', 'openvz']
     - role: robertdebock.openssh      # installs and hardens sshd
     - role: robertdebock.fail2ban
-    - role: uc_firewall               # applies firewall_rules; refuses without the SSH rule
+    # 10-base: SSH from firewall_onboard_ssh, and what every host needs.
+    # The other fragments are uc-controller's later stages, kept here so an
+    # onboard rerun does not purge them; any other .conf file is removed,
+    # and so are ufw and firewalld.
+    - role: steelcj.foomuuri
+      vars:
+        foomuuri_fragment: 10-base
+        foomuuri_ssh_port: "{{ firewall_onboard_ssh.port }}"
+        foomuuri_ssh_sources: "{{ firewall_onboard_ssh.sources | default([]) }}"
+        foomuuri_keep_fragments: [20-normalize, 30-specialize]
     - role: robertdebock.users        # creates the initial user + sudo + key
 
 - name: Switch onboarded nodes to SSH as the initial user

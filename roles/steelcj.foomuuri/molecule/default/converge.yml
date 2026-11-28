@@ -1,0 +1,21 @@
+---
+- name: Converge
+  hosts: all
+  become: true
+  gather_facts: true
+
+  roles:
+    - role: steelcj.foomuuri
+      foomuuri_ssh_port: 2222
+      foomuuri_ssh_sources:
+        - 192.0.2.0/24
+        - 2001:db8::/32
+      foomuuri_services:
+        - name: https
+        - name: 1337
+        - name: 5353
+          protocol: udp
+          sources:
+            - 198.51.100.0/24
+        - name: http
+          state: absent

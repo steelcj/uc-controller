@@ -1,0 +1,57 @@
+---
+- name: Create
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Find existing instances
+      ansible.builtin.command:
+        cmd: >-
+          incus info {{ item.name }}
+          --project {{ item.incus_project | default('default') }}
+      loop: "{{ molecule_yml.platforms }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: create_existing
+      changed_when: false
+      failed_when: false
+
+    - name: Launch the instances
+      ansible.builtin.command:
+        cmd: >-
+          incus launch {{ item.item.image }} {{ item.item.name }}
+          --project {{ item.item.incus_project | default('default') }}
+      loop: "{{ create_existing.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+      when: item.rc != 0
+      changed_when: true
+
+    - name: Wait for systemd in the instances
+      ansible.builtin.command:
+        cmd: >-
+          incus exec {{ item.name }}
+          --project {{ item.incus_project | default('default') }}
+          -- systemctl is-system-running --wait
+      loop: "{{ molecule_yml.platforms }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: create_wait
+      changed_when: false
+      failed_when: false
+      until: create_wait.stdout | default('') in ['running', 'degraded']
+      retries: 30
+      delay: 2
+
+    - name: Write the instance config
+      ansible.builtin.copy:
+        content: "{{ create_instance_config | from_yaml | to_nice_yaml }}"
+        dest: "{{ molecule_instance_config }}"
+        mode: "0600"
+      vars:
+        create_instance_config: |
+          {% for platform in molecule_yml.platforms %}
+          - instance: "{{ platform.name }}"
+            address: "{{ platform.name }}"
+            user: root
+            connection: community.general.incus
+          {% endfor %}

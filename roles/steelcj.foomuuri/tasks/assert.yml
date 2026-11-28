@@ -1,0 +1,129 @@
+---
+
+- name: Test if foomuuri_ssh_port is set correctly
+  ansible.builtin.assert:
+    that:
+      - foomuuri_ssh_port is defined
+      - foomuuri_ssh_port | string is match('^[0-9]+$')
+      - foomuuri_ssh_port | int >= 0
+      - foomuuri_ssh_port | int <= 65535
+    quiet: true
+
+- name: Test if foomuuri_ssh_sources is set correctly
+  ansible.builtin.assert:
+    that:
+      - foomuuri_ssh_sources is defined
+      - foomuuri_ssh_sources is sequence
+      - foomuuri_ssh_sources is not string
+    quiet: true
+
+- name: Test if foomuuri_services is set correctly
+  ansible.builtin.assert:
+    that:
+      - foomuuri_services is defined
+      - foomuuri_services is sequence
+      - foomuuri_services is not string
+    quiet: true
+
+- name: Test if each item in foomuuri_services is set correctly
+  ansible.builtin.assert:
+    that:
+      - item is string or (item is mapping and item.name is defined)
+      - item is string or (item.protocol | default(foomuuri_default_protocol)) in ['tcp', 'udp']
+      - item is string or (item.state | default('present')) in ['present', 'absent']
+      - item is string or item.sources is not defined or (item.sources is sequence and item.sources is not string)
+      - not ([item.name | default(item)] + (item.sources | default([]) if item is mapping else [])) | map('string') | select('search', '[{}]') | list
+    quiet: true
+  loop: "{{ foomuuri_services }}"
+  loop_control:
+    label: "{{ item.name | default(item) }}"
+
+- name: Test if foomuuri_default_protocol is set correctly
+  ansible.builtin.assert:
+    that:
+      - foomuuri_default_protocol in ['tcp', 'udp']
+    quiet: true
+
+- name: Test if foomuuri_base_services is set correctly
+  ansible.builtin.assert:
+    that:
+      - foomuuri_base_services is sequence
+      - foomuuri_base_services is not string
+    quiet: true
+
+- name: Test if foomuuri_outgoing is set correctly
+  ansible.builtin.assert:
+    that:
+      - foomuuri_outgoing == 'accept' or (foomuuri_outgoing is sequence and foomuuri_outgoing is not string)
+    quiet: true
+
+- name: Test if foomuuri_fragment and foomuuri_base_fragment are set correctly
+  ansible.builtin.assert:
+    that:
+      - foomuuri_fragment is match('^[A-Za-z0-9][A-Za-z0-9._-]*$')
+      - foomuuri_base_fragment is match('^[A-Za-z0-9][A-Za-z0-9._-]*$')
+      - foomuuri_fragment_state in ['present', 'absent']
+    quiet: true
+
+- name: Test if foomuuri_purge is set correctly
+  ansible.builtin.assert:
+    that:
+      - foomuuri_purge in ['unmanaged', 'none']
+      - foomuuri_keep_fragments is sequence
+      - foomuuri_purge_exclude is sequence
+    quiet: true
+
+- name: Test if SSH is accepted when foomuuri_require_ssh is set
+  ansible.builtin.assert:
+    that:
+      - foomuuri_ssh_port | int > 0
+    fail_msg: "foomuuri_require_ssh is true, but foomuuri_ssh_port is 0, so the base fragment would not accept SSH."
+    quiet: true
+  when:
+    - foomuuri_require_ssh | bool
+    - foomuuri_fragment == foomuuri_base_fragment
+    - foomuuri_fragment_state == 'present'
+
+- name: Test if the mappings are set correctly
+  ansible.builtin.assert:
+    that:
+      - foomuuri_config is mapping
+      - foomuuri_zones is mapping
+      - foomuuri_rules is mapping
+      - foomuuri_macros is mapping
+      - foomuuri_iplists is mapping
+      - foomuuri_templates is mapping
+      - foomuuri_files is sequence
+    quiet: true
+
+- name: Test if each iplist name starts with @
+  ansible.builtin.assert:
+    that:
+      - item is match('^@')
+    quiet: true
+  loop: "{{ foomuuri_iplists.keys() | list }}"
+
+- name: Test if each item in foomuuri_files is set correctly
+  ansible.builtin.assert:
+    that:
+      - item.name is defined
+      - item.content is defined or item.src is defined
+      - item.name is not match('^/') and '..' not in item.name
+    quiet: true
+  loop: "{{ foomuuri_files }}"
+  loop_control:
+    label: "{{ item.name | default('unnamed') }}"
+
+- name: Test if no value holds a line break
+  ansible.builtin.assert:
+    that:
+      - not ([foomuuri_ssh_sources, foomuuri_services, foomuuri_base_services, foomuuri_outgoing, foomuuri_zones, foomuuri_rules, foomuuri_config, foomuuri_macros, foomuuri_iplists, foomuuri_templates] | to_json is search('\\\\[nr]'))
+    fail_msg: "A value holds a line break, which would split a Foomuuri rule."
+    quiet: true
+
+- name: Test if no rule value holds a brace
+  ansible.builtin.assert:
+    that:
+      - not ((foomuuri_ssh_sources + foomuuri_base_services + (foomuuri_rules.values() | flatten)) | select('string') | select('search', '[{}]') | list)
+    fail_msg: "A rule value holds a brace, which would end a Foomuuri section."
+    quiet: true
