@@ -1,7 +1,7 @@
 ---
 title: Handover for uc-controller, Step Report
 description: What steps one to five of the handover work changed, the decisions taken on the way, the checks and their results, the throwaway node test of the Foomuuri switch, what in the kickoff and the design documents did not fit, the corrections left outside this repository, and what step six will change in example-org.
-version: 0.1.8
+version: 0.1.9
 status: provisional
 date: 2026-11-27
 language: en-CA
@@ -191,17 +191,20 @@ Admission changes nothing on a node, so step six changes the client inventory on
 
 ## What remains before 0.2.0
 
-Step six ran as narrowed above, its run report is `141262c`, and the three corrections outside this repository are made. What is left, in merge order:
+Step six ran as narrowed above, its run report is `141262c`, and the three corrections outside this repository are made. In order:
 
-1. **uc-contracts:** review and merge `handover` into `main`: the handoff design 0.1.3, `a94e232`. It depends on nothing else.
-2. **uc-node:** `handoff-guide-4-admission`, `dd59019`, branches from `handoff`, so `handoff` reaches `main` first, or the two merge together. `handoff` is 31 commits ahead of `main`, nothing behind, and equal to `origin/handoff`. Its phase two report leaves open: the review of `handoff`, whether the contract says how `sudo` is measured, cutting 0.3.0 and rebuilding `dev.example.org` after it, an ssh platform build, and retiring example-org's test batch and instance. The admitted name it asked about is decided, as the fully qualified domain name, and uc-contracts' `design-after-uc-node-phase-one` is merged.
-3. **uc-controller:** review `handover` against the table of every commit above, merge it into `main`, and tag 0.2.0.
-4. **After 0.2.0:** onboarding admitted nodes, through the onboard-contract-nodes kickoff, so `dev.example.org` can be onboarded. Then the ROADMAP's Test the latest versions run, and the role catalog in uc-contracts.
+1. **uc-contracts: done.** `handover` fast-forwarded into `main`, to `a94e232`, the handoff design 0.1.3, with Christopher's go-ahead. Not pushed.
+2. **uc-node: done.** `handoff` fast-forwarded to `dd59019`, guide 4 0.1.4, with Christopher's go-ahead. Guide 4 exists only on `handoff`, not on `main`, so that is the one place its old text was. `handoff` is one commit ahead of `origin/handoff`, not pushed. It does not go into uc-node's `main` for this release: it is 31 commits ahead of `main`, unreviewed, and its phase two report leaves open the review, whether the contract says how `sudo` is measured, cutting 0.3.0 and rebuilding `dev.example.org` after it, an ssh platform build, and retiring example-org's test batch and instance. `handoff` reaches `main` through uc-node's own review and its 0.3.0.
+3. **uc-controller:** Christopher reviews `handover` against the table of every commit above, with `git log --reverse 7165cb6^..handover`, then merges it into `main` and tags 0.2.0.
+4. **After 0.2.0:** onboarding admitted nodes, through the onboard-contract-nodes kickoff, so `dev.example.org` can be onboarded. Then the ROADMAP's Test the latest versions run, the role catalog in uc-contracts, and uc-node's own review and 0.3.0.
+
+The instance `dev-example-org` is still running in Incus. Retiring it is one of uc-node's open items, and stopping it costs nothing if it is not in use.
 
 ## Changelog
 
 | Version | Date | Change |
 | :-- | :-- | :-- |
+| 0.1.9 | 2026-11-27 | Merge order changed: uc-node's `handoff` stays off `main` for this release, and takes guide 4 by a fast-forward. uc-contracts' `handover` fast-forwarded into `main`, and uc-node's `handoff` to `dd59019`, with Christopher's go-ahead. uc-controller's merge and the 0.2.0 tag wait on his review |
 | 0.1.8 | 2026-11-27 | Every commit on `handover`, in a table for the review. What remains is in merge order: uc-contracts, then uc-node with `handoff`, then uc-controller and the 0.2.0 tag, then onboarding admitted nodes, the latest-versions run and the role catalog. What is still open on uc-node's `handoff` |
 | 0.1.7 | 2026-11-27 | The uc-node correction made, in guide 4 0.1.4. No correction outside this repository is open |
 | 0.1.6 | 2026-11-27 | The two uc-contracts corrections made, in the handoff design 0.1.3. The ROADMAP's confirmed roles carry their evidence from step four's full output: thirteen confirmed, and `robertdebock.epel`, `ntp`, `selinux` and `auditd` pinned, not exercised, every task skipped on a Debian container |
