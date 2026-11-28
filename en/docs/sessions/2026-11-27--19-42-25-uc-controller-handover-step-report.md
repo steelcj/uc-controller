@@ -1,7 +1,7 @@
 ---
 title: Handover for uc-controller, Step Report
 description: What steps one to five of the handover work changed, the decisions taken on the way, the checks and their results, the throwaway node test of the Foomuuri switch, what in the kickoff and the design documents did not fit, the corrections left outside this repository, and what step six will change in example-org.
-version: 0.1.6
+version: 0.1.7
 status: provisional
 date: 2026-11-27
 language: en-CA
@@ -145,7 +145,7 @@ None of these stopped a step once the two decisions above were taken. I edited n
 
 ## Corrections outside this repository
 
-The two in uc-contracts are made, in its handoff design 0.1.3, on the branch `handover` in the worktree `~/areas/development/uc-contracts-handover`, commit `a94e232`, not pushed. 0.1.2 is kept, as earlier versions are. The one in uc-node is open:
+The two in uc-contracts are made, in its handoff design 0.1.3, on the branch `handover` in the worktree `~/areas/development/uc-contracts-handover`, commit `a94e232`, not pushed. 0.1.2 is kept, as earlier versions are. The one in uc-node is made in guide 4 0.1.4, on the branch `handoff-guide-4-admission`, from `handoff`, in the worktree `~/areas/development/uc-node-handoff-guide-4`, commit `dd59019`, not pushed. All three:
 
 | Where | Correction |
 | :-- | :-- |
@@ -166,7 +166,7 @@ Admission changes nothing on a node, so step six changes the client inventory on
 
 1. Review the branch `handover`, from `7165cb6` to the commit of this report's 0.1.1.
 2. Christopher's go for step six, as narrowed above.
-3. The three corrections outside this repository, above.
+3. The three corrections outside this repository, above: made on branches in uc-contracts and uc-node, for review and merge.
 4. Onboarding admitted nodes, if 0.2.0 should onboard `dev.example.org`, or after it.
 5. Cut 0.2.0.
 
@@ -174,6 +174,7 @@ Admission changes nothing on a node, so step six changes the client inventory on
 
 | Version | Date | Change |
 | :-- | :-- | :-- |
+| 0.1.7 | 2026-11-27 | The uc-node correction made, in guide 4 0.1.4. No correction outside this repository is open |
 | 0.1.6 | 2026-11-27 | The two uc-contracts corrections made, in the handoff design 0.1.3. The ROADMAP's confirmed roles carry their evidence from step four's full output: thirteen confirmed, and `robertdebock.epel`, `ntp`, `selinux` and `auditd` pinned, not exercised, every task skipped on a Debian container |
 | 0.1.5 | 2026-11-27 | The four re-pins of 0.1.4 undone: `requirements.yml` pins the confirmed set, by the ROADMAP's version policy, with `robertdebock.bootstrap` at 7.1.7, the version step four ran. `epel`, `openssh` and `hostname` reinstalled at their pins with `--force` |
 | 0.1.4 | 2026-11-27 | `main`'s move of every outside role out of `roles/` merged. The ten roles installed nowhere installed at their pins, four pins moved to the versions installed. `tests/run_tests.py` checks every role's version. `.ansible-lint` leaves out `roles/` as a whole, since roles are linted and tested only in work on them. Syntax-check, the boundary check, 118 tests and the 170 lint findings unchanged |
