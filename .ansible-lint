@@ -1,0 +1,8 @@
+---
+# ansible-lint settings for uc-controller.
+#
+# roles/ holds vendored Galaxy roles, installed from requirements.yml at the
+# versions it pins and never edited here, so their findings are their
+# authors', not this repository's.
+exclude_paths:
+  - roles/
