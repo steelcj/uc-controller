@@ -1,7 +1,7 @@
 ---
 title: Handover for uc-controller, Step Report
 description: What steps one to five of the handover work changed, the decisions taken on the way, the checks and their results, the throwaway node test of the Foomuuri switch, what in the kickoff and the design documents did not fit, the corrections left outside this repository, and what step six will change in example-org.
-version: 0.1.1
+version: 0.1.2
 status: provisional
 date: 2026-11-27
 language: en-CA
@@ -39,11 +39,11 @@ Under `~/.secrets/` I opened nothing. Under `~/.private/` I read and wrote nothi
 | Which hosts must have a fully qualified name in `check_inventory.py`. The kickoff says every admitted, onboarded and normalized host, but `10_onboard.yml` promotes Incus and scanned nodes under names such as `dev-example-org` and `disc-203-0-113-20`, so every onboarding the controller can do today would be refused at commit | The hosts that came through admission, or every host | The hosts that came through admission: every host in `raw/admitted.yml`, and every onboarded or normalized host carrying `raw_node_batch`. This matches the handoff design, which names only admitted hosts |
 | Admitted nodes cannot be onboarded: `10_onboard.yml` targets `raw:!admitted`, and the onboard-contract-nodes kickoff of 2026-11-18 was never run | A minimal onboarding path for admitted nodes, the firewall switch only, or stop after step three | The firewall only. Test the switch on a throwaway uc-node Incus node reached as root, with `-l`. Step six admits `dev.example.org` and neither onboards nor normalizes it |
 
-One decision was mine, not in the plan, and was reviewed after the step stop:
+One decision was mine, not in the plan, and was reversed by Christopher after the step stop:
 
-| Decision | Taken | Why |
+| Decision | Taken | Now |
 | :-- | :-- | :-- |
-| Vendor `steelcj.foomuuri` under `roles/` | At the pinned commit, `b62b02b5ee0c7dbf2bf2721aad46cf52ce60ebe3`, copied from the installed role. The copy equals `git archive b62b02b5…` of `~/areas/development/ansible-role-foomuuri` file for file, apart from `meta/.galaxy_install_info`, which says the same commit | Every other role in `requirements.yml` is vendored there, and `roles/` comes first in `roles_path`, so a fresh checkout would otherwise not have the firewall role. `roles/` is left out of `ansible-lint`, in `.ansible-lint`, since vendored roles are not edited here |
+| Where `steelcj.foomuuri` comes from | I vendored it under `roles/` in step four, at the pinned commit `b62b02b5ee0c7dbf2bf2721aad46cf52ce60ebe3`, because the robertdebock roles and `steelcj.umask` are committed there. The copy equalled `git archive b62b02b5…` of `~/areas/development/ansible-role-foomuuri` file for file | Not vendored. uc-controller's `roles/` is for roles developed in uc-controller, and an outside role is pinned in `requirements.yml` and installed with `ansible-galaxy install -r requirements.yml`, Christopher's rule. The copy is removed, and Ansible finds the installed role on `roles_path`. `tests/test_firewall_fragments.py` reads the installed role, is skipped when it is not installed, and fails when it is not at the pinned commit. The roles already committed under `roles/` are an older exception, left as they are |
 
 ## What changed
 
@@ -52,9 +52,9 @@ One decision was mine, not in the plan, and was reviewed after the step stop:
 | 1. Admitted names | `7165cb6` | `05_admit.yml` and `tasks/admit_candidate.yml` name a node by its fully qualified domain name: the name a target gives, or `<hostname>.<admit_client_domain>`. A confirmation whose hostname is not the name's first label is refused, naming both, and so is a name that is not fully qualified. The name is used for the admitted entry, the known hosts lookups and entries, `HostKeyAlias`, the report and the identity match. `admit_client_domain` is checked by uc-node's `client_domain` rule. `match_raw_identity.py` takes `--name`, compared whole. `check_inventory.py` refuses a host from admission whose name is not fully qualified. Tests: the domain, one hostname in two domains, bad hostnames, a node admitted under its hostname, and promotion and demotion keeping the name |
 | 2. Candidates | `8d4bbc9` | `admit_from_candidates=true` reads every `candidates/*.yml` whose `raw_node_batch` is the batch, through a new `scripts/read_candidates.py`, which uses `BaseLoader` and checks every field before use. A candidate file that is not valid is reported and skipped, and the run exits 2. The label rule refuses a `dev`, `stage` or `prod` candidate before it is contacted unless the run's one onboard stage matches. `admit_candidates` is removed and refused with a message naming its replacement. `admit_client_domain` is required with `admit_addresses` and `admit_from_discovered`, and refused with candidates, as `admit_ssh_port` is. Admission never changes `candidates/`. Tests: two batches, a label mismatch, a hostname mismatch, a wrong fingerprint, broken files, a batch with no candidates, and the refusals before contact |
 | 3. Template | `b3aa9c2` | `intake/` and `candidates/` with `.gitkeep` and README lines. `line-length` a warning at 120, with the reason. `new-inventory` runs `git init -b main`, prints the path, that no commit was made, and the next step, uc-node's guide 0. `check_inventory.py` checks each candidate with `read_candidates.py` and treats `intake/` as other client files, without reading either as hosts files. `inventory_hosts.py` skips both |
-| 4. Firewall | `24d8b5c` | `steelcj.foomuuri` in all three playbooks, as the ROADMAP's Switch to steelcj.foomuuri says, with the client variables unchanged. The role is vendored under `roles/` at the pinned commit, as every other role in `requirements.yml` is. `uc_firewall`, its interim vars file and its test are removed. `tests/test_firewall_fragments.py` renders each playbook's call |
+| 4. Firewall | `24d8b5c` | `steelcj.foomuuri` in all three playbooks, as the ROADMAP's Switch to steelcj.foomuuri says, with the client variables unchanged. The role was vendored under `roles/` here, and is installed from `requirements.yml` since, as the decision above says. `uc_firewall`, its interim vars file and its test are removed. `tests/test_firewall_fragments.py` renders each playbook's call |
 | 5. Documents | `626c8f6` | `en/docs/guides/admit-and-onboard.md`, new. `client-inventories.md` 0.2.0, `batch-secrets.md` 0.1.5, the README, the ROADMAP and the CHANGELOG's Unreleased section for 0.2.0. `admitting-a-raw-node.md` says it describes 0.1.x. The usage comments of `00_discover.yml`, `10_onboard.yml`, `scripts/inventory-args` and `require-client-inventory.yml` name `~/.private/uc/example-org/uc-inventory`. `05_admit.yml`'s usage comment changed in step two |
-| After the step stop | `b64aac3`, `b0a846f`, and the commit of this report's 0.1.1 | `.gitignore` leaves out `.ansible/`, ansible-lint's cache, so `git add -A` cannot commit it. `.ansible-lint` leaves out `roles/`. This report: the vendoring decision, how SSH was checked, the node's kind, the lint findings, and the corrections outside this repository |
+| After the step stop | `b64aac3`, `b0a846f`, `3b62643`, and the commit of this report's 0.1.2 | `.gitignore` leaves out `.ansible/`, ansible-lint's cache, so `git add -A` cannot commit it. `.ansible-lint` leaves out `roles/`. This report: the vendoring decision, how SSH was checked, the node's kind, the lint findings, and the corrections outside this repository. Then `steelcj.foomuuri` taken out of `roles/`, its test reading the installed role |
 
 ### What uc_firewall enforced, and where each rule is now
 
@@ -106,10 +106,10 @@ Before each commit I ran `tests/run_tests.py`, `ansible-lint` compared with the 
 
 | Check | On the final tree |
 | :-- | :-- |
-| `tests/run_tests.py` | 117 tests, all pass |
+| `tests/run_tests.py` | 118 tests, all pass. The 118th, since 0.1.1, checks that the installed `steelcj.foomuuri` is at the pinned commit and not under `roles/` |
 | `--syntax-check` | Every playbook and `site.yml` pass |
 | Converge boundary | Passes |
-| `ansible-lint` | Fails, as on the starting tree. With `roles/` left out, as `.ansible-lint` now says, 167 findings on the starting tree and 170 on the final one. Four are new, all `name[template]` on new tasks in `tasks/admit_candidate.yml`, named as its 23 other tasks are, `"{{ candidate }}: …"`, so the report reads one line per candidate address. One is gone, `var-naming[no-role-prefix]` in `uc_firewall`'s defaults. Before `roles/` was left out the counts were 186 and 195, the difference being nineteen findings in the other vendored roles and six in `steelcj.foomuuri` |
+| `ansible-lint` | Fails, as on the starting tree. With the outside roles committed under `roles/` left out, as `.ansible-lint` now says, by name, since `roles/` itself is for roles developed here, 167 findings on the starting tree and 170 on the final one. Four are new, all `name[template]` on new tasks in `tasks/admit_candidate.yml`, named as its 23 other tasks are, `"{{ candidate }}: …"`, so the report reads one line per candidate address. One is gone, `var-naming[no-role-prefix]` in `uc_firewall`'s defaults. Before `roles/` was left out the counts were 186 and 195, the difference being nineteen findings in the robertdebock roles committed there and six in the vendored `steelcj.foomuuri`, which is no longer in the repository |
 | `check_inventory.py` on an admitted host without `raw_node_batch` | Still refused, as before, by `test_admitted_host_needs_a_batch`. The name rule for onboarded and normalized hosts keys on `raw_node_batch`, which promotion carries from `raw/admitted.yml`, where it is required, so a host loses the rule only if its batch is removed by hand |
 | Links and anchors in the changed documents | None broken. The old admission guide's `<a name>` citation anchors were checked by eye |
 | `$6$` and `$y$` in every run's output | None |
@@ -174,5 +174,6 @@ Admission changes nothing on a node, so step six changes the client inventory on
 
 | Version | Date | Change |
 | :-- | :-- | :-- |
+| 0.1.2 | 2026-11-27 | `steelcj.foomuuri` is not vendored: the decision row records Christopher's rule that `roles/` is for roles developed in uc-controller, and step four's row says the role is installed from `requirements.yml`. `.ansible-lint` lists the committed outside roles by name, and the comments in `ansible.cfg` and `requirements.yml` and the README say what `roles/` is for. 118 tests, and the same 170 lint findings |
 | 0.1.1 | 2026-11-27 | After review: the vendoring of `steelcj.foomuuri` as a decision, with its check against upstream; how SSH on 22 was checked after each stage, and that the node was a container; the lint counts with `roles/` left out, and the finding that went with `uc_firewall` named correctly; the `raw_node_batch` refusal; the corrections outside this repository; the commits after the stop |
 | 0.1.0 | 2026-11-27 | First version |

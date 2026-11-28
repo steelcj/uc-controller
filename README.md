@@ -37,7 +37,7 @@ The firewall is Foomuuri, through `steelcj.foomuuri`: uc-node builds nodes with 
 | `ingress/` | The playbooks and roles that take a node from raw to onboarded, whatever its source |
 | `converge/` | The playbooks and roles that take an onboarded node to normalized and specialized |
 | `shared/` | The `uc_secret` lookup, and the client inventory check every playbook starts with |
-| `roles/` | Vendored Galaxy roles, installed from `requirements.yml` |
+| `roles/` | Roles developed in uc-controller, and the robertdebock roles and `steelcj.umask`, committed from `requirements.yml` earlier. A role developed elsewhere, such as `steelcj.foomuuri`, is pinned in `requirements.yml` and installed with `ansible-galaxy install -r requirements.yml`, not committed |
 | `inventory-defaults/` | The logic half of the inventories, one directory per stage, loaded before every client inventory |
 | `inventory-template/` | The layout of a client inventory repository |
 | `scripts/` | The release scripts, and the scripts for client inventories: `inventory-args`, `new-inventory`, `check_inventory.py`, `read_candidates.py`, `promote_node.py`, `demote_node.py` and others |

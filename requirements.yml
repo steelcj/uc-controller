@@ -3,7 +3,7 @@
 # lifecycle was verified with (see Verification Status in the design
 # document). To move one, see "Bumping a Pinned Version" there.
 
-# The collections the playbooks and the vendored roles use. Both also ship
+# The collections the playbooks and the roles use. Both also ship
 # inside the "ansible" package of the controller's virtual environment;
 # installing them from this file puts the pinned versions in the user's
 # collections path, which Ansible searches first.

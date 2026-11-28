@@ -1,8 +1,25 @@
 ---
 # ansible-lint settings for uc-controller.
 #
-# roles/ holds vendored Galaxy roles, installed from requirements.yml at the
-# versions it pins and never edited here, so their findings are their
-# authors', not this repository's.
+# roles/ is for roles developed in uc-controller, and is linted. The roles
+# listed here were committed under roles/ from Galaxy and git before that
+# rule, are pinned in requirements.yml, and are not developed here, so
+# their findings are their authors'. A role developed elsewhere is
+# installed from requirements.yml, not committed, and is not listed.
 exclude_paths:
-  - roles/
+  - roles/robertdebock.auditd/
+  - roles/robertdebock.auto_update/
+  - roles/robertdebock.bootstrap/
+  - roles/robertdebock.cron/
+  - roles/robertdebock.epel/
+  - roles/robertdebock.fail2ban/
+  - roles/robertdebock.hostname/
+  - roles/robertdebock.locale/
+  - roles/robertdebock.ntp/
+  - roles/robertdebock.openssh/
+  - roles/robertdebock.rsyslog/
+  - roles/robertdebock.selinux/
+  - roles/robertdebock.sysctl/
+  - roles/robertdebock.update/
+  - roles/robertdebock.users/
+  - roles/steelcj.umask/

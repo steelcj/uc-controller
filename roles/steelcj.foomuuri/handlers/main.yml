@@ -1,9 +1,0 @@
----
-# handlers file for foomuuri
-
-- name: Reload foomuuri
-  ansible.builtin.systemd_service:
-    name: "{{ foomuuri_service }}"
-    state: reloaded
-  when:
-    - ansible_connection not in foomuuri_skip_connections

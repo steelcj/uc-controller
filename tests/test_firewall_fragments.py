@@ -3,11 +3,14 @@
 10_onboard.yml, 20_normalize.yml and 30_specialize.yml each call
 steelcj.foomuuri for one fragment: 10-base, 20-normalize and 30-specialize.
 These tests read each call's variables from the playbook as it is, with the
-play's own variables, and render the role's template, from the vendored
-roles/steelcj.foomuuri, on localhost with the client inventory template's
-firewall values. They check what each fragment accepts, that each call keeps
-the other two fragments, and that a stage with no service removes its
-fragment. No host is contacted.
+play's own variables, and render the role's template on localhost with the
+client inventory template's firewall values. The role is the one installed
+from requirements.yml, found on ansible.cfg's roles_path, and must be at the
+commit requirements.yml pins: install it with
+ansible-galaxy install -r requirements.yml. The tests are skipped when it is
+not installed, and fail when it is installed at another version. They check
+what each fragment accepts, that each call keeps the other two fragments, and
+that a stage with no service removes its fragment. No host is contacted.
 
 The role's own checks, the play's refusals and the result on a node are
 tested on a throwaway node, as the step report of the handover work records.
@@ -16,6 +19,7 @@ tested on a throwaway node, as the step report of the handover work records.
 """
 from __future__ import annotations
 
+import configparser
 import json
 import os
 import shutil
@@ -27,7 +31,7 @@ from pathlib import Path
 import yaml
 
 REPO = Path(__file__).resolve().parent.parent
-ROLE = REPO / "roles/steelcj.foomuuri"
+ROLE_NAME = "steelcj.foomuuri"
 TEMPLATE = REPO / "inventory-template"
 PLAYBOOKS = {
     "10-base": REPO / "ingress/playbooks/10_onboard.yml",
@@ -39,6 +43,27 @@ FRAGMENTS = sorted(PLAYBOOKS)
 
 def load(path: Path):
     return yaml.safe_load(path.read_text())
+
+
+def pinned_version() -> str:
+    """The version requirements.yml pins the role at."""
+    roles = load(REPO / "requirements.yml")["roles"]
+    return str(next(r["version"] for r in roles if r["name"] == ROLE_NAME))
+
+
+def installed_role() -> Path | None:
+    """The role as Ansible finds it, on ansible.cfg's roles_path, or None."""
+    config = configparser.ConfigParser()
+    config.read(REPO / "ansible.cfg")
+    for entry in config.get("defaults", "roles_path", fallback="").split(":"):
+        base = Path(os.path.expanduser(entry.strip()))
+        base = base if base.is_absolute() else REPO / base
+        if (base / ROLE_NAME / "templates/foomuuri.conf.j2").is_file():
+            return base / ROLE_NAME
+    return None
+
+
+ROLE = installed_role()
 
 
 def foomuuri_call(playbook: Path) -> tuple[dict, dict]:
@@ -57,7 +82,16 @@ def foomuuri_call(playbook: Path) -> tuple[dict, dict]:
 
 
 @unittest.skipUnless(shutil.which("ansible-playbook"), "Ansible not on PATH")
+@unittest.skipUnless(ROLE, f"{ROLE_NAME} is not installed: ansible-galaxy install -r requirements.yml")
 class Fragments(unittest.TestCase):
+    def test_the_installed_role_is_the_pinned_one(self):
+        info = load(ROLE / "meta/.galaxy_install_info") if (ROLE / "meta/.galaxy_install_info").is_file() else {}
+        self.assertEqual(str(info.get("version")), pinned_version(),
+                         f"{ROLE} is not at the commit requirements.yml pins; reinstall it with "
+                         "ansible-galaxy install -r requirements.yml --force")
+        self.assertNotEqual(ROLE.parent, REPO / "roles",
+                            f"{ROLE_NAME} is developed in its own repository, not in uc-controller's roles/")
+
     def render(self, fragment: str, version: str = "0.27", **client) -> dict:
         """The fragment's text, state and kept fragments, as the role would write them."""
         play_vars, call_vars = foomuuri_call(PLAYBOOKS[fragment])
