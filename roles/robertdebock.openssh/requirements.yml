@@ -1,7 +1,0 @@
----
-roles:
-  - name: robertdebock.bootstrap
-  - name: robertdebock.selinux
-collections:
-  - name: ansible.posix
-  - name: community.general
