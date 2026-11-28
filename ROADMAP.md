@@ -83,6 +83,8 @@ From the handover step 4 node test, on 2026-11-27: a throwaway uc-node node, an 
 
 A role is **confirmed** when the run executed its tasks on the node, and **pinned, not exercised** when it was installed but every task was skipped. Confirmed here means on Debian 13, in a container, only. The task counts are for the node, `dev-example-net`, summed over the successful runs: two onboard, four normalize and one specialize. They were read from those runs' full output, made between 19:28 and 19:37, before step four's commit at 19:41, with `roles/` unchanged since the branch began.
 
+The full output of every step four run, the refused runs and the build among them, is kept privately by the operator, outside every repository, in a dated directory with a README and a `SHA256SUMS` file. Run `sha256sum -c SHA256SUMS` there to check that the logs have not changed.
+
 | Role | Version | Status | Stage, or why it did not run | Tasks on the node |
 |---|---|---|---|---|
 | robertdebock.bootstrap | 7.1.7 | confirmed | onboard | 22 ok, 2 skipped |
